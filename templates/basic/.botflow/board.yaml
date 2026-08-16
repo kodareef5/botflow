@@ -2,7 +2,7 @@ botflow: 0
 name: basic
 
 # Six canonical lanes. Branch this template and reshape lanes for specialty
-# workloads — every lane still projects onto a canonical state, so parent
+# workloads: every lane still projects onto a canonical state, so parent
 # boards can aggregate this board without knowing its shape.
 lanes:
   - id: wishlist

@@ -33,7 +33,7 @@ test('cli: full card lifecycle', () => {
   ok(dir, 'card', 'add', 'Build the thing', '--labels', 'core,alpha', '--priority', 'p1');
   ok(dir, 'card', 'add', 'Polish the thing', '--deps', '001');
 
-  // Only 001 is ready — 002 waits on it.
+  // Only 001 is ready: 002 waits on it.
   const ready1 = JSON.parse(ok(dir, 'ready', '--json')) as { id: string }[];
   assert.deepEqual(ready1.map((c) => c.id), ['001']);
 

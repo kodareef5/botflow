@@ -6,7 +6,7 @@ assignee: agent-1
 created: 2026-08-16
 ---
 ## Description
-Card sits in the bare lane — fixture exercises the bare-substate-lane warning.
+Card sits in the bare lane; the fixture exercises the bare-substate-lane warning.
 
 ## Log
 - 2026-08-16 agent-1: claimed, moved todo → doing

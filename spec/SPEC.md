@@ -6,7 +6,7 @@
 
 - A **board** is a directory containing a `board.yaml` and a `cards/` directory. Files in git are the source of truth; anything else (SQLite indexes, web views) is derived and rebuildable.
 - A board has ordered **lanes**. Every lane projects onto exactly one of six **canonical states**. Lanes may carry an ordered list of **substates** (a sub-state machine inside the lane).
-- A **card** is one markdown file: YAML frontmatter + free markdown body. A card is either a `task` or a `board` — a board-card points at a child board directory, making boards recursive.
+- A **card** is one markdown file: YAML frontmatter + free markdown body. A card is either a `task` or a `board`: a board-card points at a child board directory, making boards recursive.
 - **Projection** maps any card to a canonical state; **distribution** counts a board's cards by canonical state; **rollup** derives a board-card's effective state from its child board's distribution. Because aggregation consumes only canonical distributions, a parent never needs to know a child board's shape.
 
 ## 2. Canonical states
@@ -40,7 +40,7 @@ Repo convention: the board root is `.botflow/` at the repo root. Tools resolve t
 A **child board reference** (`board:` field, §5) takes one of two forms:
 
 - a **relative path** from the referencing board's root, resolving to a board root as: if `<path>/board.yaml` exists, `<path>` is the root; else if `<path>/.botflow/board.yaml` exists, `<path>/.botflow` is the root; else the reference is dangling (lint `board-path-missing`);
-- **`project:<id>`** — a hosted-manager project reference. Only a botflow manager can resolve it (its Durable Objects roll the child project up exactly like the file engine); on the filesystem it is inert and lints as info `hosted-ref`, the card falling back to its own lane.
+- **`project:<id>`**: a hosted-manager project reference. Only a botflow manager can resolve it (its Durable Objects roll the child project up exactly like the file engine); on the filesystem it is inert and lints as info `hosted-ref`, the card falling back to its own lane.
 
 ## 4. `board.yaml`
 
@@ -118,9 +118,9 @@ Body: free markdown. Conventional sections, all optional:
 
 Further conventional body sections, all optional and all plain markdown:
 
-- **Checklists** — every GFM task item (`- [ ]` / `- [x]`) anywhere in the body belongs to the card's checklist aggregate; items group under the `##` section they appear in (`Checklist` when unnamed). Tools address items by their **global 0-based ordinal** in body order, and surface the aggregate (`done/total`) on card faces.
-- **`## Comments`** — discourse between operators and agents, append-only like the Log, same entry shape (`- <date-or-datetime> <actor>: <text>`). Comments are conversation; the Log is audit — tools MUST NOT merge them.
-- **`## Attachments`** — one markdown link per line (`- [label](url)`). Attachments whose urls are images form the card's gallery (and the default cover, §5 `cover`). Attachments are urls; binary upload storage is a hosted-manager concern, not part of the format.
+- **Checklists**: every GFM task item (`- [ ]` / `- [x]`) anywhere in the body belongs to the card's checklist aggregate; items group under the `##` section they appear in (`Checklist` when unnamed). Tools address items by their **global 0-based ordinal** in body order, and surface the aggregate (`done/total`) on card faces.
+- **`## Comments`**: discourse between operators and agents, append-only like the Log, same entry shape (`- <date-or-datetime> <actor>: <text>`). Comments are conversation; the Log is audit: tools MUST NOT merge them.
+- **`## Attachments`**: one markdown link per line (`- [label](url)`). Attachments whose urls are images form the card's gallery (and the default cover, §5 `cover`). Attachments are urls; binary upload storage is a hosted-manager concern, not part of the format.
 
 ## 6. Projection
 
@@ -131,13 +131,13 @@ canonical(c) = blocked          if c.blocked is set and canonical(L) ∉ {done, 
              = canonical(L)     otherwise
 ```
 
-A `blocked` flag on a done/archive card is inert (lint warning `blocked-in-done`). A lane whose canonical **is** `blocked` is also legal — the flag and the lane are two styles of the same signal; the flag is recommended because the card keeps its place in the flow.
+A `blocked` flag on a done/archive card is inert (lint warning `blocked-in-done`). A lane whose canonical **is** `blocked` is also legal: the flag and the lane are two styles of the same signal; the flag is recommended because the card keeps its place in the flow.
 
 Cards in a substated lane SHOULD carry a substate (`doing.review`). A bare lane id where substates exist is lint warning `bare-substate-lane` and is treated as the **first** substate.
 
 ## 7. Nesting & rollup
 
-**Distribution.** `dist(B)` counts B's cards by canonical state. A task card contributes its `canonical(c)`. A board-card contributes its **effective state** (below) — it counts as exactly one card in the parent; child internals never leak upward.
+**Distribution.** `dist(B)` counts B's cards by canonical state. A task card contributes its `canonical(c)`. A board-card contributes its **effective state** (below): it counts as exactly one card in the parent; child internals never leak upward.
 
 **Effective state of a board-card** `c → child board K`, computed with the **parent's** rollup policy over `dist(K)` (countable = all cards of K not in `archive`):
 
@@ -149,7 +149,7 @@ Cards in a substated lane SHOULD carry a substate (`doing.review`). A bare lane 
 5. If all countable children are `wishlist` → `wishlist`.
 6. Otherwise → the `else:` value (default `todo`).
 
-The board-card's frontmatter `lane` remains authoritative for its **position** (a human may park it anywhere); its effective state is what distribution, progress, and aggregate views use. When lane-canonical and effective state disagree, lint reports warning `rollup-drift` — files stay truth, drift stays visible.
+The board-card's frontmatter `lane` remains authoritative for its **position** (a human may park it anywhere); its effective state is what distribution, progress, and aggregate views use. When lane-canonical and effective state disagree, lint reports warning `rollup-drift`: files stay truth, drift stays visible.
 
 **Progress.** `progress(B) = weight_done / weight_total` over countable cards, where a task card has weight 1 (1 if `done`, else 0 toward done) and a board-card has weight 1 scaled by `progress(K)` (a child 3⁄4 done contributes 0.75). A childless (countable=0) board-card contributes 1 if its effective state is `done`, else 0. `progress` of a board with no countable cards is `null`.
 
@@ -157,7 +157,7 @@ The board-card's frontmatter `lane` remains authoritative for its **position** (
 
 ## 8. Card ids & merge semantics
 
-- `ids: seq` (default): decimal, zero-padded to at least 3 (`042`; padding grows naturally). Next id = max existing + 1. Simple and readable; concurrent creation on two branches can collide — after merge, lint error `dup-id`; resolve by re-iding one card (file rename + `id` + inbound `deps`).
+- `ids: seq` (default): decimal, zero-padded to at least 3 (`042`; padding grows naturally). Next id = max existing + 1. Simple and readable; concurrent creation on two branches can collide: after merge, lint error `dup-id`; resolve by re-iding one card (file rename + `id` + inbound `deps`).
 - `ids: hash`: 6 lowercase base36 characters, generated randomly, checked against existing ids at creation. Use for boards where multiple agents create cards concurrently on diverging branches.
 
 One card = one file, so edits to different cards never conflict in git. Same-card edits merge as ordinary text; the append-only Log usually auto-merges. Tools MUST NOT renumber or rewrite cards they weren't asked to touch.
@@ -169,7 +169,7 @@ botflow documents (board.yaml and card frontmatter) use a deliberately small YAM
 Supported:
 - **Mappings**: `key: value`; nesting by 2-space indentation. Keys are plain scalars (`[A-Za-z0-9_-]+`).
 - **Sequences**: block form (`- item`, including `- key: v` starting an inline map whose further keys sit 2 spaces deeper), and flow form `[a, b, c]` for scalar items only.
-- **Scalars**: plain, `"double-quoted"` (escapes: `\\`, `\"`, `\n`, `\t`), `'single-quoted'` (escape: `''`). Plain scalars type as: `true`/`false` → bool, `null`/empty → null, `-?(0|[1-9][0-9]*)` → int, anything else → string. Digit tokens with leading zeros (`042`) are **strings** — this keeps zero-padded card ids intact. Date-like plain scalars (`2026-08-16`, ISO datetimes) are strings — there is no date type. The key/value separator is the **first** `: ` on the line, so plain values may contain colons; a value containing ` #` (which would start a comment) MUST be quoted. Anything ambiguous MUST be quoted.
+- **Scalars**: plain, `"double-quoted"` (escapes: `\\`, `\"`, `\n`, `\t`), `'single-quoted'` (escape: `''`). Plain scalars type as: `true`/`false` → bool, `null`/empty → null, `-?(0|[1-9][0-9]*)` → int, anything else → string. Digit tokens with leading zeros (`042`) are **strings**: this keeps zero-padded card ids intact. Date-like plain scalars (`2026-08-16`, ISO datetimes) are strings: there is no date type. The key/value separator is the **first** `: ` on the line, so plain values may contain colons; a value containing ` #` (which would start a comment) MUST be quoted. Anything ambiguous MUST be quoted.
 - **Comments**: `#` at line start or preceded by whitespace, to end of line.
 - Blank lines anywhere; `\r\n` normalized to `\n`.
 
@@ -205,21 +205,21 @@ Errors mean the board is not conformant; warnings are signals; infos are noise-l
 
 Each directory under `test/fixtures/` is a board (or, for `invalid/`, a set of boards) with expected outputs beside it:
 
-- `minimal/` — omitted `lanes` (canonical defaults); three tasks. → `expected.json`
-- `standard/` — six lanes + specialty `needs-qa` (→ doing), wip limit, a blocked flag, a deps chain exercising **ready**. → `expected.json`
-- `substates/` — strict-ordered `doing` substates, incl. a bare-lane warning case. → `expected.json`
-- `nested/` — a parent whose cards include two board-cards (one all-done child, one mixed child with a blocked card); exercises rollup, drift, progress. → `expected.json`
-- `invalid/` — one board per error class. → `expected.json` (lint findings)
+- `minimal/`: omitted `lanes` (canonical defaults); three tasks. → `expected.json`
+- `standard/`: six lanes + specialty `needs-qa` (→ doing), wip limit, a blocked flag, a deps chain exercising **ready**. → `expected.json`
+- `substates/`: strict-ordered `doing` substates, incl. a bare-lane warning case. → `expected.json`
+- `nested/`: a parent whose cards include two board-cards (one all-done child, one mixed child with a blocked card); exercises rollup, drift, progress. → `expected.json`
+- `invalid/`: one board per error class. → `expected.json` (lint findings)
 
 Expected files record, per board: lint findings (rule ids + card ids), per-card canonical states, lane distributions, ready sets, and (where relevant) effective states and progress. A conforming engine must reproduce them exactly.
 
 ## 12. Conventions for tools
 
-- **Claim** = set `assignee` to the actor and move the card to a `doing`-canonical lane (first substate if any), appending a Log entry — one atomic rewrite.
+- **Claim** = set `assignee` to the actor and move the card to a `doing`-canonical lane (first substate if any), appending a Log entry: one atomic rewrite.
 - Every mutation appends a Log line; never rewrite existing Log lines. Comments append to `## Comments` and bump `updated` without a Log line (discourse isn't audit); checklist toggles and attachment changes DO log.
 - Preserve unknown frontmatter keys and all body content outside the section being edited.
 - Only bump `updated` on meaningful change.
-- `prime` — every conforming CLI SHOULD offer a command that prints the board's shape, rules, ready work, and the tool's own usage, so an agent can be taught with one line in AGENTS.md.
+- `prime`: every conforming CLI SHOULD offer a command that prints the board's shape, rules, ready work, and the tool's own usage, so an agent can be taught with one line in AGENTS.md.
 - Derived stores (indexes, caches) MUST be rebuildable from files alone and MUST NOT be committed.
 
 ## 13. Future (non-normative)

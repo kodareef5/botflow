@@ -1,5 +1,5 @@
 // Structured view of a card's markdown body (SPEC §5): sections, checklists,
-// attachments, comments, log. Pure and shared by CLI, MCP, viewer, and DOs —
+// attachments, comments, log. Pure and shared by CLI, MCP, viewer, and DOs -
 // the body stays plain markdown; this module is just how tools read/write it.
 
 export interface ChecklistItem {

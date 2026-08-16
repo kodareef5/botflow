@@ -1,6 +1,6 @@
 // The style catalog: five looks over one structural stylesheet. A style sets
 // shape (radius, borders, shadows, font, density) and palettes per mode; an
-// accent recolors chrome (buttons, meters, links) — never the six canonical
+// accent recolors chrome (buttons, meters, links), never the six canonical
 // state colors, which stay semantic and CVD-validated as a set.
 
 export interface Palette {
@@ -35,7 +35,7 @@ export interface Style {
   radiusCard: string;
   radiusCtl: string;
   borderW: string;
-  /** CSS border-style for hairlines/cards — solid, dashed, … */
+  /** CSS border-style for hairlines/cards: solid, dashed, ... */
   borderStyle: string;
   shadowLight: string;
   shadowDark: string;
@@ -54,7 +54,7 @@ export const STYLES: Style[] = [
   {
     id: 'reef',
     name: 'Reef',
-    blurb: 'calm neutral — the default',
+    blurb: 'calm neutral, the default',
     font: 'system-ui, -apple-system, "Segoe UI", sans-serif',
     radiusCard: '10px',
     radiusCtl: '6px',
@@ -82,7 +82,7 @@ export const STYLES: Style[] = [
   {
     id: 'phosphor',
     name: 'Phosphor',
-    blurb: 'terminal — mono, dense, square',
+    blurb: 'terminal: mono, dense, square',
     font: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
     radiusCard: '0px',
     radiusCtl: '0px',
@@ -164,7 +164,7 @@ export const STYLES: Style[] = [
   {
     id: 'bricks',
     name: 'Bricks',
-    blurb: 'neobrutalist — thick borders, hard shadows',
+    blurb: 'neobrutalist: thick borders, hard shadows',
     font: 'system-ui, -apple-system, "Segoe UI", sans-serif',
     radiusCard: '0px',
     radiusCtl: '0px',
@@ -191,7 +191,7 @@ export const STYLES: Style[] = [
   {
     id: 'vapor',
     name: 'Vapor',
-    blurb: 'synthwave — neon glow on deep violet',
+    blurb: 'synthwave neon on deep violet',
     font: 'system-ui, -apple-system, "Segoe UI", sans-serif',
     radiusCard: '8px',
     radiusCtl: '6px',
@@ -218,7 +218,7 @@ export const STYLES: Style[] = [
   {
     id: 'blueprint',
     name: 'Blueprint',
-    blurb: 'cyanotype — dashed drafting lines',
+    blurb: 'cyanotype drafting paper',
     font: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
     radiusCard: '2px',
     radiusCtl: '2px',

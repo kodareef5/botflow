@@ -1,4 +1,4 @@
-// Emitter for the strict YAML subset — the inverse of yaml.ts for the shapes
+// Emitter for the strict YAML subset: the inverse of yaml.ts for the shapes
 // botflow writes: flat mappings, nested mappings, and scalar lists.
 
 const PLAIN_INT_RE = /^-?(0|[1-9][0-9]*)$/;

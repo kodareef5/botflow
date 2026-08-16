@@ -1,4 +1,4 @@
-// `botflow serve` — read-only local web view. Files stay the source of truth:
+// `botflow serve`: read-only local web view. Files stay the source of truth:
 // every /api/data request re-reads the board from disk (fast at repo scale),
 // so the page is never stale and there is nothing to invalidate.
 

@@ -1,4 +1,4 @@
-// Core data model for botflow boards. See spec/SPEC.md — this file mirrors it.
+// Core data model for botflow boards. See spec/SPEC.md: this file mirrors it.
 
 export const CANONICAL_STATES = ['wishlist', 'todo', 'doing', 'blocked', 'done', 'archive'] as const;
 export type Canonical = (typeof CANONICAL_STATES)[number];

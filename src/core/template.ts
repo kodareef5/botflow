@@ -1,4 +1,4 @@
-// Workspace instantiation: `botflow new <src>[#branch] <dir>` — the
+// Workspace instantiation: `botflow new <src>[#branch] <dir>`: the
 // "preplanned environments with kanban batteries" story. A template is any
 // repo (or branch of one) carrying a board + agent playbook; instantiating is
 // a history-free copy into a fresh repo.
@@ -21,7 +21,7 @@ function git(args: string[], cwd?: string): { ok: boolean; err: string } {
   return { ok: res.status === 0, err: (res.stderr || res.stdout || '').trim() };
 }
 
-/** Split `src[#branch]` — the branch selects a workflow variant. */
+/** Split `src[#branch]`: the branch selects a workflow variant. */
 export function parseSource(spec: string): { src: string; branch: string | null } {
   const hash = spec.lastIndexOf('#');
   if (hash <= 0) return { src: spec, branch: null };
@@ -37,7 +37,7 @@ export function instantiate(spec: string, destDir: string, name?: string): Insta
 
   const localPlainDir = existsSync(src) && !existsSync(join(src, '.git'));
   if (localPlainDir) {
-    if (branch !== null) throw new UsageError(`"${src}" is not a git repo — #${branch} needs one`);
+    if (branch !== null) throw new UsageError(`"${src}" is not a git repo: #${branch} needs one`);
     mkdirSync(dest, { recursive: true });
     cpSync(src, dest, { recursive: true, filter: (p) => !p.split('/').includes('.git') });
   } else {
@@ -51,7 +51,7 @@ export function instantiate(spec: string, destDir: string, name?: string): Insta
   // Fresh history for the new project.
   const init = git(['init', '-q'], dest);
   if (!init.ok) {
-    warnings.push(`git init failed (${init.err}) — continuing without a repo`);
+    warnings.push(`git init failed (${init.err}): continuing without a repo`);
   } else {
     git(['add', '-A'], dest);
     const commit = git(
@@ -62,7 +62,7 @@ export function instantiate(spec: string, destDir: string, name?: string): Insta
   }
 
   const boardRoot = resolveBoardRoot(dest);
-  if (boardRoot === null) warnings.push('template has no botflow board — run `botflow init` to add one');
+  if (boardRoot === null) warnings.push('template has no botflow board: run `botflow init` to add one');
   else if (name !== undefined) {
     const configPath = join(boardRoot, 'board.yaml');
     const text = readFileSync(configPath, 'utf8');

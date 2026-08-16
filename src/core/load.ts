@@ -32,7 +32,7 @@ export function discoverBoardRoot(startDir: string): string | null {
   }
 }
 
-/** Read a board's raw documents from disk — the wire format for push/pull. */
+/** Read a board's raw documents from disk: the wire format for push/pull. */
 export function readBoardDocuments(rootAbs: string): { configText: string | null; cards: BoardDocument[] } {
   const configPath = join(rootAbs, 'board.yaml');
   const configText = existsSync(configPath) ? readFileSync(configPath, 'utf8') : null;
@@ -81,7 +81,7 @@ export function loadTree(rootDir: string): Tree {
     for (const card of node.board.cards) {
       if (card.type !== 'board' || card.boardPath === null) continue;
       if (card.boardPath.startsWith('project:')) {
-        // Hosted-manager reference (SPEC §3) — meaningless on the filesystem.
+        // Hosted-manager reference (SPEC §3): meaningless on the filesystem.
         node.board.findings.push(finding('hosted-ref', card.id, `"${card.boardPath}" resolves only on a botflow manager`));
         node.childKeyByCard.set(card.id, null);
         continue;

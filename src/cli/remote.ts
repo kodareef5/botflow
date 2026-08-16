@@ -1,5 +1,5 @@
 // Sync a file-truth board with a hosted botflow manager project.
-// remote.yaml (committable — no secrets) holds the url + project id; the
+// remote.yaml (committable: no secrets) holds the url + project id; the
 // token always comes from --token or BOTFLOW_TOKEN. Push/pull are whole-board
 // snapshots: last write wins, and every import lands in the audit log.
 
@@ -25,7 +25,7 @@ export function remoteAdd(root: string, url: string, project: string): void {
 
 export function loadRemote(root: string): RemoteConfig {
   const path = join(root, REMOTE_FILE);
-  if (!existsSync(path)) throw new UsageError('no remote configured — run `botflow remote add <url> <project-id>`');
+  if (!existsSync(path)) throw new UsageError('no remote configured: run `botflow remote add <url> <project-id>`');
   const data = parseYaml(readFileSync(path, 'utf8')) as { url?: unknown; project?: unknown };
   if (typeof data.url !== 'string' || typeof data.project !== 'string') {
     throw new UsageError(`${REMOTE_FILE} needs url and project`);
@@ -55,7 +55,7 @@ export async function push(root: string, token: string, actor: string): Promise<
   })) as { imported: number; findings: number };
 }
 
-/** Card doc paths must stay inside cards/ — refuse anything path-traversal-shaped. */
+/** Card doc paths must stay inside cards/: refuse anything path-traversal-shaped. */
 function safeCardPath(path: string): boolean {
   return path.startsWith('cards/') && !path.split('/').some((part) => part === '..' || part === '' || part.includes(sep));
 }

@@ -220,7 +220,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
     },
     {
       name: 'card_attach',
-      description: 'Attach a link (or image url — images show in the card gallery and can be cover art).',
+      description: 'Attach a link (or image url: images show in the card gallery and can be cover art).',
       inputSchema: schema(['id', 'url'], { id: str, url: str, label: str, actor: str }),
       run: (args) => {
         const card = attachCard(root, String(args['id']), actorOf(args), String(args['url']), opt(args['label']));
@@ -229,7 +229,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
     },
     {
       name: 'log_append',
-      description: 'Append a line to the card’s append-only Log section — narrate what you did.',
+      description: 'Append a line to the card’s append-only Log section: narrate what you did.',
       inputSchema: schema(['id', 'message'], { id: str, message: str, actor: str }),
       run: (args) => {
         const card = addLogEntry(root, String(args['id']), actorOf(args), String(args['message']));

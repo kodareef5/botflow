@@ -1,4 +1,4 @@
-// RegistryDO — the org tree and auth authority: one company per deployment,
+// RegistryDO: the org tree and auth authority: one company per deployment,
 // spaces → projects (projects own projects), admin token + per-project agent
 // keys. A single SQLite-backed Durable Object serializes all registry writes.
 
@@ -58,7 +58,68 @@ export class RegistryDO extends DurableObject {
       CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, space_id TEXT NOT NULL, parent_id TEXT, name TEXT NOT NULL, created TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS keys(id TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, label TEXT NOT NULL, created TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS shares(id TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, label TEXT NOT NULL, created TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
     `);
+  }
+
+  // ---- prefs (small org-wide switches) ----
+
+  getPrefs(): { gateShares: boolean } {
+    const row = this.sql.exec("SELECT value FROM settings WHERE key = 'prefs'").toArray()[0];
+    if (!row) return { gateShares: true };
+    try {
+      const parsed = JSON.parse(row['value'] as string) as { gateShares?: unknown };
+      return { gateShares: parsed.gateShares !== false };
+    } catch {
+      return { gateShares: true };
+    }
+  }
+
+  setPrefs(prefs: { gateShares?: unknown }): { gateShares: boolean } {
+    const next = { gateShares: prefs.gateShares !== false };
+    this.sql.exec(
+      "INSERT INTO settings(key, value) VALUES ('prefs', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      JSON.stringify(next),
+    );
+    return next;
+  }
+
+  // ---- public share links (read-only capability urls) ----
+
+  createShare(projectId: string, label: string): { id: string; token: string } | { error: string } {
+    if (this.projectName(projectId) === null) return { error: `no project ${projectId}` };
+    const token = randomToken('bfs').slice(4); // bare hex; the url is the capability
+    const id = `sh-${shortId()}`;
+    this.sql.exec('INSERT INTO shares(id, token, project_id, label, created) VALUES (?, ?, ?, ?, ?)', id, token, projectId, label, new Date().toISOString());
+    return { id, token };
+  }
+
+  listShares(projectId: string): { id: string; token: string; label: string; created: string; revoked: boolean }[] {
+    return this.sql
+      .exec('SELECT id, token, label, created, revoked FROM shares WHERE project_id = ? ORDER BY created', projectId)
+      .toArray()
+      .map((r) => ({ id: r['id'] as string, token: r['token'] as string, label: r['label'] as string, created: r['created'] as string, revoked: r['revoked'] === 1 }));
+  }
+
+  /** Active shares across the org, for the login-page listing. */
+  listGateShares(): { token: string; name: string }[] {
+    if (!this.getPrefs().gateShares) return [];
+    return this.sql
+      .exec('SELECT s.token AS token, p.name AS name FROM shares s JOIN projects p ON p.id = s.project_id WHERE s.revoked = 0 ORDER BY s.created')
+      .toArray()
+      .map((r) => ({ token: r['token'] as string, name: r['name'] as string }));
+  }
+
+  revokeShare(id: string): { ok: boolean } {
+    this.sql.exec('UPDATE shares SET revoked = 1 WHERE id = ?', id);
+    return { ok: true };
+  }
+
+  resolveShare(token: string): { projectId: string; name: string } | null {
+    const row = this.sql
+      .exec('SELECT s.project_id AS pid, p.name AS name FROM shares s JOIN projects p ON p.id = s.project_id WHERE s.token = ? AND s.revoked = 0', token)
+      .toArray()[0];
+    return row ? { projectId: row['pid'] as string, name: row['name'] as string } : null;
   }
 
   getTheme(): ThemeChoice {

@@ -7,7 +7,7 @@ import { CANONICAL_STATES } from '../core/model.ts';
 import { lintBoard } from '../core/analyze.ts';
 import { parseBody } from '../core/body.ts';
 
-export const pct = (p: number | null): string => (p === null ? '—' : `${Math.round(p * 100)}%`);
+export const pct = (p: number | null): string => (p === null ? '·' : `${Math.round(p * 100)}%`);
 
 function cardAnnotations(card: Card, node: BoardNode, ba: BoardAnalysis, readySet: Set<string>): string {
   const parts: string[] = [];
@@ -44,8 +44,8 @@ export function renderBoard(tree: Tree, analysis: Analysis): string {
   const errors = findings.filter((f) => f.severity === 'error').length;
   const warnings = findings.filter((f) => f.severity === 'warning').length;
 
-  lines.push(`▤ ${node.board.config.name} — ${node.board.cards.length} cards · progress ${pct(ba.progress)}`);
-  if (errors + warnings > 0) lines.push(`  lint: ${errors} error(s), ${warnings} warning(s) — run \`botflow lint\``);
+  lines.push(`▤ ${node.board.config.name} · ${node.board.cards.length} cards · progress ${pct(ba.progress)}`);
+  if (errors + warnings > 0) lines.push(`  lint: ${errors} error(s), ${warnings} warning(s), run \`botflow lint\``);
   lines.push('');
 
   const known = new Set(node.board.config.lanes.map((l) => l.id));
@@ -88,7 +88,7 @@ export function renderRollup(tree: Tree, analysis: Analysis): string {
       const eff = ba.canonical.get(card.id)!;
       const childBa = childKey !== null ? analysis.boards.get(childKey)! : null;
       const lane = node.board.config.lanes.find((l) => l.id === card.laneId);
-      const drift = lane && lane.canonical !== eff ? ` (lane ${lane.id} — drift)` : '';
+      const drift = lane && lane.canonical !== eff ? ` (lane ${lane.id}, drift)` : '';
       lines.push(
         `${prefix}${branch} ${card.id} ${card.title} ⇒ ${childKey ?? `${card.boardPath} (unresolved)`} · ${eff} ${pct(childBa?.progress ?? null)}${drift}`,
       );
@@ -97,7 +97,7 @@ export function renderRollup(tree: Tree, analysis: Analysis): string {
   };
   const root = tree.boards.get('.')!;
   const rootBa = analysis.boards.get('.')!;
-  lines.push(`${root.board.config.name} · ${pct(rootBa.progress)} — ${distLine(rootBa)}`);
+  lines.push(`${root.board.config.name} · ${pct(rootBa.progress)} · ${distLine(rootBa)}`);
   visit('.', '');
   return lines.join('\n') + '\n';
 }
@@ -109,7 +109,7 @@ function distLine(ba: BoardAnalysis): string {
 }
 
 export function renderLint(findings: Finding[]): string {
-  if (findings.length === 0) return 'clean — no findings\n';
+  if (findings.length === 0) return 'clean, no findings\n';
   const rank = { error: 0, warning: 1, info: 2 } as const;
   const sorted = [...findings].sort((a, b) => rank[a.severity] - rank[b.severity] || a.rule.localeCompare(b.rule));
   return sorted.map((f) => `${f.severity.padEnd(7)} ${f.rule.padEnd(20)} ${f.ref.padEnd(12)} ${f.message}`).join('\n') + '\n';
@@ -154,11 +154,11 @@ export function renderPrime(tree: Tree, analysis: Analysis, root: string): strin
     lines.push(`- ${lane.id}${bits.length > 0 ? `  (${bits.join(', ')})` : ''}`);
   }
   lines.push('');
-  lines.push(`## State — ${node.board.cards.length} cards · progress ${pct(ba.progress)}`);
+  lines.push(`## State: ${node.board.cards.length} cards · progress ${pct(ba.progress)}`);
   lines.push(`- distribution: ${distLine(ba) || 'empty'}`);
   const findings = lintBoard(node, ba);
   const errors = findings.filter((f) => f.severity === 'error');
-  if (errors.length > 0) lines.push(`- ⚠ ${errors.length} lint error(s) — run \`botflow lint\` and fix before other work`);
+  if (errors.length > 0) lines.push(`- ⚠ ${errors.length} lint error(s): run \`botflow lint\` and fix before other work`);
   lines.push('');
   lines.push('## Ready to claim');
   if (ba.ready.length === 0) lines.push('- (nothing unblocked in todo)');
@@ -172,7 +172,7 @@ export function renderPrime(tree: Tree, analysis: Analysis, root: string): strin
   lines.push('2. `botflow card claim <id> --actor <you>`');
   lines.push('3. work; narrate with `botflow log <id> "<what happened>"`');
   lines.push('4. advance with `botflow card mv <id> <lane[.substate]>`');
-  lines.push('5. stuck? `botflow card block <id> --reason "<why>"` — never park silently');
+  lines.push('5. stuck? `botflow card block <id> --reason "<why>"`: never park silently');
   lines.push('6. finish with `botflow card close <id> --reason "<summary>"`');
   lines.push('');
   lines.push('Rules: keep moves legal (strict lanes advance one substate), respect wip limits,');

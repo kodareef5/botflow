@@ -128,7 +128,7 @@ const $=(s,el)=>(el||document).querySelector(s);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let DATA=window.__BOTFLOW__||null,CUR='.',LIVE=window.__LIVE__===true;
 function stateColor(s){return 'var(--st-'+s+')'}
-function pct(p){return p==null?'—':Math.round(p*100)+'%'}
+function pct(p){return p==null?'·':Math.round(p*100)+'%'}
 function md(src){
   const lines=esc(src).split('\\n');let out=[],list=null,fence=false;
   const flush=()=>{if(list){out.push('</ul>');list=null}};
@@ -198,12 +198,12 @@ function render(){
         if(cs.length)body+='<div class="sub-h">· '+esc(sub)+'</div>'+cs.map(cardHtml).join('');
       }
     }else body=lane.cards.map(cardHtml).join('');
-    if(!body)body='<div class="empty">—</div>';
+    if(!body)body='<div class="empty">·</div>';
     return '<section class="col"><h2>'+esc(lane.name)+' '+canon+' '+wip+'</h2>'+body+'</section>'
   }).join('');
   $('#findings').innerHTML=(b.findings||[]).length
-    ?'<h3>findings — '+CUR+'</h3>'+(b.findings||[]).map(f=>'<div class="finding">'+(f.severity==='error'?'<b>error</b>':f.severity==='warning'?'<i>warning</i>':'info')
-      +' '+esc(f.rule)+' <b style="color:var(--ink)">'+esc(f.ref)+'</b> — '+esc(f.message)+'</div>').join('')
+    ?'<h3>findings: '+CUR+'</h3>'+(b.findings||[]).map(f=>'<div class="finding">'+(f.severity==='error'?'<b>error</b>':f.severity==='warning'?'<i>warning</i>':'info')
+      +' '+esc(f.rule)+' <b style="color:var(--ink)">'+esc(f.ref)+'</b> · '+esc(f.message)+'</div>').join('')
     :'';
 }
 function openDrawer(c){
@@ -251,7 +251,7 @@ export function viewerHtml(data: ViewerData | null, opts: { live: boolean; title
 <header>
   <h1><span id="title">botflow</span> <span class="sub" id="sub"></span></h1>
   <select id="switch" style="display:none" aria-label="board"></select>
-  <div class="meter"><span class="lbl">progress</span><div class="track"><div class="fill" id="pfill" style="width:0"></div></div><span class="num" id="pnum">—</span></div>
+  <div class="meter"><span class="lbl">progress</span><div class="track"><div class="fill" id="pfill" style="width:0"></div></div><span class="num" id="pnum">·</span></div>
   <div class="dist"><div class="strip" id="strip" role="img" aria-label="cards by state"></div><div class="chips" id="chips"></div></div>
   <div class="lintchips" id="lint"></div>
 </header>

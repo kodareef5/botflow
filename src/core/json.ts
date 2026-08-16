@@ -1,4 +1,4 @@
-// JSON shapes of boards — shared by the CLI (--json), the local viewer, the
+// JSON shapes of boards: shared by the CLI (--json), the local viewer, the
 // MCP server, and the hosted manager. Pure: no filesystem, no node-only APIs.
 
 import type { Analysis, BoardAnalysis } from './analyze.ts';

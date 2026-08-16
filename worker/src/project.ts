@@ -1,11 +1,11 @@
-// ProjectDO — one SQLite-backed Durable Object per project. A project IS a
+// ProjectDO: one SQLite-backed Durable Object per project. A project IS a
 // board: the DO stores the exact botflow document format (board.yaml text +
 // card file texts), applies the same pure ops the CLI uses, serializes every
 // mutation (single writer), and keeps an append-only audit log.
 //
 // Nesting: a card with `board: project:<id>` is a project card. This DO asks
 // the referenced sibling DO for its distribution (rollupInfo) so hosted
-// boards roll up exactly like the file engine — a visited-set breaks cycles.
+// boards roll up exactly like the file engine: a visited-set breaks cycles.
 
 import { DurableObject } from 'cloudflare:workers';
 
@@ -211,7 +211,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     };
   }
 
-  /** Snapshot import (push): replace the board's documents — but preserve
+  /** Snapshot import (push): replace the board's documents: but preserve
    *  manager-native project cards (`board: project:…`) the snapshot doesn't
    *  carry, so a repo push can't sever hosted sub-projects. */
   importDocs(config: string, cards: BoardDocument[], actor: string): Record<string, unknown> {

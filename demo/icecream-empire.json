@@ -1,0 +1,146 @@
+{
+  "version": 1,
+  "spaces": [
+    {
+      "name": "scoops empire",
+      "projects": [
+        {
+          "name": "scoops hq",
+          "board": {
+            "config": "botflow: 0\nname: scoops hq\nlanes:\n  - id: wishlist\n  - id: todo\n  - id: doing\n  - id: blocked\n  - id: done\n  - id: archive\n",
+            "cards": [
+              {
+                "path": "cards/001-q3-expansion-two-new-neighborhoods.md",
+                "text": "---\nid: 001\ntitle: Q3 expansion: two new neighborhoods\nlane: todo\npriority: p1\nlabels: [growth]\ncreated: 2026-08-16\n---\n## Description\nPick two neighborhoods for late summer. Riverside has the foot traffic; the college district has the late crowd.\n\n## Checklist\n- [x] pull last summer sales by stop\n- [ ] scout riverside on a saturday\n- [ ] price a second cart permit\n"
+              },
+              {
+                "path": "cards/002-renew-the-downtown-vending-permit.md",
+                "text": "---\nid: 002\ntitle: Renew the downtown vending permit\nlane: todo\nblocked: \"city portal is down, again\"\nlabels: [ops]\npriority: p0\ncreated: 2026-08-16\n---\n## Description\nExpires end of month. Portal has been erroring for two days; call the clerk if it is still broken on Monday.\n\n## Log\n- 2026-08-16 dispatch: blocked, portal outage confirmed by the city\n"
+              },
+              {
+                "path": "cards/003-summer-push-wrap-the-trucks.md",
+                "text": "---\nid: 003\ntitle: Summer push: wrap the trucks\nlane: doing\nassignee: maya\nlabels: [marketing]\ncover: https://picsum.photos/seed/scoops-wrap/900/360\ncreated: 2026-08-16\n---\n## Description\nFull vinyl wraps with the new logo. Two quotes in, one pending.\n\n## Attachments\n- [wrap concept](https://picsum.photos/seed/scoops-logo/800/500)\n\n## Comments\n- 2026-08-16 14:02 maya: the pistachio green pops way harder in person\n- 2026-08-16 15:20 dispatch: get the quote from FastSigns before friday\n"
+              },
+              {
+                "path": "cards/004-sponsor-the-food-truck-festival.md",
+                "text": "---\nid: 004\ntitle: Sponsor the food truck festival\nlane: wishlist\nlabels: [marketing]\ncreated: 2026-08-16\n---\n"
+              }
+            ]
+          },
+          "children": [
+            {
+              "name": "fleet",
+              "board": {
+                "config": "botflow: 0\nname: fleet\nlanes:\n  - id: wishlist\n    name: Wanted\n  - id: todo\n    name: In prep\n  - id: doing\n    name: On route\n    wip: 3\n  - id: blocked\n    name: In the shop\n  - id: done\n    name: Parked\n  - id: archive\n",
+                "cards": [
+                  {
+                    "path": "cards/001-sundae-driver.md",
+                    "text": "---\nid: 001\ntitle: Sundae Driver\nlane: doing\nassignee: marco\nlabels: [truck]\ncover: https://picsum.photos/seed/scoops-truck1/900/360\ncreated: 2026-08-16\n---\n## Description\nThe flagship. Handles the riverside loop.\n\n## Checklist\n- [x] morning stock count\n- [x] freezer temp check\n- [ ] cash float\n- [ ] end of day hose-down\n"
+                  },
+                  {
+                    "path": "cards/002-the-cold-front.md",
+                    "text": "---\nid: 002\ntitle: The Cold Front\nlane: doing\nassignee: priya\nlabels: [truck]\ncover: https://picsum.photos/seed/scoops-truck2/900/360\ncreated: 2026-08-16\n---\n## Checklist\n- [x] morning stock count\n- [ ] freezer temp check\n"
+                  },
+                  {
+                    "path": "cards/003-waffle-wagon.md",
+                    "text": "---\nid: 003\ntitle: Waffle Wagon\nlane: blocked\nblocked: transmission at Lou’s until thursday\nlabels: [truck]\ncreated: 2026-08-16\n---\n## Log\n- 2026-08-16 marco: limped it to Lou’s, sounded like a maraca\n"
+                  },
+                  {
+                    "path": "cards/004-sprinkle-sprinter.md",
+                    "text": "---\nid: 004\ntitle: Sprinkle Sprinter\nlane: todo\nlabels: [truck]\ncreated: 2026-08-16\n---\n## Description\nWeekend-only unit. Needs a deep clean and a compressor look before saturday.\n"
+                  },
+                  {
+                    "path": "cards/005-vanilla-thunder-used-marketplace-find.md",
+                    "text": "---\nid: 005\ntitle: \"Vanilla Thunder (used, marketplace find)\"\nlane: wishlist\nlabels: [truck]\ncreated: 2026-08-16\n---\n## Attachments\n- [listing](https://example.com/marketplace/vanilla-thunder)\n\n## Comments\n- 2026-08-16 09:12 dispatch: priced under book, probably a freezer issue\n"
+                  }
+                ]
+              },
+              "lane": "doing",
+              "children": [
+                {
+                  "name": "routes",
+                  "board": {
+                    "config": "botflow: 0\nname: routes\nlanes:\n  - id: wishlist\n  - id: todo\n  - id: doing\n  - id: blocked\n  - id: done\n  - id: archive\n",
+                    "cards": [
+                      {
+                        "path": "cards/001-fri-office-parks-circuit.md",
+                        "text": "---\nid: 001\ntitle: Fri: office parks circuit\nlane: done\nassignee: priya\ncreated: 2026-08-16\n---\n"
+                      },
+                      {
+                        "path": "cards/002-sat-farmers-market-loop.md",
+                        "text": "---\nid: 002\ntitle: Sat: farmers market loop\nlane: todo\npriority: p1\ncreated: 2026-08-16\n---\n## Description\n8am load-out, market opens 9. Double stock on sorbet, it sold out last week.\n"
+                      },
+                      {
+                        "path": "cards/003-sun-stadium-pregame.md",
+                        "text": "---\nid: 003\ntitle: Sun: stadium pregame\nlane: todo\ndeps: [002]\ncreated: 2026-08-16\n---\n## Description\nSame load plan as saturday if the market numbers hold.\n"
+                      }
+                    ]
+                  },
+                  "lane": "doing"
+                }
+              ]
+            },
+            {
+              "name": "flavor lab",
+              "board": {
+                "config": "botflow: 0\nname: flavor lab\nlanes:\n  - id: wishlist\n    name: Ideas\n  - id: todo\n    name: Test batch\n  - id: doing\n    name: Scaling up\n  - id: taste-test\n    canonical: doing\n    name: Taste test\n  - id: blocked\n  - id: done\n    name: On the menu\n  - id: archive\n",
+                "cards": [
+                  {
+                    "path": "cards/001-mango-sticky-rice.md",
+                    "text": "---\nid: 001\ntitle: Mango Sticky Rice\nlane: done\nlabels: [flavor]\ncover: https://picsum.photos/seed/scoops-mango/900/360\ncreated: 2026-08-16\n---\n"
+                  },
+                  {
+                    "path": "cards/002-blue-raspberry-classic.md",
+                    "text": "---\nid: 002\ntitle: Blue Raspberry Classic\nlane: done\nlabels: [flavor]\ncreated: 2026-08-16\n---\n"
+                  },
+                  {
+                    "path": "cards/003-cereal-milk.md",
+                    "text": "---\nid: 003\ntitle: Cereal Milk\nlane: taste-test\nassignee: ines\nlabels: [flavor]\ncreated: 2026-08-16\n---\n## Comments\n- 2026-08-16 11:40 ines: batch three is the one. corn flakes over frosted.\n"
+                  },
+                  {
+                    "path": "cards/004-salted-honeycomb.md",
+                    "text": "---\nid: 004\ntitle: Salted Honeycomb\nlane: doing\nassignee: ines\nlabels: [flavor]\ncreated: 2026-08-16\n---\n## Checklist\n- [x] small batch\n- [x] cost per scoop under target\n- [ ] 40L scale test\n"
+                  },
+                  {
+                    "path": "cards/005-durian-surprise.md",
+                    "text": "---\nid: 005\ntitle: Durian Surprise\nlane: todo\nblocked: vendor permit question for imported fruit\nlabels: [flavor]\ncreated: 2026-08-16\n---\n"
+                  },
+                  {
+                    "path": "cards/006-pickle-swirl.md",
+                    "text": "---\nid: 006\ntitle: Pickle Swirl\nlane: wishlist\nlabels: [flavor, chaos]\ncreated: 2026-08-16\n---\n"
+                  }
+                ]
+              },
+              "lane": "doing"
+            },
+            {
+              "name": "crew",
+              "board": {
+                "config": "botflow: 0\nname: crew\nlanes:\n  - id: wishlist\n  - id: todo\n  - id: doing\n  - id: blocked\n  - id: done\n  - id: archive\n",
+                "cards": [
+                  {
+                    "path": "cards/001-marco-driver-sundae-driver.md",
+                    "text": "---\nid: 001\ntitle: \"Marco, driver (Sundae Driver)\"\nlane: done\nlabels: [staff]\ncreated: 2026-08-16\n---\n"
+                  },
+                  {
+                    "path": "cards/002-ines-flavor-chef.md",
+                    "text": "---\nid: 002\ntitle: \"Ines, flavor chef\"\nlane: doing\nlabels: [staff]\ncreated: 2026-08-16\n---\n## Checklist\n- [x] food handler cert\n- [x] kitchen keys\n- [ ] payroll forms\n"
+                  },
+                  {
+                    "path": "cards/003-hire-a-weekend-scooper.md",
+                    "text": "---\nid: 003\ntitle: Hire a weekend scooper\nlane: todo\npriority: p1\nlabels: [hiring]\ncreated: 2026-08-16\n---\n## Description\nSaturdays are two-truck days now. One more pair of hands or the market line gets ugly.\n"
+                  },
+                  {
+                    "path": "cards/004-payroll-setup.md",
+                    "text": "---\nid: 004\ntitle: Payroll setup\nlane: done\nlabels: [ops]\ncreated: 2026-08-16\n---\n"
+                  }
+                ]
+              },
+              "lane": "doing"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

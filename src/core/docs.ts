@@ -50,7 +50,7 @@ export function parseCardDocument(doc: BoardDocument, config: BoardConfig, findi
   return card;
 }
 
-/** Build a board from raw documents — the pure core of loadBoard. */
+/** Build a board from raw documents: the pure core of loadBoard. */
 export function boardFromDocuments(
   configText: string | null,
   cardDocs: BoardDocument[],

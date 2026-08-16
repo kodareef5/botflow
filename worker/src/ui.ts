@@ -1,8 +1,8 @@
 // The operator web app, served at "/". One self-contained page, zero deps.
 // Structure is one stylesheet driven entirely by CSS variables; the five
 // styles in themes.ts repaint and reshape it (radius, borders, shadows, font)
-// without touching markup. Cards open into a large tabbed modal — details,
-// chat, activity — with checklists, attachments, galleries, and cover art,
+// without touching markup. Cards open into a large tabbed modal (details,
+// chat, activity) with checklists, attachments, galleries, and cover art,
 // all stored in the card's markdown body (file-format truth).
 
 import { STYLES } from './themes.ts';
@@ -101,9 +101,15 @@ table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink2)}
 .gate p{color:var(--ink2);font-size:13px;margin:6px 0 14px}
 .gate form{display:flex;gap:8px}
 .gate input{flex:1}
-.gate .gatefoot{margin-top:18px;padding-top:13px;border-top:var(--bw) var(--bs) var(--grid);font-size:12px;color:var(--muted);line-height:1.7}
-.gate .gatefoot a{color:var(--acc);text-decoration:none;font-weight:600}
-.gate .gatefoot a:hover{text-decoration:underline}
+.gate .gatefoot{margin-top:16px;padding-top:12px;border-top:var(--bw) var(--bs) var(--grid);font-size:11.5px;color:var(--muted);line-height:1.7;opacity:.85}
+.gate .gatefoot a{color:var(--muted);text-decoration:underline;text-underline-offset:2px;font-weight:500}
+.gate .gatefoot a:hover{color:var(--ink2)}
+.gateshares{margin-top:14px;font-size:12px;display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+.gateshares .lbl{color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-size:10.5px}
+.gateshares a{color:var(--ink2);text-decoration:none;border:var(--bw) var(--bs) var(--grid);border-radius:999px;padding:2px 10px;background:var(--page)}
+.gateshares a:hover{border-color:var(--baseline);color:var(--ink)}
+.pubfoot{padding:10px 18px;border-top:var(--bw) var(--bs) var(--grid);font-size:11.5px;color:var(--muted)}
+.pubfoot a{color:var(--muted);text-decoration:underline;text-underline-offset:2px}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:5vh 16px;z-index:20;overflow-y:auto}
 .modal{background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);box-shadow:var(--shadow);width:100%;max-width:400px;padding:20px}
 .modal h3{margin-bottom:12px;font-size:15px}
@@ -199,7 +205,7 @@ const ORDER=['wishlist','todo','blocked','doing','done','archive'];
 const THEMES=window.__THEMES__;
 const $=(s,el)=>(el||document).querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const pct=p=>p==null?'—':Math.round(p*100)+'%';
+const pct=p=>p==null?'·':Math.round(p*100)+'%';
 const IC={check:'<svg class="ic" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" rx="3"/><path d="M5 8.2l2.2 2.2L11.5 6"/></svg>',
   chat:'<svg class="ic" viewBox="0 0 16 16"><path d="M2.5 3.5h11v7h-6l-3 3v-3h-2z"/></svg>',
   clip:'<svg class="ic" viewBox="0 0 16 16"><path d="M12.5 7.5l-4.6 4.6a3 3 0 0 1-4.2-4.2L9 2.6a2 2 0 0 1 2.9 2.9L7 10.4a1 1 0 0 1-1.5-1.5l4.2-4.2"/></svg>',
@@ -207,6 +213,9 @@ const IC={check:'<svg class="ic" viewBox="0 0 16 16"><rect x="2" y="2" width="12
   tick:'<svg class="ic" style="stroke-width:2.6" viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-6.5"/></svg>',
   open:'<svg class="ic" viewBox="0 0 16 16"><path d="M6.5 3.5h-3v9h9v-3M9.5 2.5h4v4M13 3L7.5 8.5"/></svg>'};
 let TOKEN=localStorage.getItem('bf_token')||'';
+const PUB=window.__PUB__||null;
+let RO=!!PUB;
+const cardApi=cid=>PUB?'/api/public/'+PUB+'/cards/'+cid:'/api/projects/'+SEL+'/cards/'+cid;
 let THEME={style:'reef',accent:'reef',mode:'system'};
 let ORG=null,SEL=null,VIEW='board',BOARD=null,timer=null,MODAL=null;
 const mq=matchMedia('(prefers-color-scheme: dark)');
@@ -291,17 +300,22 @@ function gate(kind,extra){
       +'<form id="f"><input id="name" placeholder="company name" required><button class="primary">Initialize</button></form><div class="err" id="err"></div>';
     $('#f').onsubmit=async e=>{e.preventDefault();
       try{const r=await api('/api/setup',{method:'POST',body:JSON.stringify({name:$('#name').value})});
-        g.innerHTML='<h2>Admin token</h2><p class="warn">Copy it now — it is never shown again.</p><div class="tokenbox">'+esc(r.token)+'</div>'
-          +'<button class="primary" id="go">I saved it — continue</button>';
+        g.innerHTML='<h2>Admin token</h2><p class="warn">Copy it now. It is never shown again.</p><div class="tokenbox">'+esc(r.token)+'</div>'
+          +'<button class="primary" id="go">I saved it, continue</button>';
         $('#go').onclick=()=>{TOKEN=r.token;localStorage.setItem('bf_token',TOKEN);start()};
       }catch(err){$('#err').textContent=err.message}};
   }else{
-    g.innerHTML='<h2>botflow manager</h2><p>Paste your admin token to open the operator view.'+(extra?' <span class="err">'+esc(extra)+'</span>':'')+'</p>'
-      +'<form id="f"><input id="tok" placeholder="bfa_…" required><button class="primary">Open</button></form>';
+    g.innerHTML='<h2>botflow manager</h2>'+(extra?'<p class="err">'+esc(extra)+'</p>':'')
+      +'<form id="f"><input id="tok" placeholder="bfa_admin token" autocomplete="off" required><button class="primary">admin login →</button></form>'
+      +'<div id="gateshares"></div>';
     $('#f').onsubmit=e=>{e.preventDefault();TOKEN=$('#tok').value.trim();localStorage.setItem('bf_token',TOKEN);start()};
+    api('/api/public/gate').then(r=>{
+      if(r.shares&&r.shares.length)$('#gateshares').outerHTML='<div class="gateshares"><span class="lbl">live boards</span>'
+        +r.shares.map(s=>'<a href="/s/'+esc(s.token)+'">'+esc(s.name)+'</a>').join('')+'</div>';
+    }).catch(()=>{});
   }
-  g.insertAdjacentHTML('beforeend','<div class="gatefoot">Git-native kanban for AI agents — agents work the board, you watch everything.<br>'
-    +'Self-host free — one click on Cloudflare. <a href="https://github.com/kodareef5/botflow" target="_blank" rel="noopener">GitHub →</a></div>');
+  g.insertAdjacentHTML('beforeend','<div class="gatefoot">Git-native kanban for AI agents. Agents work the board, you watch everything.<br>'
+    +'Free to self-host, one click on Cloudflare. <a href="/about">learn more</a> · <a href="https://github.com/kodareef5/botflow" target="_blank" rel="noopener">GitHub</a></div>');
 }
 async function start(){
   clearInterval(timer);
@@ -377,10 +391,11 @@ function renderMain(){
   main.innerHTML='<div class="phead"><h2>'+esc(p.name)+'</h2><span class="pct" id="pinfo"></span>'
     +'<div class="tabs"><button data-tab="board" class="'+(VIEW==='board'?'on':'')+'">board</button>'
     +'<button data-tab="activity" class="'+(VIEW==='activity'?'on':'')+'">activity</button>'
-    +'<button data-tab="keys" class="'+(VIEW==='keys'?'on':'')+'">keys</button></div></div>'
+    +'<button data-tab="keys" class="'+(VIEW==='keys'?'on':'')+'">keys</button>'
+    +'<button data-tab="sharing" class="'+(VIEW==='sharing'?'on':'')+'">sharing</button></div></div>'
     +'<div class="view" id="view">loading…</div>';
   main.querySelector('.tabs').onclick=e=>{const b=e.target.closest('[data-tab]');if(b){VIEW=b.dataset.tab;renderMain()}};
-  if(VIEW==='board')refreshBoard();else if(VIEW==='activity')refreshActivity();else refreshKeys();
+  if(VIEW==='board')refreshBoard();else if(VIEW==='activity')refreshActivity();else if(VIEW==='sharing')refreshSharing();else refreshKeys();
 }
 function badge(ic,txt,cls){return '<span class="'+(cls||'')+'">'+ic+(txt!==undefined?' '+txt:'')+'</span>'}
 function cardHtml(b,c){
@@ -400,11 +415,31 @@ function cardHtml(b,c){
     +(c.cover?'<img class="art" src="'+esc(c.cover)+'" alt="" loading="lazy">':'')
     +'<div class="inner"><div class="cid">'+esc(c.id)+'</div><div class="t">'+esc(c.title)+'</div>'
     +'<div class="badges">'+badges.join('')+'</div>'
-    +(board?'<div class="subboard"><button data-goto="'+esc(c.child??'')+'" '+(c.child==null?'disabled':'')+'>'+IC.open+' board</button>'
+    +(board?'<div class="subboard"><button data-goto="'+esc(c.child??'')+'" '+(c.child==null||RO?'disabled':'')+'>'+IC.open+' board</button>'
       +statechip(c.state)
       +(c.childProgress!=null?'<div class="mini" title="'+pct(c.childProgress)+'"><i style="width:'+Math.round((c.childProgress||0)*100)+'%"></i></div>':'')
       +'</div>':'')
     +'</div></div>';
+}
+function colsHtml(b){
+  return '<div class="cols" style="margin-top:12px">'+b.lanes.map(lane=>{
+    const n=lane.cards.length;
+    const wip=lane.wip!=null?'<span class="'+(n>lane.wip?'wipbad':'n')+'">'+n+'/'+lane.wip+'</span>':'<span class="n">'+n+'</span>';
+    let body='';
+    if(lane.substates.length){
+      for(const sub of lane.substates){
+        const cs=lane.cards.filter(c=>c.substate===sub||(sub===lane.substates[0]&&c.substate==null));
+        if(cs.length)body+='<div class="sub-h">· '+esc(sub)+'</div>'+cs.map(c=>cardHtml(b,c)).join('');
+      }
+    }else body=lane.cards.map(c=>cardHtml(b,c)).join('');
+    return '<section class="col"><h3>'+esc(lane.name)+' '+wip+'</h3>'+(body||'<div class="empty">·</div>')+'</section>';
+  }).join('')+'</div>';
+}
+function boardClicks(e){
+  const go=e.target.closest('[data-goto]');
+  if(go&&!go.disabled){SEL=go.dataset.goto;VIEW='board';BOARD=null;renderSide();renderMain();e.stopPropagation();return}
+  const el=e.target.closest('[data-card]');
+  if(el)openCard(el.dataset.card);
 }
 async function refreshBoard(quiet){
   let b;try{b=await api('/api/projects/'+SEL+'/board')}catch(err){if(!quiet)$('#view').innerHTML='<div class="err">'+esc(err.message)+'</div>';return}
@@ -413,29 +448,38 @@ async function refreshBoard(quiet){
   const pi=$('#pinfo');if(pi)pi.textContent=b.cards+' cards · '+pct(b.progress);
   const errs=(b.findings||[]).filter(f=>f.severity==='error').length;
   const v=$('#view');if(!v)return;
-  v.innerHTML=chips(b.distribution)+(errs?'<div class="err">'+errs+' lint error(s)</div>':'')
-    +'<div class="cols" style="margin-top:12px">'+b.lanes.map(lane=>{
-      const n=lane.cards.length;
-      const wip=lane.wip!=null?'<span class="'+(n>lane.wip?'wipbad':'n')+'">'+n+'/'+lane.wip+'</span>':'<span class="n">'+n+'</span>';
-      let body='';
-      if(lane.substates.length){
-        for(const sub of lane.substates){
-          const cs=lane.cards.filter(c=>c.substate===sub||(sub===lane.substates[0]&&c.substate==null));
-          if(cs.length)body+='<div class="sub-h">· '+esc(sub)+'</div>'+cs.map(c=>cardHtml(b,c)).join('');
-        }
-      }else body=lane.cards.map(c=>cardHtml(b,c)).join('');
-      return '<section class="col"><h3>'+esc(lane.name)+' '+wip+'</h3>'+(body||'<div class="empty">—</div>')+'</section>';
-    }).join('')+'</div>';
-  v.onclick=e=>{
-    const go=e.target.closest('[data-goto]');
-    if(go&&!go.disabled){SEL=go.dataset.goto;VIEW='board';BOARD=null;renderSide();renderMain();e.stopPropagation();return}
-    const el=e.target.closest('[data-card]');
-    if(el)openCard(el.dataset.card);
-  };
+  v.innerHTML=chips(b.distribution)+(errs?'<div class="err">'+errs+' lint error(s)</div>':'')+colsHtml(b);
+  v.onclick=boardClicks;
+}
+// ---- public (shared link) mode: read-only, no org chrome ----
+async function publicStart(){
+  try{applyTheme(await api('/api/theme'))}catch{}
+  let b;
+  try{b=await api('/api/public/'+PUB+'/board')}catch(err){
+    document.body.innerHTML='<div class="gate"><h2>'+esc(err.message)+'</h2>'
+      +'<div class="gatefoot">Git-native kanban for AI agents. <a href="/about">learn more</a> · <a href="https://github.com/kodareef5/botflow" target="_blank" rel="noopener">GitHub</a></div></div>';
+    return;
+  }
+  renderPublic(b);
+  setInterval(async()=>{
+    if(MODAL)return;
+    try{const nb=await api('/api/public/'+PUB+'/board');if(JSON.stringify(nb)!==JSON.stringify(BOARD))renderPublic(nb)}catch{}
+  },4000);
+}
+function renderPublic(b){
+  BOARD=b;
+  document.title=b.name+' · botflow';
+  document.body.innerHTML='<header class="top"><h1>'+esc(b.name)+' <span class="sub">shared board · read only</span></h1>'
+    +'<div class="meter"><div class="track"><div class="fill" style="width:'+Math.round((b.progress||0)*100)+'%"></div></div><b>'+pct(b.progress)+'</b></div>'
+    +'<span id="hstrip">'+strip(b.distribution)+'</span><span class="spacer"></span></header>'
+    +'<div class="view" id="view" style="flex:1;overflow:auto">'+chips(b.distribution)+colsHtml(b)+'</div>'
+    +'<div class="pubfoot">shared with botflow: git-native kanban for AI agents. <a href="/about">learn more</a></div>'
+    +'<div id="drawer"></div>';
+  $('#view').onclick=boardClicks;
 }
 // ---- the card modal ----
 async function openCard(cid,tab){
-  let c;try{c=await api('/api/projects/'+SEL+'/cards/'+cid)}catch(err){return}
+  let c;try{c=await api(cardApi(cid))}catch(err){return}
   MODAL=cid;
   const t=tab||'card';
   const m=overlay(cardModalHtml(c,t),'cardmodal');
@@ -460,26 +504,26 @@ function paneCard(c){
   const p=c.parsed||{};
   let out='';
   if(c.type==='board'){
-    out+='<h4>project board</h4><div class="subboard" style="max-width:340px"><button data-goto2="'+esc(c.child??'')+'" '+(c.child==null?'disabled':'')+'>'+IC.open+' open board</button>'+statechip(c.state)+'</div>';
+    out+='<h4>project board</h4><div class="subboard" style="max-width:340px"><button data-goto2="'+esc(c.child??'')+'" '+(c.child==null||RO?'disabled':'')+'>'+IC.open+' open board</button>'+statechip(c.state)+'</div>';
   }
   out+='<h4>description</h4><div class="desc">'+(p.description?md(p.description):'<span class="empty">no description</span>')+'</div>';
   for(const cl of p.checklists||[]){
     const done=cl.items.filter(i=>i.checked).length;
     out+='<div class="cl"><h4>'+esc(cl.section)+'</h4><div class="clhead"><span>'+done+'/'+cl.items.length+'</span><div class="clbar"><i style="width:'+Math.round(done/cl.items.length*100)+'%"></i></div></div>'
-      +cl.items.map(i=>'<div class="item '+(i.checked?'done':'')+'" data-check="'+i.index+'" data-on="'+i.checked+'"><span class="box">'+(i.checked?IC.tick:'')+'</span><span class="txt">'+esc(i.text)+'</span></div>').join('')
+      +cl.items.map(i=>'<div class="item '+(i.checked?'done':'')+'" '+(RO?'':'data-check="'+i.index+'" data-on="'+i.checked+'"')+' style="'+(RO?'cursor:default':'')+'"><span class="box">'+(i.checked?IC.tick:'')+'</span><span class="txt">'+esc(i.text)+'</span></div>').join('')
       +'</div>';
   }
   const atts=p.attachments||[];
-  out+='<h4>attachments <span class="h-act"><button data-attach>+ add link</button></span></h4>';
+  out+='<h4>attachments'+(RO?'':' <span class="h-act"><button data-attach>+ add link</button></span>')+'</h4>';
   out+=atts.length?atts.map(a=>{
     let host='';try{host=new URL(a.url).hostname}catch{}
     return '<div class="att">'+IC.clip+'<span class="lbl">'+esc(a.label)+'</span><span class="host">'+esc(host)+'</span>'
-      +'<a href="'+esc(a.url)+'" target="_blank" rel="noopener">open '+IC.open+'</a><button class="ghost" data-detach="'+a.index+'" title="remove">✕</button></div>';
+      +'<a href="'+esc(a.url)+'" target="_blank" rel="noopener">open '+IC.open+'</a>'+(RO?'':'<button class="ghost" data-detach="'+a.index+'" title="remove">✕</button>')+'</div>';
   }).join(''):'<div class="empty">nothing attached</div>';
   const imgs=p.images||[];
   if(imgs.length){
-    out+='<h4>gallery <span class="h-act">'+(c.cover?'<button data-cover="none">hide art</button>':'<button data-cover="auto">auto art</button>')+'</span></h4><div class="gallery">'
-      +imgs.map(u=>'<div class="shot"><a href="'+esc(u)+'" target="_blank" rel="noopener"><img src="'+esc(u)+'" alt="" loading="lazy"></a><button class="setcov primary" data-cover="'+esc(u)+'">☆ cover</button></div>').join('')+'</div>';
+    out+='<h4>gallery'+(RO?'':' <span class="h-act">'+(c.cover?'<button data-cover="none">hide art</button>':'<button data-cover="auto">auto art</button>')+'</span>')+'</h4><div class="gallery">'
+      +imgs.map(u=>'<div class="shot"><a href="'+esc(u)+'" target="_blank" rel="noopener"><img src="'+esc(u)+'" alt="" loading="lazy"></a>'+(RO?'':'<button class="setcov primary" data-cover="'+esc(u)+'">☆ cover</button>')+'</div>').join('')+'</div>';
   }
   const kv=[];
   if(c.created)kv.push('<span><b>created</b> '+esc(c.created)+'</span>');
@@ -492,8 +536,8 @@ function paneCard(c){
 function paneChat(c){
   const list=(c.parsed&&c.parsed.comments)||[];
   return '<div class="chat">'+(list.length?list.map(m=>'<div class="msg"><div class="who"><b>'+esc(m.actor)+'</b> · '+esc(m.when)+'</div>'+esc(m.text)+'</div>').join('')
-    :'<div class="empty">no comments yet — talk to your agents here</div>')+'</div>'
-    +'<form class="composer"><input placeholder="write a comment…" required><button class="primary">send</button></form>';
+    :'<div class="empty">no comments yet'+(RO?'':'. talk to your agents here')+'</div>')+'</div>'
+    +(RO?'':'<form class="composer"><input placeholder="write a comment…" required><button class="primary">send</button></form>');
 }
 function paneActivity(c){
   const list=(c.parsed&&c.parsed.log)||[];
@@ -501,9 +545,10 @@ function paneActivity(c){
     :'<div class="empty">no activity</div>')+'</div>';
 }
 function wireCardModal(m,c,tab){
-  $('[data-x]',m).onclick=()=>{closeOverlay();refreshBoard(true)};
+  $('[data-x]',m).onclick=()=>{closeOverlay();if(!PUB)refreshBoard(true)};
   m.querySelector('.tabbar').onclick=e=>{const b=e.target.closest('[data-ctab]');if(b)openCard(c.id,b.dataset.ctab)};
   m.addEventListener('click',async e=>{
+    if(RO)return;
     const go=e.target.closest('[data-goto2]');
     if(go&&!go.disabled){closeOverlay();SEL=go.dataset.goto2;VIEW='board';BOARD=null;renderSide();renderMain();return}
     const chk=e.target.closest('[data-check]');
@@ -540,11 +585,37 @@ async function refreshKeys(){
         +keys.map(k=>'<tr'+(k.revoked?' style="opacity:.5"':'')+'><td>'+esc(k.label)+'</td><td class="mono">'+esc(k.id)+'</td><td class="mono">'+esc(k.created.slice(0,10))+'</td>'
           +'<td>'+(k.revoked?'revoked':'<button data-rk="'+esc(k.id)+'">revoke</button>')+'</td></tr>').join('')+'</table>'
         :'<div class="empty">no keys yet</div>');
-    $('#mk').onclick=()=>formModal('New agent key',[{name:'label',label:'label — becomes the agent’s actor name',required:true}],'mint',async d=>{
+    $('#mk').onclick=()=>formModal('New agent key',[{name:'label',label:'label (becomes the agent actor name)',required:true}],'mint',async d=>{
       const r=await api('/api/projects/'+SEL+'/keys',{method:'POST',body:JSON.stringify({label:d.label})});
-      $('#view').insertAdjacentHTML('afterbegin','<div class="tokenbox">'+esc(r.token)+'</div><p class="warn">Copy this agent key now — it is never shown again.</p>');
+      $('#view').insertAdjacentHTML('afterbegin','<div class="tokenbox">'+esc(r.token)+'</div><p class="warn">Copy this agent key now: it is never shown again.</p>');
     });
     $('#view').addEventListener('click',async e=>{const b=e.target.closest('[data-rk]');if(b){await api('/api/keys/'+b.dataset.rk+'/revoke',{method:'POST'});refreshKeys()}});
+  }catch(err){$('#view').innerHTML='<div class="err">'+esc(err.message)+'</div>'}
+}
+async function refreshSharing(){
+  try{
+    const shares=await api('/api/projects/'+SEL+'/shares');
+    const live=shares.filter(s=>!s.revoked);
+    $('#view').innerHTML='<p style="margin-bottom:10px"><button class="primary" id="mksh">+ share link</button>'
+      +' <span style="color:var(--muted);font-size:12px">read-only public url for this board. anyone with the link can view.</span></p>'
+      +(shares.length?'<table class="list"><tr><th>label</th><th>url</th><th>created</th><th></th></tr>'
+        +shares.map(s=>'<tr'+(s.revoked?' style="opacity:.5"':'')+'><td>'+esc(s.label)+'</td>'
+          +'<td class="mono">'+(s.revoked?'revoked':'<a href="/s/'+esc(s.token)+'" target="_blank" style="color:var(--acc)">/s/'+esc(s.token.slice(0,10))+'…</a> <button class="ghost" data-copy="'+esc(s.token)+'">copy</button>')+'</td>'
+          +'<td class="mono">'+esc(s.created.slice(0,10))+'</td>'
+          +'<td>'+(s.revoked?'':'<button data-rs="'+esc(s.id)+'">revoke</button>')+'</td></tr>').join('')+'</table>'
+        :'<div class="empty">no share links yet</div>')
+      +(live.length?'<p style="color:var(--muted);font-size:12px;margin-top:10px">live links are listed on the login page unless you turn that off in settings.</p>':'');
+    $('#mksh').onclick=()=>formModal('New share link',[{name:'label',label:'label (for your own bookkeeping)',required:true}],'create',async d=>{
+      const r=await api('/api/projects/'+SEL+'/shares',{method:'POST',body:JSON.stringify({label:d.label})});
+      refreshSharing();
+      setTimeout(()=>$('#view').insertAdjacentHTML('afterbegin','<div class="tokenbox">'+location.origin+'/s/'+esc(r.token)+'</div>'),150);
+    });
+    $('#view').addEventListener('click',async e=>{
+      const cp=e.target.closest('[data-copy]');
+      if(cp){try{await navigator.clipboard.writeText(location.origin+'/s/'+cp.dataset.copy);cp.textContent='copied'}catch{}return}
+      const rv=e.target.closest('[data-rs]');
+      if(rv){await api('/api/shares/'+rv.dataset.rs+'/revoke',{method:'POST'});refreshSharing()}
+    });
   }catch(err){$('#view').innerHTML='<div class="err">'+esc(err.message)+'</div>'}
 }
 function stylePreview(st){
@@ -566,11 +637,28 @@ function renderSettings(main){
     +'</div>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">mode</h4>'
     +'<div class="modesel">'+['system','light','dark'].map(mo=>'<button data-mode="'+mo+'" class="'+(mo===THEME.mode?'primary':'')+'">'+mo+'</button>').join('')+'</div>'
-    +'<p style="color:var(--muted);font-size:12px">Saved for the whole company — every operator and share page paints with it.</p><div class="err" id="serr"></div></div>';
+    +'<p style="color:var(--muted);font-size:12px">Saved for the whole company. Every operator and share page paints with it.</p>'
+    +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">login page</h4>'
+    +'<label style="font-size:13px;display:flex;gap:8px;align-items:center"><input type="checkbox" id="gs"> list public board links on the login page</label>'
+    +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">company data</h4>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button id="orgexp">download company export</button>'
+    +'<button id="demoload">load the Scoops Empire demo</button></div>'
+    +'<p style="color:var(--muted);font-size:12px;margin-top:6px">The export is one JSON with every space, project, board, and card. The demo adds a sample ice cream company as a new space, safe to explore and delete nothing.</p>'
+    +'<div class="err" id="serr"></div></div>';
   const save=async next=>{
     try{const saved=await api('/api/settings',{method:'POST',body:JSON.stringify(next)});applyTheme(saved);renderSettings(main)}
     catch(err){$('#serr').textContent=err.message}
   };
+  api('/api/settings').then(cur=>{const gs=$('#gs');if(gs){gs.checked=cur.gateShares!==false;
+    gs.onchange=()=>api('/api/settings',{method:'POST',body:JSON.stringify({...THEME,gateShares:gs.checked})}).catch(err=>{$('#serr').textContent=err.message})}});
+  $('#orgexp').onclick=async()=>{
+    try{const data=await api('/api/org/export');
+      const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+      const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='botflow-company-export.json';a.click();URL.revokeObjectURL(a.href);
+    }catch(err){$('#serr').textContent=err.message}};
+  $('#demoload').onclick=async()=>{
+    const b=$('#demoload');b.disabled=true;b.textContent='loading demo…';
+    try{await api('/api/demo',{method:'POST'});await start()}catch(err){$('#serr').textContent=err.message;b.disabled=false;b.textContent='load the Scoops Empire demo'}};
   $('#custcol').oninput=e=>save({...THEME,accent:'custom',custom:e.target.value});
   main.querySelector('.settings').onclick=async e=>{
     if(e.target.closest('#custpill'))return; // the color input handles itself
@@ -587,10 +675,11 @@ function renderSettings(main){
   };
 }
 applyTheme(THEME);
-start();
+if(PUB)publicStart();else start();
 `;
 
-export const UI_HTML = `<!doctype html>
+export function uiHtml(pub: string | null): string {
+  return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -599,7 +688,8 @@ export const UI_HTML = `<!doctype html>
 <style>${CSS}</style>
 </head>
 <body>
-<script>window.__THEMES__=${JSON.stringify(STYLES)};</script>
+<script>window.__THEMES__=${JSON.stringify(STYLES)};window.__PUB__=${JSON.stringify(pub)};</script>
 <script>${JS}</script>
 </body>
 </html>`;
+}

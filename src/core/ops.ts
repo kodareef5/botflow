@@ -7,7 +7,7 @@ import { addAttachmentLine, appendToSection, parseBody, removeAttachmentLine, se
 import { newHashId, nextSeqId, slugify } from './ids.ts';
 import { logMutation, nowDate, nowDateTime } from './write.ts';
 
-/** An error caused by how a tool was invoked — message for the caller, no stack. */
+/** An error caused by how a tool was invoked: message for the caller, no stack. */
 export class UsageError extends Error {}
 
 export function defaultBoardYaml(name: string): string {
@@ -16,7 +16,7 @@ name: ${name}
 
 # Six canonical lanes by default. Specialty lanes take \`canonical: <state>\`;
 # lanes can carry \`substates: [design, implement, review]\`, \`order: strict\`,
-# and \`wip: <n>\`. Spec: https://github.com/botflow — spec/SPEC.md
+# and \`wip: <n>\`. Spec: https://github.com/botflow: spec/SPEC.md
 lanes:
   - id: wishlist
   - id: todo
@@ -38,7 +38,7 @@ export function getCard(board: LoadedBoard, id: string): Card {
 export function findLane(config: BoardConfig, laneId: string): Lane {
   const lane = config.lanes.find((l) => l.id === laneId);
   if (!lane) {
-    throw new UsageError(`no lane "${laneId}" — lanes: ${config.lanes.map((l) => l.id).join(', ')}`);
+    throw new UsageError(`no lane "${laneId}": lanes: ${config.lanes.map((l) => l.id).join(', ')}`);
   }
   return lane;
 }
@@ -64,7 +64,7 @@ export function resolvePosition(config: BoardConfig, spec: string): Position {
   if (rawSub !== null) {
     if (lane.substates.length === 0) throw new UsageError(`lane "${laneId}" has no substates`);
     if (!lane.substates.includes(rawSub)) {
-      throw new UsageError(`"${rawSub}" is not a substate of "${laneId}" — substates: ${lane.substates.join(', ')}`);
+      throw new UsageError(`"${rawSub}" is not a substate of "${laneId}": substates: ${lane.substates.join(', ')}`);
     }
     return { laneId, substate: rawSub };
   }
@@ -145,14 +145,14 @@ export function opMove(board: LoadedBoard, card: Card, spec: string, actor: stri
   if (lane.order === 'strict' && lane.substates.length > 0 && !force) {
     if (card.laneId !== lane.id) {
       if (target.substate !== lane.substates[0]) {
-        throw new UsageError(`lane "${lane.id}" is strict — enter at "${lane.id}.${lane.substates[0]}" (or force)`);
+        throw new UsageError(`lane "${lane.id}" is strict: enter at "${lane.id}.${lane.substates[0]}" (or force)`);
       }
     } else {
       const cur = lane.substates.indexOf(card.substate ?? lane.substates[0]!);
       const next = lane.substates.indexOf(target.substate!);
       if (Math.abs(cur - next) !== 1) {
         throw new UsageError(
-          `lane "${lane.id}" is strict — move one substate at a time (at "${card.substate ?? lane.substates[0]}") (or force)`,
+          `lane "${lane.id}" is strict: move one substate at a time (at "${card.substate ?? lane.substates[0]}") (or force)`,
         );
       }
     }

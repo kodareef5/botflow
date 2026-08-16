@@ -45,7 +45,7 @@ import {
 
 const VERSION = '0.1.0';
 
-const HELP = `botflow ${VERSION} — git-native kanban for AI agents
+const HELP = `botflow ${VERSION} · git-native kanban for AI agents
 
 usage: botflow <command> [args]
 
@@ -89,7 +89,7 @@ function parse(args: string[], options: ParseArgsConfig['options']): { values: V
     const { values, positionals } = parseArgs({ args, options, allowPositionals: true, strict: true });
     return { values: values as Values, positionals };
   } catch (err) {
-    throw new UsageError(`${(err as Error).message.split('.')[0]} — see \`botflow help\``);
+    throw new UsageError(`${(err as Error).message.split('.')[0]} · see \`botflow help\``);
   }
 }
 
@@ -107,7 +107,7 @@ function getRoot(values: Values): string {
     return root;
   }
   const root = discoverBoardRoot(process.cwd());
-  if (!root) throw new UsageError('no botflow board found here — run `botflow init` (or pass --board)');
+  if (!root) throw new UsageError('no botflow board found here · run `botflow init` (or pass --board)');
   return root;
 }
 
@@ -174,7 +174,7 @@ export function run(argv: string[]): number {
       const port = values['port'] !== undefined ? Number(values['port']) : DEFAULT_PORT;
       if (!Number.isInteger(port) || port < 0 || port > 65535) throw new UsageError('--port must be 0–65535');
       void serveBoard(root, port).then(
-        (running) => out(`▤ botflow viewer (read-only) — ${running.url}  (board: ${root})`),
+        (running) => out(`▤ botflow viewer (read-only) · ${running.url}  (board: ${root})`),
         (err: Error) => {
           process.stderr.write(`botflow: serve failed: ${err.message}\n`);
           process.exitCode = 1;
@@ -199,7 +199,7 @@ export function run(argv: string[]): number {
       const ba = analysis.boards.get('.')!;
       const cards = ba.ready.map((id) => node.board.cards.find((c) => c.id === id)!);
       if (values['json']) emitJson(cards.map((c) => cardJson(c, node, ba)));
-      else if (cards.length === 0) out('nothing ready — `botflow board` for the full picture');
+      else if (cards.length === 0) out('nothing ready · `botflow board` for the full picture');
       else out(cards.map((c) => `${c.id}  ${c.title}${c.priority ? ` (${c.priority})` : ''}`).join('\n'));
       return 0;
     }
@@ -241,7 +241,7 @@ export function run(argv: string[]): number {
       if (!token) throw new UsageError('a token is required: --token or BOTFLOW_TOKEN');
       if (cmd === 'push') {
         void push(root, token, getActor(values)).then(
-          (res) => out(`✓ pushed — ${res.imported} cards imported (${res.findings} findings on remote)`),
+          (res) => out(`✓ pushed · ${res.imported} cards imported (${res.findings} findings on remote)`),
           (err: Error) => {
             process.stderr.write(`botflow: ${err.message}\n`);
             process.exitCode = 1;
@@ -249,7 +249,7 @@ export function run(argv: string[]): number {
         );
       } else {
         void pull(root, token).then(
-          (res) => out(`✓ pulled — ${res.written} cards written, ${res.removed} removed`),
+          (res) => out(`✓ pulled · ${res.written} cards written, ${res.removed} removed`),
           (err: Error) => {
             process.stderr.write(`botflow: ${err.message}\n`);
             process.exitCode = 1;
@@ -264,7 +264,7 @@ export function run(argv: string[]): number {
       if (!spec || !dest) throw new UsageError('usage: botflow new <repo-or-path>[#branch] <dir> [--name n]');
       const res = instantiate(spec, dest, values['name'] as string | undefined);
       out(`✓ workspace instantiated at ${res.dest}`);
-      if (res.boardRoot) out(`  board: ${res.boardRoot} — start with \`botflow prime\``);
+      if (res.boardRoot) out(`  board: ${res.boardRoot} · start with \`botflow prime\``);
       for (const w of res.warnings) out(`⚠ ${w}`);
       return 0;
     }
@@ -275,7 +275,7 @@ export function run(argv: string[]): number {
         throw new UsageError('usage: botflow setup [agents|claude|codex]');
       }
       const touched = setupAgentFiles(process.cwd(), target);
-      out(touched.length > 0 ? `✓ wired botflow into ${touched.join(', ')}` : 'already wired — nothing to do');
+      out(touched.length > 0 ? `✓ wired botflow into ${touched.join(', ')}` : 'already wired · nothing to do');
       return 0;
     }
     case 'mcp': {
@@ -294,7 +294,7 @@ export function run(argv: string[]): number {
       return 0;
     }
     default:
-      throw new UsageError(`unknown command "${cmd}" — see \`botflow help\``);
+      throw new UsageError(`unknown command "${cmd}" · see \`botflow help\``);
   }
 }
 
@@ -330,7 +330,7 @@ function runCard(argv: string[]): number {
       const pos = card.substate === null ? card.laneId : `${card.laneId}.${card.substate}`;
       values['json']
         ? emitJson({ id: card.id, title: card.title, position: pos, file: card.file })
-        : out(`✓ ${card.id} created in ${pos} — ${card.file}`);
+        : out(`✓ ${card.id} created in ${pos} · ${card.file}`);
       return 0;
     }
     case 'show': {
@@ -454,7 +454,7 @@ function runCard(argv: string[]): number {
       return 0;
     }
     default:
-      throw new UsageError(`unknown card command "${sub ?? ''}" — see \`botflow help\``);
+      throw new UsageError(`unknown card command "${sub ?? ''}" · see \`botflow help\``);
   }
 }
 

@@ -2,8 +2,8 @@
 
 A minimal "kanban batteries included" workspace template:
 
-- `.botflow/` — a standard six-lane board with starter cards
-- `AGENTS.md` — the playbook that teaches any agent the workflow (`botflow prime`)
+- `.botflow/`: a standard six-lane board with starter cards
+- `AGENTS.md`: the playbook that teaches any agent the workflow (`botflow prime`)
 
 Instantiate it as a new project:
 

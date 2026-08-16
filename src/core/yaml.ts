@@ -1,5 +1,5 @@
 // Parser for the strict YAML subset defined in SPEC §9. Anything outside the
-// subset throws YamlError — the subset is deliberately small and closed.
+// subset throws YamlError: the subset is deliberately small and closed.
 
 export class YamlError extends Error {
   readonly line: number;

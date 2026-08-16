@@ -1,4 +1,4 @@
-// Card serialization and Log-section handling (SPEC §5, §12). Pure — the
+// Card serialization and Log-section handling (SPEC §5, §12). Pure: the
 // filesystem write lives in mutate.ts, DO persistence in the worker.
 
 import { appendToSection } from './body.ts';
