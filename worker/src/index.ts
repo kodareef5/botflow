@@ -105,6 +105,16 @@ export default {
       const identity: TokenIdentity = token === '' ? null : await registry.verifyToken(token);
       if (identity === null) return json({ error: 'unauthorized' }, 401);
       const requireAdmin = (): Response | null => (identity.kind === 'admin' ? null : json({ error: 'admin only' }, 403));
+      // Who am I? — lets an agent handed a bare key discover its own project.
+      if (req.method === 'GET' && url.pathname === '/api/whoami') {
+        if (identity.kind === 'admin') return json({ kind: 'admin', org: status.name });
+        return json({
+          kind: 'agent',
+          label: identity.label,
+          project: identity.projectId,
+          projectName: await registry.projectName(identity.projectId),
+        });
+      }
       const actorOf = (body: Record<string, unknown>): string =>
         typeof body['actor'] === 'string' && body['actor'] !== ''
           ? (body['actor'] as string)
