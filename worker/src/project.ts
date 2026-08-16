@@ -53,17 +53,19 @@ interface ProjectEnv {
 
 const PROJECT_REF = 'project:';
 
+const DDL = `
+  CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS cards(id TEXT PRIMARY KEY, file TEXT NOT NULL, text TEXT NOT NULL, updated_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, card_id TEXT, detail TEXT NOT NULL);
+`;
+
 export class ProjectDO extends DurableObject<ProjectEnv> {
   private readonly sql: SqlStorage;
 
   constructor(ctx: DurableObjectState, env: ProjectEnv) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS cards(id TEXT PRIMARY KEY, file TEXT NOT NULL, text TEXT NOT NULL, updated_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, card_id TEXT, detail TEXT NOT NULL);
-    `);
+    this.sql.exec(DDL);
   }
 
   // ---- storage helpers ----
@@ -365,6 +367,27 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       if (err instanceof UsageError) return { error: err.message };
       throw err;
     }
+  }
+
+  /** Wipe this project's entire storage (board, events). Registry rows and
+   *  the parent's project card are the caller's job. No undo. */
+  async destroy(): Promise<{ ok: boolean }> {
+    await this.ctx.storage.deleteAll();
+    this.sql.exec(DDL); // leave the instance usable if ever touched again
+    return { ok: true };
+  }
+
+  /** Remove project cards pointing at a given ref (used when the referenced
+   *  project is deleted). Not a general card-delete: archive is the verb for
+   *  ordinary cards. */
+  removeCardsByRef(ref: string, actor: string): { removed: number } {
+    const board = this.loadBoardDocs();
+    const doomed = board.cards.filter((c) => c.type === 'board' && c.boardPath === ref);
+    for (const card of doomed) {
+      this.sql.exec('DELETE FROM cards WHERE id = ?', card.id);
+      this.event(actor, 'remove', card.id, `project card removed ("${card.title}": target deleted)`);
+    }
+    return { removed: doomed.length };
   }
 
   listEvents(limit: number): AuditEvent[] {

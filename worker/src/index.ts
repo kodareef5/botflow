@@ -301,6 +301,39 @@ export default {
         if (denied) return denied;
         return json(await registry.revokeShare(shareRevoke[1]!));
       }
+      const shareDelete = /^\/api\/shares\/([^/]+)$/.exec(url.pathname);
+      if (req.method === 'DELETE' && shareDelete) {
+        const denied = requireAdmin();
+        if (denied) return denied;
+        return json(await registry.deleteShare(shareDelete[1]!));
+      }
+      if (req.method === 'GET' && url.pathname === '/api/org/shares') {
+        const denied = requireAdmin();
+        if (denied) return denied;
+        return json(await registry.listAllShares());
+      }
+      // Hard deletion: wipe DO storage, drop registry rows (projects, keys,
+      // shares), and remove the project card from the parent board. The
+      // company export is the parachute; there is no undo.
+      const deleteProjectCascade = async (pid: string): Promise<number> => {
+        const ids = await registry.subtreeIds(pid);
+        const parent = await registry.parentOf(pid);
+        await Promise.all(ids.map((id) => project(id).destroy()));
+        await registry.deleteProjects(ids);
+        if (parent !== null) await project(parent).removeCardsByRef(`project:${pid}`, 'admin');
+        return ids.length;
+      };
+      const spaceDelete = /^\/api\/spaces\/([^/]+)$/.exec(url.pathname);
+      if (req.method === 'DELETE' && spaceDelete) {
+        const denied = requireAdmin();
+        if (denied) return denied;
+        const sid = spaceDelete[1]!;
+        const ids = await registry.projectIdsInSpace(sid);
+        await Promise.all(ids.map((id) => project(id).destroy()));
+        await registry.deleteProjects(ids);
+        await registry.deleteSpace(sid);
+        return json({ deleted: { space: sid, projects: ids.length } });
+      }
 
       // ---- project routes ----
       const match = /^\/api\/projects\/([^/]+)(\/.*)?$/.exec(url.pathname);
@@ -314,6 +347,12 @@ export default {
       }
       const stub = project(pid);
 
+      if (req.method === 'DELETE' && (rest === '' || rest === '/')) {
+        const denied = requireAdmin();
+        if (denied) return denied;
+        const projects = await deleteProjectCascade(pid);
+        return json({ deleted: { project: pid, projects } });
+      }
       if (req.method === 'GET' && (rest === '' || rest === '/board')) return json(await stub.board());
       if (req.method === 'GET' && rest === '/export') return json(await stub.exportDocs());
       if (req.method === 'PUT' && rest === '/import') {

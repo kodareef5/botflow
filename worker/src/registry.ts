@@ -115,6 +115,73 @@ export class RegistryDO extends DurableObject {
     return { ok: true };
   }
 
+  deleteShare(id: string): { ok: boolean } {
+    this.sql.exec('DELETE FROM shares WHERE id = ?', id);
+    return { ok: true };
+  }
+
+  /** Every share link in the org, with its project name (admin manage view). */
+  listAllShares(): { id: string; token: string; label: string; created: string; revoked: boolean; projectId: string; projectName: string }[] {
+    return this.sql
+      .exec('SELECT s.id AS id, s.token AS token, s.label AS label, s.created AS created, s.revoked AS revoked, s.project_id AS pid, p.name AS pname FROM shares s JOIN projects p ON p.id = s.project_id ORDER BY s.created')
+      .toArray()
+      .map((r) => ({
+        id: r['id'] as string,
+        token: r['token'] as string,
+        label: r['label'] as string,
+        created: r['created'] as string,
+        revoked: r['revoked'] === 1,
+        projectId: r['pid'] as string,
+        projectName: r['pname'] as string,
+      }));
+  }
+
+  // ---- deletion (hard; the export tool is the parachute) ----
+
+  /** A project id plus every project nested beneath it. */
+  subtreeIds(pid: string): string[] {
+    const rows = this.sql.exec('SELECT id, parent_id FROM projects').toArray() as { id: string; parent_id: string | null }[];
+    const kids = new Map<string, string[]>();
+    for (const r of rows) {
+      if (r.parent_id === null) continue;
+      if (!kids.has(r.parent_id)) kids.set(r.parent_id, []);
+      kids.get(r.parent_id)!.push(r.id);
+    }
+    const out: string[] = [];
+    const queue = [pid];
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      out.push(cur);
+      for (const k of kids.get(cur) ?? []) queue.push(k);
+    }
+    return out;
+  }
+
+  parentOf(pid: string): string | null {
+    const row = this.sql.exec('SELECT parent_id FROM projects WHERE id = ?', pid).toArray()[0];
+    const parent: unknown = row?.['parent_id'];
+    return typeof parent === 'string' ? parent : null;
+  }
+
+  projectIdsInSpace(spaceId: string): string[] {
+    return this.sql.exec('SELECT id FROM projects WHERE space_id = ?', spaceId).toArray().map((r) => r['id'] as string);
+  }
+
+  /** Remove project rows plus their keys and shares. DO storage is wiped by the caller. */
+  deleteProjects(ids: string[]): { ok: boolean } {
+    for (const id of ids) {
+      this.sql.exec('DELETE FROM keys WHERE project_id = ?', id);
+      this.sql.exec('DELETE FROM shares WHERE project_id = ?', id);
+      this.sql.exec('DELETE FROM projects WHERE id = ?', id);
+    }
+    return { ok: true };
+  }
+
+  deleteSpace(id: string): { ok: boolean } {
+    this.sql.exec('DELETE FROM spaces WHERE id = ?', id);
+    return { ok: true };
+  }
+
   resolveShare(token: string): { projectId: string; name: string } | null {
     const row = this.sql
       .exec('SELECT s.project_id AS pid, p.name AS name FROM shares s JOIN projects p ON p.id = s.project_id WHERE s.token = ? AND s.revoked = 0', token)

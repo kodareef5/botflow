@@ -181,6 +181,12 @@ table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink2)}
 .accpill .sw{width:12px;height:12px;border-radius:50%}
 .modesel{display:flex;gap:8px;margin:8px 0 18px}
 .accpill input[type=color]{width:18px;height:18px;padding:0;border:none;background:none;cursor:pointer}
+button.danger{background:var(--st-blocked);color:#fff;border-color:transparent}
+.mrow{display:flex;align-items:center;gap:9px;padding:5px 8px;border-radius:var(--rk);font-size:13px}
+.mrow:hover{background:var(--surface)}
+.mrow .who{color:var(--muted);font-size:11px}
+.mrow button{margin-left:auto;font-size:11px;padding:1px 8px}
+.mkids{margin-left:16px;border-left:1px dashed var(--grid);padding-left:8px}
 @media (max-width: 760px){
   #burger{display:inline-flex}
   header.top{gap:10px;padding:10px 12px;flex-wrap:wrap}
@@ -291,6 +297,15 @@ function formModal(title,fields,submitLabel,onSubmit){
   const first=$('input',m);if(first)first.focus();
 }
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeOverlay()});
+function confirmModal(title,message,confirmLabel,onConfirm){
+  const m=overlay('<h3>'+esc(title)+'</h3><p style="font-size:13px;color:var(--ink2);line-height:1.55">'+message+'</p>'
+    +'<div class="err"></div><div class="actions"><button type="button" class="ghost" data-x>cancel</button><button class="danger" data-go>'+esc(confirmLabel)+'</button></div>');
+  $('[data-x]',m).onclick=closeOverlay;
+  $('[data-go]',m).onclick=async()=>{
+    const b=$('[data-go]',m);b.disabled=true;b.textContent='working…';
+    try{await onConfirm();closeOverlay()}catch(err){$('.err',m).textContent=err.message;b.disabled=false;b.textContent=confirmLabel}
+  };
+}
 // ---- boot ----
 function gate(kind,extra){
   document.body.innerHTML='<div class="gate" id="gate"></div>';
@@ -602,7 +617,7 @@ async function refreshSharing(){
         +shares.map(s=>'<tr'+(s.revoked?' style="opacity:.5"':'')+'><td>'+esc(s.label)+'</td>'
           +'<td class="mono">'+(s.revoked?'revoked':'<a href="/s/'+esc(s.token)+'" target="_blank" style="color:var(--acc)">/s/'+esc(s.token.slice(0,10))+'…</a> <button class="ghost" data-copy="'+esc(s.token)+'">copy</button>')+'</td>'
           +'<td class="mono">'+esc(s.created.slice(0,10))+'</td>'
-          +'<td>'+(s.revoked?'':'<button data-rs="'+esc(s.id)+'">revoke</button>')+'</td></tr>').join('')+'</table>'
+          +'<td><button data-ds="'+esc(s.id)+'">delete</button></td></tr>').join('')+'</table>'
         :'<div class="empty">no share links yet</div>')
       +(live.length?'<p style="color:var(--muted);font-size:12px;margin-top:10px">live links are listed on the login page unless you turn that off in settings.</p>':'');
     $('#mksh').onclick=()=>formModal('New share link',[{name:'label',label:'label (for your own bookkeeping)',required:true}],'create',async d=>{
@@ -613,8 +628,8 @@ async function refreshSharing(){
     $('#view').addEventListener('click',async e=>{
       const cp=e.target.closest('[data-copy]');
       if(cp){try{await navigator.clipboard.writeText(location.origin+'/s/'+cp.dataset.copy);cp.textContent='copied'}catch{}return}
-      const rv=e.target.closest('[data-rs]');
-      if(rv){await api('/api/shares/'+rv.dataset.rs+'/revoke',{method:'POST'});refreshSharing()}
+      const dl=e.target.closest('[data-ds]');
+      if(dl){await api('/api/shares/'+dl.dataset.ds,{method:'DELETE'});refreshSharing()}
     });
   }catch(err){$('#view').innerHTML='<div class="err">'+esc(err.message)+'</div>'}
 }
@@ -643,8 +658,29 @@ function renderSettings(main){
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">company data</h4>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button id="orgexp">download company export</button>'
     +'<button id="demoload">load the Scoops Empire demo</button></div>'
-    +'<p style="color:var(--muted);font-size:12px;margin-top:6px">The export is one JSON with every space, project, board, and card. The demo adds a sample ice cream company as a new space, safe to explore and delete nothing.</p>'
+    +'<p style="color:var(--muted);font-size:12px;margin-top:6px">The export is one JSON with every space, project, board, and card. The demo adds a sample ice cream company as a new space.</p>'
+    +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">manage: spaces and projects</h4>'
+    +'<div id="mtree" style="max-width:560px"></div>'
+    +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">manage: share links</h4>'
+    +'<div id="mshares" style="max-width:720px">loading…</div>'
     +'<div class="err" id="serr"></div></div>';
+  const countTree=n=>1+n.children.reduce((a,c)=>a+countTree(c),0);
+  const mrowProj=n=>'<div class="mrow">'+esc(n.name)+'<span class="who">'+esc(n.id)+'</span>'
+    +'<button data-delproj="'+esc(n.id)+'" data-name="'+esc(n.name)+'" data-count="'+countTree(n)+'">delete</button></div>'
+    +(n.children.length?'<div class="mkids">'+n.children.map(mrowProj).join('')+'</div>':'');
+  $('#mtree').innerHTML=ORG.spaces.length?ORG.spaces.map(s=>
+    '<div class="mrow" style="font-weight:600">'+esc(s.name)+'<span class="who">'+esc(s.id)+'</span>'
+    +'<button data-delspace="'+esc(s.id)+'" data-name="'+esc(s.name)+'" data-count="'+s.projects.reduce((a,p)=>a+countTree(p),0)+'">delete space</button></div>'
+    +(s.projects.length?'<div class="mkids">'+s.projects.map(mrowProj).join('')+'</div>':'')).join('')
+    :'<div class="empty">no spaces yet</div>';
+  api('/api/org/shares').then(list=>{
+    const el=$('#mshares');if(!el)return;
+    el.innerHTML=list.length?'<table class="list"><tr><th>project</th><th>label</th><th>url</th><th>created</th><th></th></tr>'
+      +list.map(s=>'<tr'+(s.revoked?' style="opacity:.5"':'')+'><td>'+esc(s.projectName)+'</td><td>'+esc(s.label)+'</td>'
+        +'<td class="mono"><a href="/s/'+esc(s.token)+'" target="_blank" style="color:var(--acc)">/s/'+esc(s.token.slice(0,10))+'…</a></td>'
+        +'<td class="mono">'+esc(s.created.slice(0,10))+'</td><td><button data-delsh="'+esc(s.id)+'">delete</button></td></tr>').join('')+'</table>'
+      :'<div class="empty">no share links</div>';
+  }).catch(()=>{});
   const save=async next=>{
     try{const saved=await api('/api/settings',{method:'POST',body:JSON.stringify(next)});applyTheme(saved);renderSettings(main)}
     catch(err){$('#serr').textContent=err.message}
@@ -661,6 +697,17 @@ function renderSettings(main){
     try{await api('/api/demo',{method:'POST'});await start()}catch(err){$('#serr').textContent=err.message;b.disabled=false;b.textContent='load the Scoops Empire demo'}};
   $('#custcol').oninput=e=>save({...THEME,accent:'custom',custom:e.target.value});
   main.querySelector('.settings').onclick=async e=>{
+    const dp=e.target.closest('[data-delproj]');
+    if(dp){const n=dp.dataset.name,c=Number(dp.dataset.count);
+      confirmModal('Delete project',"Permanently deletes '"+esc(n)+"'"+(c>1?' and its '+(c-1)+' nested project(s)':'')
+        +': boards, cards, keys, and share links. No undo. Download a company export first if unsure.',
+        'delete forever',async()=>{await api('/api/projects/'+dp.dataset.delproj,{method:'DELETE'});await start()});return}
+    const dsp=e.target.closest('[data-delspace]');
+    if(dsp){const n=dsp.dataset.name,c=Number(dsp.dataset.count);
+      confirmModal('Delete space',"Permanently deletes the space '"+esc(n)+"' and all "+c+" project(s) inside it: boards, cards, keys, and share links. No undo. Download a company export first if unsure.",
+        'delete forever',async()=>{await api('/api/spaces/'+dsp.dataset.delspace,{method:'DELETE'});await start()});return}
+    const dsh=e.target.closest('[data-delsh]');
+    if(dsh){await api('/api/shares/'+dsh.dataset.delsh,{method:'DELETE'});renderSettings(main);return}
     if(e.target.closest('#custpill'))return; // the color input handles itself
     const tile=e.target.closest('[data-style]');
     const pill=e.target.closest('[data-accent]');
