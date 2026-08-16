@@ -46,6 +46,12 @@ npm run dev:manager                # local: http://127.0.0.1:8787
 npm run deploy:manager             # deploy to your Cloudflare account
 ```
 
+The dev server is a **full local instance** — workerd with SQLite Durable Objects persisted
+under `.wrangler/state/`, no Cloudflare account or network needed. Keep one running under a
+supervisor for local testing (`pm2 start "npm run dev:manager -- --port 4700" --name
+botflow-manager --cwd <repo>`); source changes hot-reload. Deleting `.wrangler/` resets the
+instance — company, tokens, boards, everything.
+
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/kodareef5/botflow)
 *(the button needs this repo public on GitHub; `wrangler deploy` works regardless)*
 
