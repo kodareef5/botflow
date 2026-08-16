@@ -1,7 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
+  // Lives at the repo root so `npx wrangler deploy` works with no flags —
+  // which is exactly what the Deploy-to-Cloudflare button runs.
   "name": "botflow-manager",
-  "main": "src/index.ts",
+  "main": "worker/src/index.ts",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
   "migrations": [
