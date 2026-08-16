@@ -5,11 +5,15 @@ import type { BoardNode, Tree } from '../core/load.ts';
 import type { Card, Finding, Lane } from '../core/model.ts';
 import { CANONICAL_STATES } from '../core/model.ts';
 import { lintBoard } from '../core/analyze.ts';
+import { parseBody } from '../core/body.ts';
 
 export const pct = (p: number | null): string => (p === null ? '—' : `${Math.round(p * 100)}%`);
 
 function cardAnnotations(card: Card, node: BoardNode, ba: BoardAnalysis, readySet: Set<string>): string {
   const parts: string[] = [];
+  const parsed = parseBody(card.body);
+  if (parsed.checklist.total > 0) parts.push(`✓${parsed.checklist.done}/${parsed.checklist.total}`);
+  if (parsed.comments.length > 0) parts.push(`🗨${parsed.comments.length}`);
   if (card.type === 'board') {
     const child = node.childKeyByCard.get(card.id);
     parts.push(`⇒ ${child ?? card.boardPath ?? '?'}`);

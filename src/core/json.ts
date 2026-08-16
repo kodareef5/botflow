@@ -3,9 +3,11 @@
 
 import type { Analysis, BoardAnalysis } from './analyze.ts';
 import { lintBoard } from './analyze.ts';
+import { parseBody } from './body.ts';
 import type { BoardNode, Card, Tree } from './model.ts';
 
 export function cardJson(card: Card, node: BoardNode, ba: BoardAnalysis): Record<string, unknown> {
+  const parsed = parseBody(card.body);
   return {
     id: card.id,
     title: card.title,
@@ -21,10 +23,19 @@ export function cardJson(card: Card, node: BoardNode, ba: BoardAnalysis): Record
     priority: card.priority,
     deps: card.deps,
     blocked: card.blocked,
+    cover: card.cover === 'none' ? null : (card.cover ?? parsed.images[0] ?? null),
+    checklist: parsed.checklist.total > 0 ? parsed.checklist : null,
+    comments: parsed.comments.length,
+    attachments: parsed.attachments.length,
     created: card.created,
     updated: card.updated,
     file: card.file,
   };
+}
+
+/** Detail view: cardJson plus the raw body and its structured parse. */
+export function cardDetailJson(card: Card, node: BoardNode, ba: BoardAnalysis): Record<string, unknown> {
+  return { ...cardJson(card, node, ba), body: card.body, parsed: parseBody(card.body) };
 }
 
 export function boardJson(tree: Tree, analysis: Analysis, key = '.'): Record<string, unknown> {

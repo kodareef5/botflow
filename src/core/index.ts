@@ -12,7 +12,29 @@ export {
   type BoardNode,
   type Tree,
 } from './load.ts';
-export { analyze, lintBoard, rollupState, type Analysis, type BoardAnalysis } from './analyze.ts';
+export {
+  analyze,
+  analyzeBoard,
+  analyzeSingle,
+  lintBoard,
+  rollupState,
+  type Analysis,
+  type BoardAnalysis,
+  type ExternalChild,
+} from './analyze.ts';
+export {
+  addAttachmentLine,
+  appendToSection,
+  parseBody,
+  removeAttachmentLine,
+  setChecklistItem,
+  type Attachment,
+  type BodyEntry,
+  type Checklist,
+  type ChecklistItem,
+  type ParsedBody,
+} from './body.ts';
+export { boardJson as coreBoardJson, cardDetailJson, cardJson as coreCardJson, rollupJson as coreRollupJson } from './json.ts';
 export { emitMap, emitScalar } from './emit.ts';
 export { appendLogLine, logMutation, nowDate, nowDateTime, serializeCard } from './write.ts';
 export { newHashId, nextSeqId, slugify } from './ids.ts';

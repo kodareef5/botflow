@@ -37,7 +37,10 @@ Repo convention: the board root is `.botflow/` at the repo root. Tools resolve t
 2. walking up from the current directory, the nearest ancestor containing `.botflow/board.yaml`;
 3. walking up, the nearest ancestor that itself contains `board.yaml` + `cards/` (a bare board root).
 
-A **child board reference** (`board:` field, §5) is a path relative to the referencing board's root. It resolves to a board root as: if `<path>/board.yaml` exists, `<path>` is the root; else if `<path>/.botflow/board.yaml` exists, `<path>/.botflow` is the root; else the reference is dangling (lint `board-path-missing`).
+A **child board reference** (`board:` field, §5) takes one of two forms:
+
+- a **relative path** from the referencing board's root, resolving to a board root as: if `<path>/board.yaml` exists, `<path>` is the root; else if `<path>/.botflow/board.yaml` exists, `<path>/.botflow` is the root; else the reference is dangling (lint `board-path-missing`);
+- **`project:<id>`** — a hosted-manager project reference. Only a botflow manager can resolve it (its Durable Objects roll the child project up exactly like the file engine); on the filesystem it is inert and lints as info `hosted-ref`, the card falling back to its own lane.
 
 ## 4. `board.yaml`
 
@@ -91,6 +94,7 @@ Frontmatter keys:
 | `assignee` | string | no | Freeform actor name. Claiming (§12) sets it. |
 | `priority` | `p0`–`p3` | no | |
 | `deps` | list of card ids | no | Same-board dependencies. A card is **ready** when its effective canonical state (§6; for board-cards, §7) is `todo` and every dep's effective state is `done` or `archive`. (Cross-board deps are out of scope for v0.) |
+| `cover` | url \| `none` | no | Card art. Viewers show the image atop the card; when absent they MAY fall back to the first image attachment; `none` suppresses art entirely. |
 | `blocked` | string | no | Blocked **flag** with a reason. Presence overrides projection (§6). |
 | `created` | date string | no | `YYYY-MM-DD` or ISO datetime; stored as a plain string. |
 | `updated` | date string | no | Tools SHOULD touch this only on meaningful changes (merge-noise discipline). |
@@ -111,6 +115,12 @@ Body: free markdown. Conventional sections, all optional:
 ```
 
 `## Log` is append-only by convention: tools MUST append entries (`- <date-or-datetime> <actor>: <message>`) rather than editing history. Git history plus the Log constitute the local audit trail.
+
+Further conventional body sections, all optional and all plain markdown:
+
+- **Checklists** — every GFM task item (`- [ ]` / `- [x]`) anywhere in the body belongs to the card's checklist aggregate; items group under the `##` section they appear in (`Checklist` when unnamed). Tools address items by their **global 0-based ordinal** in body order, and surface the aggregate (`done/total`) on card faces.
+- **`## Comments`** — discourse between operators and agents, append-only like the Log, same entry shape (`- <date-or-datetime> <actor>: <text>`). Comments are conversation; the Log is audit — tools MUST NOT merge them.
+- **`## Attachments`** — one markdown link per line (`- [label](url)`). Attachments whose urls are images form the card's gallery (and the default cover, §5 `cover`). Attachments are urls; binary upload storage is a hosted-manager concern, not part of the format.
 
 ## 6. Projection
 
@@ -187,6 +197,7 @@ Not supported (parse error): anchors/aliases (`&`, `*`), tags (`!`), block scala
 | `rollup-drift` | warning | Board-card lane canonical ≠ rolled-up effective state. |
 | `blocked-in-done` | warning | Blocked flag on a done/archive card. |
 | `unknown-key` | info | Unrecognized frontmatter key (preserved). |
+| `hosted-ref` | info | Board-card uses a `project:` reference; resolvable only on a manager. |
 
 Errors mean the board is not conformant; warnings are signals; infos are noise-level.
 
@@ -205,7 +216,7 @@ Expected files record, per board: lint findings (rule ids + card ids), per-card 
 ## 12. Conventions for tools
 
 - **Claim** = set `assignee` to the actor and move the card to a `doing`-canonical lane (first substate if any), appending a Log entry — one atomic rewrite.
-- Every mutation appends a Log line; never rewrite existing Log lines.
+- Every mutation appends a Log line; never rewrite existing Log lines. Comments append to `## Comments` and bump `updated` without a Log line (discourse isn't audit); checklist toggles and attachment changes DO log.
 - Preserve unknown frontmatter keys and all body content outside the section being edited.
 - Only bump `updated` on meaningful change.
 - `prime` — every conforming CLI SHOULD offer a command that prints the board's shape, rules, ready work, and the tool's own usage, so an agent can be taught with one line in AGENTS.md.

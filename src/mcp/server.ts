@@ -11,15 +11,19 @@ import {
   UsageError,
   addCard,
   addLogEntry,
+  attachCard,
   blockCard,
+  checkCard,
   claimCard,
   closeCard,
+  commentCard,
   editCard,
   moveCard,
   unblockCard,
   type EditPatch,
 } from '../core/mutate.ts';
 import { boardJson, cardJson, renderPrime, rollupJson } from '../cli/render.ts';
+import { cardDetailJson } from '../core/json.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_INFO = { name: 'botflow', version: '0.1.0' };
@@ -103,7 +107,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
         const node = tree.boards.get('.')!;
         const card = node.board.cards.find((c) => c.id === args['id']);
         if (!card) throw new UsageError(`no card "${args['id'] as string}"`);
-        return { ...cardJson(card, node, analysis.boards.get('.')!), body: card.body };
+        return cardDetailJson(card, node, analysis.boards.get('.')!);
       },
     },
     {
@@ -179,7 +183,8 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       description: 'Edit card fields. Pass null priority/assignee to clear them.',
       inputSchema: schema(['id'], {
         id: str, title: str, labels: strList, priority: { type: ['string', 'null'] },
-        assignee: { type: ['string', 'null'] }, deps: strList, board_path: str, actor: str,
+        assignee: { type: ['string', 'null'] }, deps: strList, board_path: str,
+        cover: { type: ['string', 'null'] }, actor: str,
       }),
       run: (args) => {
         const patch: EditPatch = {};
@@ -189,8 +194,37 @@ function buildTools(root: string, defaultActor: string): Tool[] {
         if ('assignee' in args) patch.assignee = args['assignee'] === null ? null : opt(args['assignee']) ?? null;
         if ('deps' in args) patch.deps = list(args['deps']) ?? [];
         if ('board_path' in args) patch.boardPath = opt(args['board_path']);
+        if ('cover' in args) patch.cover = args['cover'] === null ? null : String(args['cover']);
         const card = editCard(root, String(args['id']), patch, actorOf(args));
         return { id: card.id, edited: Object.keys(patch) };
+      },
+    },
+    {
+      name: 'card_comment',
+      description: 'Append a comment to the card’s Comments section (discourse; separate from the Log).',
+      inputSchema: schema(['id', 'message'], { id: str, message: str, actor: str }),
+      run: (args) => {
+        const card = commentCard(root, String(args['id']), actorOf(args), String(args['message']));
+        return { id: card.id, commented: true };
+      },
+    },
+    {
+      name: 'card_check',
+      description: 'Check or uncheck a checklist item by its 0-based global index (see card_show parsed.checklists).',
+      inputSchema: schema(['id', 'index'], { id: str, index: { type: 'integer' }, checked: bool, actor: str }),
+      run: (args) => {
+        const checked = args['checked'] !== false;
+        const card = checkCard(root, String(args['id']), actorOf(args), Number(args['index']), checked);
+        return { id: card.id, index: Number(args['index']), checked };
+      },
+    },
+    {
+      name: 'card_attach',
+      description: 'Attach a link (or image url — images show in the card gallery and can be cover art).',
+      inputSchema: schema(['id', 'url'], { id: str, url: str, label: str, actor: str }),
+      run: (args) => {
+        const card = attachCard(root, String(args['id']), actorOf(args), String(args['url']), opt(args['label']));
+        return { id: card.id, attached: String(args['url']) };
       },
     },
     {

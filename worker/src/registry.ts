@@ -4,6 +4,8 @@
 
 import { DurableObject } from 'cloudflare:workers';
 
+import { DEFAULT_THEME, validTheme, type ThemeChoice } from './themes.ts';
+
 export interface ProjectRow {
   id: string;
   space_id: string;
@@ -55,7 +57,39 @@ export class RegistryDO extends DurableObject {
       CREATE TABLE IF NOT EXISTS spaces(id TEXT PRIMARY KEY, name TEXT NOT NULL, created TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, space_id TEXT NOT NULL, parent_id TEXT, name TEXT NOT NULL, created TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS keys(id TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, label TEXT NOT NULL, created TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
+  }
+
+  getTheme(): ThemeChoice {
+    const row = this.sql.exec("SELECT value FROM settings WHERE key = 'theme'").toArray()[0];
+    if (!row) return DEFAULT_THEME;
+    try {
+      return validTheme(JSON.parse(row['value'] as string) as Partial<ThemeChoice>);
+    } catch {
+      return DEFAULT_THEME;
+    }
+  }
+
+  setTheme(choice: Partial<ThemeChoice>): ThemeChoice {
+    const valid = validTheme(choice);
+    this.sql.exec(
+      "INSERT INTO settings(key, value) VALUES ('theme', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      JSON.stringify(valid),
+    );
+    return valid;
+  }
+
+  /** True when `pid` is `ancestor` itself or sits anywhere beneath it. */
+  isWithin(pid: string, ancestor: string): boolean {
+    let cur: string | null = pid;
+    for (let hops = 0; cur !== null && hops < 100; hops++) {
+      if (cur === ancestor) return true;
+      const rows = this.sql.exec('SELECT parent_id FROM projects WHERE id = ?', cur).toArray();
+      const parent: unknown = rows[0]?.['parent_id'];
+      cur = typeof parent === 'string' ? parent : null;
+    }
+    return false;
   }
 
   private initialized(): boolean {
@@ -107,13 +141,16 @@ export class RegistryDO extends DurableObject {
     return { id };
   }
 
-  createProject(spaceId: string, parentId: string | null, name: string): { id: string } | { error: string } {
-    if (this.sql.exec('SELECT 1 FROM spaces WHERE id = ?', spaceId).toArray().length === 0) return { error: `no space ${spaceId}` };
+  createProject(spaceId: string | null, parentId: string | null, name: string): { id: string } | { error: string } {
     if (parentId !== null) {
       const parent = this.sql.exec('SELECT space_id FROM projects WHERE id = ?', parentId).toArray()[0];
       if (!parent) return { error: `no parent project ${parentId}` };
-      if (parent['space_id'] !== spaceId) return { error: 'parent belongs to a different space' };
+      const parentSpace = parent['space_id'] as string;
+      if (spaceId !== null && parentSpace !== spaceId) return { error: 'parent belongs to a different space' };
+      spaceId = parentSpace;
     }
+    if (spaceId === null) return { error: 'space or parent required' };
+    if (this.sql.exec('SELECT 1 FROM spaces WHERE id = ?', spaceId).toArray().length === 0) return { error: `no space ${spaceId}` };
     const id = `p-${shortId()}`;
     this.sql.exec('INSERT INTO projects(id, space_id, parent_id, name, created) VALUES (?, ?, ?, ?, ?)', id, spaceId, parentId, name, new Date().toISOString());
     return { id };

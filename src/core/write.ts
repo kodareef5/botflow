@@ -1,6 +1,7 @@
 // Card serialization and Log-section handling (SPEC §5, §12). Pure — the
 // filesystem write lives in mutate.ts, DO persistence in the worker.
 
+import { appendToSection } from './body.ts';
 import { emitMap } from './emit.ts';
 import { joinFrontmatter } from './frontmatter.ts';
 import type { Card } from './model.ts';
@@ -19,6 +20,7 @@ export function serializeCard(card: Card): string {
   if (card.assignee !== null) fm['assignee'] = card.assignee;
   if (card.priority !== null) fm['priority'] = card.priority;
   if (card.deps.length > 0) fm['deps'] = card.deps;
+  if (card.cover !== null) fm['cover'] = card.cover;
   if (card.blocked !== null) fm['blocked'] = card.blocked;
   if (card.created !== null) fm['created'] = card.created;
   if (card.updated !== null) fm['updated'] = card.updated;
@@ -28,19 +30,7 @@ export function serializeCard(card: Card): string {
 
 /** Append an entry to the (append-only) `## Log` section, creating it if needed. */
 export function appendLogLine(body: string, entry: string): string {
-  const line = `- ${entry}`;
-  const headingRe = /(^|\n)(## Log[ \t]*)\n/;
-  const m = headingRe.exec(body);
-  if (!m) {
-    const base = body.trimEnd();
-    return (base === '' ? '' : base + '\n\n') + `## Log\n${line}\n`;
-  }
-  const sectionStart = m.index + m[0].length;
-  const nextHeading = body.indexOf('\n## ', sectionStart);
-  const sectionEnd = nextHeading === -1 ? body.length : nextHeading;
-  const section = body.slice(sectionStart, sectionEnd).trimEnd();
-  const rebuilt = (section === '' ? line : section + '\n' + line) + '\n';
-  return body.slice(0, sectionStart) + rebuilt + body.slice(sectionEnd);
+  return appendToSection(body, 'Log', `- ${entry}`);
 }
 
 export function nowDate(): string {

@@ -35,6 +35,7 @@ export const RULE_SEVERITY: Record<string, Severity> = {
   'rollup-drift': 'warning',
   'blocked-in-done': 'warning',
   'unknown-key': 'info',
+  'hosted-ref': 'info',
 };
 
 export function finding(rule: string, ref: string, message: string): Finding {
@@ -83,6 +84,9 @@ export interface Card {
   assignee: string | null;
   priority: string | null;
   deps: string[];
+  /** Card-art cover: an image url, 'none' to suppress, or null (viewers fall
+   *  back to the first image attachment). */
+  cover: string | null;
   /** Blocked-flag reason; null = no flag. */
   blocked: string | null;
   created: string | null;

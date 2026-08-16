@@ -3,8 +3,9 @@
 // closes, blocks, and edits through these, so the rules exist exactly once.
 
 import type { BoardConfig, Card, Lane, LoadedBoard } from './model.ts';
+import { addAttachmentLine, appendToSection, parseBody, removeAttachmentLine, setChecklistItem } from './body.ts';
 import { newHashId, nextSeqId, slugify } from './ids.ts';
-import { logMutation, nowDate } from './write.ts';
+import { logMutation, nowDate, nowDateTime } from './write.ts';
 
 /** An error caused by how a tool was invoked — message for the caller, no stack. */
 export class UsageError extends Error {}
@@ -117,6 +118,7 @@ export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
     assignee: opts.assignee ?? null,
     priority: opts.priority ?? null,
     deps: opts.deps ?? [],
+    cover: null,
     blocked: null,
     created: nowDate(),
     updated: null,
@@ -205,6 +207,8 @@ export interface EditPatch {
   assignee?: string | null | undefined;
   deps?: string[] | undefined;
   boardPath?: string | undefined;
+  /** Image url, 'none' to suppress card art, or null to clear (auto fallback). */
+  cover?: string | null | undefined;
 }
 
 export function opEdit(card: Card, patch: EditPatch, actor: string): Card {
@@ -234,6 +238,10 @@ export function opEdit(card: Card, patch: EditPatch, actor: string): Card {
     card.boardPath = patch.boardPath;
     changed.push('board');
   }
+  if (patch.cover !== undefined) {
+    card.cover = patch.cover;
+    changed.push('cover');
+  }
   if (changed.length === 0) throw new UsageError('nothing to edit');
   logMutation(card, actor, `edited ${changed.join(', ')}`);
   return card;
@@ -241,5 +249,48 @@ export function opEdit(card: Card, patch: EditPatch, actor: string): Card {
 
 export function opLog(card: Card, actor: string, message: string): Card {
   logMutation(card, actor, message);
+  return card;
+}
+
+/** Append to the card's Comments section (discourse; separate from the Log). */
+export function opComment(card: Card, actor: string, text: string): Card {
+  card.body = appendToSection(card.body, 'Comments', `- ${nowDateTime()} ${actor}: ${text}`);
+  card.updated = nowDate();
+  return card;
+}
+
+/** Check/uncheck the Nth task item (global 0-based ordinal across the body). */
+export function opCheck(card: Card, actor: string, index: number, checked: boolean): Card {
+  const items = parseBody(card.body).checklists.flatMap((c) => c.items);
+  const item = items.find((i) => i.index === index);
+  if (!item) throw new UsageError(`no checklist item ${index} (card has ${items.length})`);
+  const next = setChecklistItem(card.body, index, checked);
+  if (next === null) throw new UsageError(`no checklist item ${index}`);
+  card.body = next;
+  logMutation(card, actor, `${checked ? 'checked' : 'unchecked'} "${item.text}"`);
+  return card;
+}
+
+export function opAttach(card: Card, actor: string, url: string, label?: string): Card {
+  let name = label;
+  if (!name) {
+    try {
+      name = new URL(url).hostname;
+    } catch {
+      name = url.slice(0, 40);
+    }
+  }
+  card.body = addAttachmentLine(card.body, name, url);
+  logMutation(card, actor, `attached ${name}`);
+  return card;
+}
+
+export function opDetach(card: Card, actor: string, index: number): Card {
+  const att = parseBody(card.body).attachments.find((a) => a.index === index);
+  if (!att) throw new UsageError(`no attachment ${index}`);
+  const next = removeAttachmentLine(card.body, index);
+  if (next === null) throw new UsageError(`no attachment ${index}`);
+  card.body = next;
+  logMutation(card, actor, `removed attachment ${att.label}`);
   return card;
 }

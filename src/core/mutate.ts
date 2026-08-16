@@ -13,9 +13,13 @@ import {
   defaultBoardYaml,
   getCard,
   opAdd,
+  opAttach,
   opBlock,
+  opCheck,
   opClaim,
   opClose,
+  opComment,
+  opDetach,
   opEdit,
   opLog,
   opMove,
@@ -95,6 +99,34 @@ export function addLogEntry(root: string, id: string, actor: string, message: st
 export function editCard(root: string, id: string, patch: EditPatch, actor: string): Card {
   const board = loadBoard(root);
   const card = opEdit(getCard(board, id), patch, actor);
+  writeCard(root, card);
+  return card;
+}
+
+export function commentCard(root: string, id: string, actor: string, text: string): Card {
+  const board = loadBoard(root);
+  const card = opComment(getCard(board, id), actor, text);
+  writeCard(root, card);
+  return card;
+}
+
+export function checkCard(root: string, id: string, actor: string, index: number, checked: boolean): Card {
+  const board = loadBoard(root);
+  const card = opCheck(getCard(board, id), actor, index, checked);
+  writeCard(root, card);
+  return card;
+}
+
+export function attachCard(root: string, id: string, actor: string, url: string, label?: string): Card {
+  const board = loadBoard(root);
+  const card = opAttach(getCard(board, id), actor, url, label);
+  writeCard(root, card);
+  return card;
+}
+
+export function detachCard(root: string, id: string, actor: string, index: number): Card {
+  const board = loadBoard(root);
+  const card = opDetach(getCard(board, id), actor, index);
   writeCard(root, card);
   return card;
 }

@@ -2,21 +2,30 @@
 // board: the DO stores the exact botflow document format (board.yaml text +
 // card file texts), applies the same pure ops the CLI uses, serializes every
 // mutation (single writer), and keeps an append-only audit log.
+//
+// Nesting: a card with `board: project:<id>` is a project card. This DO asks
+// the referenced sibling DO for its distribution (rollupInfo) so hosted
+// boards roll up exactly like the file engine — a visited-set breaks cycles.
 
 import { DurableObject } from 'cloudflare:workers';
 
-import { analyze } from '../../src/core/analyze.ts';
-import { boardFromDocuments, singleBoardTree, type BoardDocument } from '../../src/core/docs.ts';
-import { boardJson, cardJson } from '../../src/core/json.ts';
-import type { Card, LoadedBoard } from '../../src/core/model.ts';
+import { analyzeSingle, type ExternalChild } from '../../src/core/analyze.ts';
+import { boardFromDocuments, type BoardDocument } from '../../src/core/docs.ts';
+import { boardJson, cardDetailJson, cardJson } from '../../src/core/json.ts';
+import type { BoardAnalysis } from '../../src/core/analyze.ts';
+import type { BoardNode, Card, LoadedBoard } from '../../src/core/model.ts';
 import {
   UsageError,
   defaultBoardYaml,
   getCard,
   opAdd,
+  opAttach,
   opBlock,
+  opCheck,
   opClaim,
   opClose,
+  opComment,
+  opDetach,
   opEdit,
   opLog,
   opMove,
@@ -37,11 +46,17 @@ export interface AuditEvent {
 
 export type ActionResult = Record<string, unknown> | { error: string };
 
-export class ProjectDO extends DurableObject {
+interface ProjectEnv {
+  PROJECT: DurableObjectNamespace<ProjectDO>;
+}
+
+const PROJECT_REF = 'project:';
+
+export class ProjectDO extends DurableObject<ProjectEnv> {
   private readonly sql: SqlStorage;
 
-  constructor(ctx: DurableObjectState, env: unknown) {
-    super(ctx, env as never);
+  constructor(ctx: DurableObjectState, env: ProjectEnv) {
+    super(ctx, env);
     this.sql = ctx.storage.sql;
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -52,12 +67,16 @@ export class ProjectDO extends DurableObject {
 
   // ---- storage helpers ----
 
+  private selfId(): string {
+    return this.ctx.id.name ?? '';
+  }
+
   private configText(): string | null {
     const row = this.sql.exec("SELECT value FROM meta WHERE key = 'config'").toArray()[0];
     return row ? (row['value'] as string) : null;
   }
 
-  private loadBoard(): LoadedBoard {
+  private loadBoardDocs(): LoadedBoard {
     const docs = this.sql
       .exec('SELECT file, text FROM cards ORDER BY file')
       .toArray()
@@ -79,6 +98,50 @@ export class ProjectDO extends DurableObject {
     this.sql.exec('INSERT INTO events(ts, actor, action, card_id, detail) VALUES (?, ?, ?, ?, ?)', new Date().toISOString(), actor, action, cardId, detail);
   }
 
+  /** Resolve project-card children by asking sibling DOs; cycle-safe. */
+  private async resolveChildren(board: LoadedBoard, visited: string[]): Promise<Map<string, ExternalChild | null>> {
+    const children = new Map<string, ExternalChild | null>();
+    const chain = [...visited, this.selfId()];
+    await Promise.all(
+      board.cards
+        .filter((c) => c.type === 'board')
+        .map(async (card) => {
+          const ref = card.boardPath ?? '';
+          if (!ref.startsWith(PROJECT_REF)) {
+            children.set(card.id, null);
+            return;
+          }
+          const pid = ref.slice(PROJECT_REF.length);
+          if (chain.includes(pid)) {
+            children.set(card.id, null); // cycle → card falls back to its lane
+            return;
+          }
+          const stub = this.env.PROJECT.get(this.env.PROJECT.idFromName(pid));
+          children.set(card.id, await stub.rollupInfo(chain));
+        }),
+    );
+    return children;
+  }
+
+  private async analyzed(visited: string[] = []): Promise<{
+    board: LoadedBoard;
+    ba: BoardAnalysis;
+    node: BoardNode;
+    children: Map<string, ExternalChild | null>;
+  }> {
+    const board = this.loadBoardDocs();
+    const children = await this.resolveChildren(board, visited);
+    const ba = analyzeSingle(board, children);
+    const childKeyByCard = new Map<string, string | null>();
+    for (const card of board.cards) {
+      if (card.type === 'board') {
+        const ref = card.boardPath ?? '';
+        childKeyByCard.set(card.id, ref.startsWith(PROJECT_REF) ? ref.slice(PROJECT_REF.length) : null);
+      }
+    }
+    return { board, ba, node: { key: '.', board, childKeyByCard }, children };
+  }
+
   // ---- RPC surface ----
 
   ensureInit(name: string): { initialized: boolean } {
@@ -90,11 +153,17 @@ export class ProjectDO extends DurableObject {
     return { initialized: false };
   }
 
+  /** Distribution + progress for a parent's rollup; null when `visited`
+   *  already contains this project (cycle). */
+  async rollupInfo(visited: string[]): Promise<ExternalChild | null> {
+    if (visited.includes(this.selfId())) return null;
+    const { ba } = await this.analyzed(visited);
+    return { distribution: ba.distribution, progress: ba.progress };
+  }
+
   /** Compact state for org-tree aggregation. */
-  summary(): Record<string, unknown> {
-    const board = this.loadBoard();
-    const analysis = analyze(singleBoardTree(board));
-    const ba = analysis.boards.get('.')!;
+  async summary(): Promise<Record<string, unknown>> {
+    const { board, ba } = await this.analyzed();
     return {
       name: board.config.name,
       cards: board.cards.length,
@@ -104,13 +173,11 @@ export class ProjectDO extends DurableObject {
     };
   }
 
-  /** Full board (viewer shape, card bodies included). */
-  board(): Record<string, unknown> {
-    const board = this.loadBoard();
-    const tree = singleBoardTree(board);
-    const analysis = analyze(tree);
-    const node = tree.boards.get('.')!;
-    const ba = analysis.boards.get('.')!;
+  /** Full board (viewer shape, card bodies + parsed structure included). */
+  async board(): Promise<Record<string, unknown>> {
+    const { board, ba, node, children } = await this.analyzed();
+    const tree = { rootAbs: '.', boards: new Map([['.', node]]) };
+    const analysis = { boards: new Map([['.', ba]]) };
     const json = boardJson(tree, analysis) as Record<string, unknown>;
     json['lanes'] = board.config.lanes.map((lane) => ({
       id: lane.id,
@@ -119,18 +186,18 @@ export class ProjectDO extends DurableObject {
       substates: lane.substates,
       order: lane.order,
       wip: lane.wip,
-      cards: board.cards.filter((c) => c.laneId === lane.id).map((c) => ({ ...cardJson(c, node, ba), body: c.body })),
+      cards: board.cards
+        .filter((c) => c.laneId === lane.id)
+        .map((c) => ({ ...cardDetailJson(c, node, ba), childProgress: children.get(c.id)?.progress ?? null })),
     }));
     return json;
   }
 
-  card(id: string): Record<string, unknown> | null {
-    const board = this.loadBoard();
+  async card(id: string): Promise<Record<string, unknown> | null> {
+    const { board, ba, node } = await this.analyzed();
     const found = board.cards.find((c) => c.id === id);
     if (!found) return null;
-    const tree = singleBoardTree(board);
-    const analysis = analyze(tree);
-    return { ...cardJson(found, tree.boards.get('.')!, analysis.boards.get('.')!), body: found.body };
+    return cardDetailJson(found, node, ba);
   }
 
   exportDocs(): { config: string | null; cards: BoardDocument[] } {
@@ -143,9 +210,20 @@ export class ProjectDO extends DurableObject {
     };
   }
 
-  /** Snapshot import (push): replace the whole board document set. */
+  /** Snapshot import (push): replace the board's documents — but preserve
+   *  manager-native project cards (`board: project:…`) the snapshot doesn't
+   *  carry, so a repo push can't sever hosted sub-projects. */
   importDocs(config: string, cards: BoardDocument[], actor: string): Record<string, unknown> {
+    const current = this.loadBoardDocs();
     const parsed = boardFromDocuments(config, cards, 'import');
+    const incomingIds = new Set(parsed.cards.map((c) => c.id));
+    const preserved = current.cards.filter(
+      (c) => c.type === 'board' && (c.boardPath ?? '').startsWith(PROJECT_REF) && !incomingIds.has(c.id),
+    );
+    const skipped = current.cards.filter(
+      (c) => c.type === 'board' && (c.boardPath ?? '').startsWith(PROJECT_REF) && incomingIds.has(c.id),
+    );
+
     this.sql.exec("INSERT INTO meta(key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", config);
     this.sql.exec('DELETE FROM cards');
     const now = new Date().toISOString();
@@ -153,13 +231,23 @@ export class ProjectDO extends DurableObject {
       const doc = cards.find((d) => d.path === card.file);
       this.sql.exec('INSERT OR REPLACE INTO cards(id, file, text, updated_at) VALUES (?, ?, ?, ?)', card.id, card.file, doc?.text ?? serializeCard(card), now);
     }
-    this.event(actor, 'import', null, `imported ${parsed.cards.length} cards (snapshot, last-write-wins)`);
-    return { imported: parsed.cards.length, findings: parsed.findings.length };
+    for (const card of preserved) {
+      this.sql.exec('INSERT OR REPLACE INTO cards(id, file, text, updated_at) VALUES (?, ?, ?, ?)', card.id, card.file, serializeCard(card), now);
+    }
+    this.event(
+      actor,
+      'import',
+      null,
+      `imported ${parsed.cards.length} cards (snapshot, last-write-wins)` +
+        (preserved.length > 0 ? `; preserved ${preserved.length} project card(s)` : '') +
+        (skipped.length > 0 ? `; ${skipped.length} project card id(s) overwritten by snapshot` : ''),
+    );
+    return { imported: parsed.cards.length, preserved: preserved.length, findings: parsed.findings.length };
   }
 
   addCard(opts: Omit<AddOptions, 'actor'>, actor: string): ActionResult {
     try {
-      const board = this.loadBoard();
+      const board = this.loadBoardDocs();
       const card = opAdd(board, { ...opts, actor });
       this.persistCard(card);
       this.event(actor, 'add', card.id, `created "${card.title}" in ${card.laneId}`);
@@ -172,7 +260,7 @@ export class ProjectDO extends DurableObject {
 
   action(kind: string, id: string, args: Record<string, unknown>, actor: string): ActionResult {
     try {
-      const board = this.loadBoard();
+      const board = this.loadBoardDocs();
       const card = getCard(board, id);
       switch (kind) {
         case 'move': {
@@ -206,6 +294,37 @@ export class ProjectDO extends DurableObject {
           this.event(actor, 'unblock', id, '');
           return { id, blocked: null };
         }
+        case 'comment': {
+          const text = String(args['message'] ?? '').trim();
+          if (text === '') return { error: 'message required' };
+          opComment(card, actor, text);
+          this.persistCard(card);
+          this.event(actor, 'comment', id, text.slice(0, 200));
+          return { id, commented: true };
+        }
+        case 'check': {
+          const index = Number(args['index']);
+          const checked = args['checked'] !== false;
+          opCheck(card, actor, index, checked);
+          this.persistCard(card);
+          this.event(actor, checked ? 'check' : 'uncheck', id, `item ${index}`);
+          return { id, index, checked };
+        }
+        case 'attach': {
+          const url = String(args['url'] ?? '').trim();
+          if (url === '') return { error: 'url required' };
+          opAttach(card, actor, url, typeof args['label'] === 'string' ? (args['label'] as string) : undefined);
+          this.persistCard(card);
+          this.event(actor, 'attach', id, url.slice(0, 200));
+          return { id, attached: url };
+        }
+        case 'detach': {
+          const index = Number(args['index']);
+          opDetach(card, actor, index);
+          this.persistCard(card);
+          this.event(actor, 'detach', id, `attachment ${index}`);
+          return { id, detached: index };
+        }
         case 'edit': {
           const patch: EditPatch = {};
           if ('title' in args) patch.title = String(args['title']);
@@ -213,6 +332,7 @@ export class ProjectDO extends DurableObject {
           if ('priority' in args) patch.priority = args['priority'] === null ? null : String(args['priority']);
           if ('assignee' in args) patch.assignee = args['assignee'] === null ? null : String(args['assignee']);
           if ('deps' in args && Array.isArray(args['deps'])) patch.deps = (args['deps'] as unknown[]).map(String);
+          if ('cover' in args) patch.cover = args['cover'] === null ? null : String(args['cover']);
           opEdit(card, patch, actor);
           this.persistCard(card);
           this.event(actor, 'edit', id, Object.keys(patch).join(', '));

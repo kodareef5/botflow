@@ -9,6 +9,7 @@ import { DEFAULT_PORT, serveBoard } from '../viewer/serve.ts';
 import { viewerData, viewerHtml } from '../viewer/page.ts';
 import { startMcpServer } from '../mcp/server.ts';
 import { instantiate, setupAgentFiles } from '../core/template.ts';
+import { cardDetailJson } from '../core/json.ts';
 import { loadRemote, pull, push, remoteAdd } from './remote.ts';
 
 import { analyze, lintBoard } from '../core/analyze.ts';
@@ -18,9 +19,13 @@ import {
   UsageError,
   addCard,
   addLogEntry,
+  attachCard,
   blockCard,
+  checkCard,
   claimCard,
   closeCard,
+  commentCard,
+  detachCard,
   editCard,
   initBoard,
   moveCard,
@@ -66,6 +71,11 @@ usage: botflow <command> [args]
   card unblock <id>
   card edit <id> [--title t] [--labels a,b] [--priority p|none]
            [--assignee name|none] [--deps 1,2] [--board-path <dir>]
+           [--cover <url>|none|auto]
+  card comment <id> <text…>             append to the Comments section
+  card check <id> <n> [--off]           check/uncheck checklist item n (1-based)
+  card attach <id> <url> [--label l]    add a link/image attachment
+  card detach <id> <n>                  remove attachment n (1-based)
   log <id> <message…>                   append a Log entry
 
 global: --board <path> (or BOTFLOW_DIR) picks the board; --actor <name>
@@ -334,7 +344,7 @@ function runCard(argv: string[]): number {
       const ba = analysis.boards.get('.')!;
       const card = node.board.cards.find((c) => c.id === id);
       if (!card) throw new UsageError(`no card "${id}"`);
-      if (values['json']) emitJson({ ...cardJson(card, node, ba), body: card.body });
+      if (values['json']) emitJson(cardDetailJson(card, node, ba));
       else out(renderCard(card, node, ba));
       return 0;
     }
@@ -388,6 +398,7 @@ function runCard(argv: string[]): number {
         assignee: { type: 'string' },
         deps: { type: 'string' },
         'board-path': { type: 'string' },
+        cover: { type: 'string' },
       });
       const id = positionals[0];
       if (!id) throw new UsageError('usage: botflow card edit <id> [flags]');
@@ -399,8 +410,47 @@ function runCard(argv: string[]): number {
       if (values['assignee'] !== undefined) patch.assignee = noneable(values['assignee'] as string);
       if (values['deps'] !== undefined) patch.deps = csv(values['deps'] as string)!;
       if (values['board-path'] !== undefined) patch.boardPath = values['board-path'] as string;
+      if (values['cover'] !== undefined) {
+        const c = values['cover'] as string;
+        patch.cover = c === 'auto' ? null : c; // 'none' suppresses; a url sets art
+      }
       const card = editCard(getRoot(values), id, patch, getActor(values));
       values['json'] ? emitJson({ id: card.id, edited: Object.keys(patch) }) : out(`✓ ${card.id} edited (${Object.keys(patch).join(', ')})`);
+      return 0;
+    }
+    case 'comment': {
+      const { values, positionals } = parse(rest, COMMON);
+      const [id, ...words] = positionals;
+      if (!id || words.length === 0) throw new UsageError('usage: botflow card comment <id> <text…>');
+      const card = commentCard(getRoot(values), id, getActor(values), words.join(' '));
+      values['json'] ? emitJson({ id: card.id, commented: true }) : out(`✓ ${card.id} commented`);
+      return 0;
+    }
+    case 'check': {
+      const { values, positionals } = parse(rest, { ...COMMON, off: { type: 'boolean', default: false } });
+      const [id, n] = positionals;
+      const index = Number(n) - 1;
+      if (!id || !Number.isInteger(index) || index < 0) throw new UsageError('usage: botflow card check <id> <n> [--off]');
+      const checked = !(values['off'] as boolean);
+      const card = checkCard(getRoot(values), id, getActor(values), index, checked);
+      values['json'] ? emitJson({ id: card.id, item: index + 1, checked }) : out(`✓ ${card.id} item ${index + 1} ${checked ? 'checked' : 'unchecked'}`);
+      return 0;
+    }
+    case 'attach': {
+      const { values, positionals } = parse(rest, { ...COMMON, label: { type: 'string' } });
+      const [id, url] = positionals;
+      if (!id || !url) throw new UsageError('usage: botflow card attach <id> <url> [--label l]');
+      const card = attachCard(getRoot(values), id, getActor(values), url, values['label'] as string | undefined);
+      values['json'] ? emitJson({ id: card.id, attached: url }) : out(`✓ ${card.id} attached ${url}`);
+      return 0;
+    }
+    case 'detach': {
+      const { values, positionals } = parse(rest, COMMON);
+      const [id, n] = positionals;
+      const index = Number(n) - 1;
+      if (!id || !Number.isInteger(index) || index < 0) throw new UsageError('usage: botflow card detach <id> <n>');
+      const card = detachCard(getRoot(values), id, getActor(values), index);
+      values['json'] ? emitJson({ id: card.id, detached: index + 1 }) : out(`✓ ${card.id} attachment ${index + 1} removed`);
       return 0;
     }
     default:

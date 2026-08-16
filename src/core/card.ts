@@ -5,7 +5,7 @@ import type { Card, Finding } from './model.ts';
 import { finding } from './model.ts';
 
 const KNOWN_KEYS = new Set([
-  'id', 'title', 'lane', 'type', 'board', 'labels', 'assignee', 'priority', 'deps', 'blocked', 'created', 'updated',
+  'id', 'title', 'lane', 'type', 'board', 'labels', 'assignee', 'priority', 'deps', 'cover', 'blocked', 'created', 'updated',
 ]);
 
 const PRIORITY_RE = /^p[0-3]$/;
@@ -107,6 +107,7 @@ export function parseCard(value: YamlValue, fileBase: string, file: string, body
     assignee: optString(m['assignee']),
     priority,
     deps,
+    cover: optString(m['cover']),
     blocked: optString(m['blocked']),
     created: optString(m['created']),
     updated: optString(m['updated']),

@@ -92,6 +92,10 @@ export default {
       if (!url.pathname.startsWith('/api/')) return json({ error: 'not found' }, 404);
 
       const status = await registry.status();
+      // Theme is public chrome — the gate and share pages paint with it pre-auth.
+      if (req.method === 'GET' && url.pathname === '/api/theme') {
+        return json(await registry.getTheme());
+      }
       if (req.method === 'POST' && url.pathname === '/api/setup') {
         const body = (await req.json()) as { name?: string };
         const res = await registry.setup(typeof body.name === 'string' && body.name !== '' ? body.name : 'company');
@@ -164,6 +168,15 @@ export default {
         });
         return json({ name: tree.name, aggregate: toRollup(orgDist, orgDone, orgUnits), spaces });
       }
+      if (url.pathname === '/api/settings') {
+        const denied = requireAdmin();
+        if (denied) return denied;
+        if (req.method === 'GET') return json(await registry.getTheme());
+        if (req.method === 'POST') {
+          const body = (await req.json()) as Record<string, unknown>;
+          return json(await registry.setTheme(body as never));
+        }
+      }
       if (req.method === 'POST' && url.pathname === '/api/spaces') {
         const denied = requireAdmin();
         if (denied) return denied;
@@ -172,13 +185,27 @@ export default {
         return json(await registry.createSpace(body.name));
       }
       if (req.method === 'POST' && url.pathname === '/api/projects') {
-        const denied = requireAdmin();
-        if (denied) return denied;
-        const body = (await req.json()) as { space?: string; parent?: string; name?: string };
-        if (!body.space || !body.name) return json({ error: 'space and name required' }, 400);
-        const res = await registry.createProject(body.space, body.parent ?? null, body.name);
+        const body = (await req.json()) as { space?: string; parent?: string; name?: string; lane?: string };
+        if (!body.name) return json({ error: 'name required' }, 400);
+        if (identity.kind === 'agent') {
+          // Agents may decompose their own scope into sub-projects.
+          if (!body.parent || !(await registry.isWithin(body.parent, identity.projectId))) {
+            return json({ error: 'agents can only create sub-projects inside their own project' }, 403);
+          }
+        } else if (!body.space && !body.parent) {
+          return json({ error: 'space or parent required' }, 400);
+        }
+        const res = await registry.createProject(body.space ?? null, body.parent ?? null, body.name);
         if ('error' in res) return json(res, 400);
         await project(res.id).ensureInit(body.name);
+        // Projects can be cards: the sub-project appears as a project card in
+        // the parent's board — one nesting mechanism, same as the file spec.
+        if (body.parent) {
+          await project(body.parent).addCard(
+            { title: body.name, type: 'board', boardPath: `project:${res.id}`, lane: body.lane },
+            actorOf(body as Record<string, unknown>),
+          );
+        }
         return json(res);
       }
       const keyRevoke = /^\/api\/keys\/([^/]+)\/revoke$/.exec(url.pathname);
@@ -194,7 +221,10 @@ export default {
       const pid = match[1]!;
       const rest = match[2] ?? '';
       if ((await registry.projectName(pid)) === null) return json({ error: `no project ${pid}` }, 404);
-      if (identity.kind === 'agent' && identity.projectId !== pid) return json({ error: 'key is scoped to another project' }, 403);
+      // Agent keys cover their project and everything nested beneath it.
+      if (identity.kind === 'agent' && !(await registry.isWithin(pid, identity.projectId))) {
+        return json({ error: 'key is scoped to another project' }, 403);
+      }
       const stub = project(pid);
 
       if (req.method === 'GET' && (rest === '' || rest === '/board')) return json(await stub.board());

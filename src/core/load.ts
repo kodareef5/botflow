@@ -80,6 +80,12 @@ export function loadTree(rootDir: string): Tree {
     stack.add(abs);
     for (const card of node.board.cards) {
       if (card.type !== 'board' || card.boardPath === null) continue;
+      if (card.boardPath.startsWith('project:')) {
+        // Hosted-manager reference (SPEC §3) — meaningless on the filesystem.
+        node.board.findings.push(finding('hosted-ref', card.id, `"${card.boardPath}" resolves only on a botflow manager`));
+        node.childKeyByCard.set(card.id, null);
+        continue;
+      }
       const childRoot = resolveBoardRoot(resolve(abs, card.boardPath));
       if (childRoot === null) {
         node.board.findings.push(finding('board-path-missing', card.id, `board path "${card.boardPath}" does not resolve to a board`));

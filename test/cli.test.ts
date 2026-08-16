@@ -108,6 +108,41 @@ test('cli: rewrites preserve unknown frontmatter keys and body', () => {
   assert.deepEqual(lint.map((f) => f.rule), ['unknown-key']);
 });
 
+test('cli: comments, checklists, attachments, cover', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'botflow-'));
+  ok(dir, 'init', '--name', 'cardstuff');
+  ok(dir, 'card', 'add', 'Rich card');
+  const cardPath = join(dir, '.botflow', 'cards', '001-rich-card.md');
+  writeFileSync(
+    cardPath,
+    readFileSync(cardPath, 'utf8') + '\n## Checklist\n- [ ] alpha\n- [ ] beta\n',
+  );
+  ok(dir, 'card', 'check', '001', '2');
+  ok(dir, 'card', 'comment', '001', 'first comment here');
+  ok(dir, 'card', 'attach', '001', 'https://example.com/mock.png', '--label', 'mock');
+  ok(dir, 'card', 'attach', '001', 'https://example.com/doc');
+  ok(dir, 'card', 'detach', '001', '2');
+  const shown = JSON.parse(ok(dir, 'card', 'show', '001', '--json')) as {
+    checklist: { done: number; total: number };
+    comments: number;
+    attachments: number;
+    cover: string | null;
+    parsed: { attachments: { label: string }[] };
+  };
+  assert.deepEqual(shown.checklist, { done: 1, total: 2 });
+  assert.equal(shown.comments, 1);
+  assert.equal(shown.attachments, 1);
+  assert.equal(shown.cover, 'https://example.com/mock.png', 'first image is the auto cover');
+  ok(dir, 'card', 'edit', '001', '--cover', 'none');
+  const suppressed = JSON.parse(ok(dir, 'card', 'show', '001', '--json')) as { cover: string | null };
+  assert.equal(suppressed.cover, null);
+  const file = readFileSync(cardPath, 'utf8');
+  assert.ok(file.includes('- [x] beta'));
+  assert.ok(file.includes('first comment here'));
+  assert.ok(file.includes('cover: none'));
+  assert.equal(bf(dir, 'lint').code, 0);
+});
+
 test('cli: bin shim runs (js importing native ts)', () => {
   const res = spawnSync(process.execPath, [BIN, '--version'], { encoding: 'utf8' });
   assert.equal(res.status, 0, res.stderr);
