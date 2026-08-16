@@ -33,6 +33,7 @@ import {
   type AddOptions,
   type EditPatch,
 } from '../../src/core/ops.ts';
+import { newHashId, nextSeqId, slugify } from '../../src/core/ids.ts';
 import { serializeCard } from '../../src/core/write.ts';
 
 export interface AuditEvent {
@@ -216,13 +217,26 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
   importDocs(config: string, cards: BoardDocument[], actor: string): Record<string, unknown> {
     const current = this.loadBoardDocs();
     const parsed = boardFromDocuments(config, cards, 'import');
-    const incomingIds = new Set(parsed.cards.map((c) => c.id));
-    const preserved = current.cards.filter(
-      (c) => c.type === 'board' && (c.boardPath ?? '').startsWith(PROJECT_REF) && !incomingIds.has(c.id),
-    );
-    const skipped = current.cards.filter(
-      (c) => c.type === 'board' && (c.boardPath ?? '').startsWith(PROJECT_REF) && incomingIds.has(c.id),
-    );
+    const incomingById = new Map(parsed.cards.map((c) => [c.id, c]));
+    // Preserve manager-native project cards the snapshot doesn't itself carry;
+    // when a file card claims their id, re-id the preserved card instead of
+    // letting the push sever a hosted sub-project.
+    const preserved = current.cards.filter((c) => {
+      if (c.type !== 'board' || !(c.boardPath ?? '').startsWith(PROJECT_REF)) return false;
+      const incoming = incomingById.get(c.id);
+      return !(incoming && incoming.type === 'board' && incoming.boardPath === c.boardPath);
+    });
+    const takenIds = new Set(parsed.cards.map((c) => c.id));
+    const reIds: string[] = [];
+    for (const card of preserved) {
+      if (takenIds.has(card.id)) {
+        const newId = parsed.config.ids === 'hash' ? newHashId([...takenIds]) : nextSeqId([...takenIds]);
+        reIds.push(`${card.id}→${newId}`);
+        card.id = newId;
+        card.file = `cards/${newId}-${slugify(card.title)}.md`;
+      }
+      takenIds.add(card.id);
+    }
 
     this.sql.exec("INSERT INTO meta(key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", config);
     this.sql.exec('DELETE FROM cards');
@@ -240,9 +254,9 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       null,
       `imported ${parsed.cards.length} cards (snapshot, last-write-wins)` +
         (preserved.length > 0 ? `; preserved ${preserved.length} project card(s)` : '') +
-        (skipped.length > 0 ? `; ${skipped.length} project card id(s) overwritten by snapshot` : ''),
+        (reIds.length > 0 ? `; re-id on collision: ${reIds.join(', ')}` : ''),
     );
-    return { imported: parsed.cards.length, preserved: preserved.length, findings: parsed.findings.length };
+    return { imported: parsed.cards.length, preserved: preserved.length, reIds, findings: parsed.findings.length };
   }
 
   addCard(opts: Omit<AddOptions, 'actor'>, actor: string): ActionResult {
