@@ -1,0 +1,11 @@
+{
+  "boards": {
+    ".": {
+      "lint": [],
+      "cards": { "001": "todo", "002": "doing", "003": "done" },
+      "distribution": { "wishlist": 0, "todo": 1, "doing": 1, "blocked": 0, "done": 1, "archive": 0 },
+      "ready": ["001"],
+      "progress": 0.3333
+    }
+  }
+}

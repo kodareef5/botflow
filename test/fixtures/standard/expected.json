@@ -1,0 +1,25 @@
+{
+  "boards": {
+    ".": {
+      "lint": [
+        { "rule": "wip-breach", "ref": "doing" },
+        { "rule": "unknown-key", "ref": "007" }
+      ],
+      "cards": {
+        "001": "done",
+        "002": "doing",
+        "003": "blocked",
+        "004": "doing",
+        "005": "todo",
+        "006": "todo",
+        "007": "wishlist",
+        "008": "archive",
+        "009": "blocked",
+        "010": "doing"
+      },
+      "distribution": { "wishlist": 1, "todo": 2, "doing": 3, "blocked": 2, "done": 1, "archive": 1 },
+      "ready": ["005"],
+      "progress": 0.1111
+    }
+  }
+}

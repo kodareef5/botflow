@@ -1,0 +1,15 @@
+{
+  "cases": {
+    "dup-id": [{ "rule": "dup-id", "ref": "001" }],
+    "unknown-lane": [{ "rule": "unknown-lane", "ref": "001" }],
+    "bad-substate": [{ "rule": "bad-substate", "ref": "001" }],
+    "yaml-anchor": [{ "rule": "yaml-error", "ref": "board.yaml" }],
+    "dangling-dep": [{ "rule": "dangling-dep", "ref": "001" }],
+    "board-cycle": [{ "rule": "board-cycle", "ref": "001" }],
+    "board-path-missing": [{ "rule": "board-path-missing", "ref": "001" }],
+    "id-scheme-mismatch": [{ "rule": "id-scheme-mismatch", "ref": "abc123" }],
+    "frontmatter-missing": [{ "rule": "frontmatter-missing", "ref": "001-no-front.md" }],
+    "schema": [{ "rule": "schema", "ref": "001" }],
+    "blocked-in-done": [{ "rule": "blocked-in-done", "ref": "001" }]
+  }
+}

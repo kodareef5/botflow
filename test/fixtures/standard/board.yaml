@@ -1,0 +1,14 @@
+botflow: 0
+name: standard
+ids: seq
+lanes:
+  - id: wishlist
+  - id: todo
+  - id: doing
+    wip: 2
+  - id: needs-qa
+    name: Needs QA
+    canonical: doing
+  - id: blocked
+  - id: done
+  - id: archive

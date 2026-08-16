@@ -1,0 +1,9 @@
+botflow: 0
+name: substates
+ids: hash
+lanes:
+  - id: todo
+  - id: doing
+    substates: [design, implement, review]
+    order: strict
+  - id: done

@@ -1,0 +1,20 @@
+{
+  "boards": {
+    ".": {
+      "lint": [
+        { "rule": "bare-substate-lane", "ref": "d9r4w7" }
+      ],
+      "cards": {
+        "a3f9k2": "doing",
+        "b7m1x4": "doing",
+        "c2q8z5": "doing",
+        "d9r4w7": "doing",
+        "e5t2n8": "todo",
+        "f8u6p3": "done"
+      },
+      "distribution": { "wishlist": 0, "todo": 1, "doing": 4, "blocked": 0, "done": 1, "archive": 0 },
+      "ready": ["e5t2n8"],
+      "progress": 0.1667
+    }
+  }
+}

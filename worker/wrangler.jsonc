@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "botflow-manager",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["RegistryDO", "ProjectDO"] }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "REGISTRY", "class_name": "RegistryDO" },
+      { "name": "PROJECT", "class_name": "ProjectDO" }
+    ]
+  },
+  "observability": { "enabled": true }
+}

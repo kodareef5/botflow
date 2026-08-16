@@ -1,0 +1,25 @@
+{
+  "name": "botflow",
+  "version": "0.1.0",
+  "description": "Git-native kanban spec + engine for AI agents",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "botflow": "./bin/botflow.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p worker",
+    "dev:manager": "wrangler dev -c worker/wrangler.jsonc",
+    "deploy:manager": "wrangler deploy -c worker/wrangler.jsonc"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260816.1",
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.123.0"
+  }
+}

@@ -1,0 +1,58 @@
+// Card serialization and Log-section handling (SPEC §5, §12). Pure — the
+// filesystem write lives in mutate.ts, DO persistence in the worker.
+
+import { emitMap } from './emit.ts';
+import { joinFrontmatter } from './frontmatter.ts';
+import type { Card } from './model.ts';
+
+export function serializeCard(card: Card): string {
+  const fm: Record<string, unknown> = {
+    id: card.id,
+    title: card.title,
+    lane: card.substate === null ? card.laneId : `${card.laneId}.${card.substate}`,
+  };
+  if (card.type === 'board') {
+    fm['type'] = 'board';
+    fm['board'] = card.boardPath;
+  }
+  if (card.labels.length > 0) fm['labels'] = card.labels;
+  if (card.assignee !== null) fm['assignee'] = card.assignee;
+  if (card.priority !== null) fm['priority'] = card.priority;
+  if (card.deps.length > 0) fm['deps'] = card.deps;
+  if (card.blocked !== null) fm['blocked'] = card.blocked;
+  if (card.created !== null) fm['created'] = card.created;
+  if (card.updated !== null) fm['updated'] = card.updated;
+  for (const [key, value] of Object.entries(card.extra)) fm[key] = value; // preserved unknown keys
+  return joinFrontmatter(emitMap(fm), card.body);
+}
+
+/** Append an entry to the (append-only) `## Log` section, creating it if needed. */
+export function appendLogLine(body: string, entry: string): string {
+  const line = `- ${entry}`;
+  const headingRe = /(^|\n)(## Log[ \t]*)\n/;
+  const m = headingRe.exec(body);
+  if (!m) {
+    const base = body.trimEnd();
+    return (base === '' ? '' : base + '\n\n') + `## Log\n${line}\n`;
+  }
+  const sectionStart = m.index + m[0].length;
+  const nextHeading = body.indexOf('\n## ', sectionStart);
+  const sectionEnd = nextHeading === -1 ? body.length : nextHeading;
+  const section = body.slice(sectionStart, sectionEnd).trimEnd();
+  const rebuilt = (section === '' ? line : section + '\n' + line) + '\n';
+  return body.slice(0, sectionStart) + rebuilt + body.slice(sectionEnd);
+}
+
+export function nowDate(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+export function nowDateTime(): string {
+  return new Date().toISOString().slice(0, 16).replace('T', ' ');
+}
+
+/** Stamp a log entry onto a card and bump `updated` (SPEC §12 discipline). */
+export function logMutation(card: Card, actor: string, message: string): void {
+  card.body = appendLogLine(card.body, `${nowDateTime()} ${actor}: ${message}`);
+  card.updated = nowDate();
+}

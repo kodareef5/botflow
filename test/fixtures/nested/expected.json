@@ -1,0 +1,27 @@
+{
+  "boards": {
+    ".": {
+      "lint": [
+        { "rule": "rollup-drift", "ref": "003" }
+      ],
+      "cards": { "001": "done", "002": "done", "003": "blocked" },
+      "distribution": { "wishlist": 0, "todo": 0, "doing": 0, "blocked": 1, "done": 2, "archive": 0 },
+      "ready": [],
+      "progress": 0.75
+    },
+    "web": {
+      "lint": [],
+      "cards": { "001": "done", "002": "done" },
+      "distribution": { "wishlist": 0, "todo": 0, "doing": 0, "blocked": 0, "done": 2, "archive": 0 },
+      "ready": [],
+      "progress": 1
+    },
+    "api/.botflow": {
+      "lint": [],
+      "cards": { "001": "done", "002": "doing", "003": "todo", "004": "blocked" },
+      "distribution": { "wishlist": 0, "todo": 1, "doing": 1, "blocked": 1, "done": 1, "archive": 0 },
+      "ready": ["003"],
+      "progress": 0.25
+    }
+  }
+}

@@ -1,0 +1,13 @@
+botflow: 0
+name: botflow
+
+# Six canonical lanes by default. Specialty lanes take `canonical: <state>`;
+# lanes can carry `substates: [design, implement, review]`, `order: strict`,
+# and `wip: <n>`. See spec/SPEC.md in the botflow repo.
+lanes:
+  - id: wishlist
+  - id: todo
+  - id: doing
+  - id: blocked
+  - id: done
+  - id: archive

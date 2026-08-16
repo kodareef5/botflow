@@ -1,0 +1,7 @@
+botflow: 0
+name: bad-substate
+lanes:
+  - id: todo
+  - id: doing
+    substates: [design, implement]
+  - id: done

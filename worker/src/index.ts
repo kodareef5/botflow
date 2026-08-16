@@ -1,0 +1,251 @@
+// botflow manager — Worker entry: auth, REST API, org aggregation, and the
+// operator UI. Agents talk REST with scoped keys; humans get the web view.
+
+import { rollupState } from '../../src/core/analyze.ts';
+import {
+  distributionTotal,
+  defaultRollup,
+  emptyDistribution,
+  type Canonical,
+  type Distribution,
+} from '../../src/core/model.ts';
+import type { BoardDocument } from '../../src/core/docs.ts';
+import { ProjectDO } from './project.ts';
+import { RegistryDO, type ProjectNode, type TokenIdentity } from './registry.ts';
+import { UI_HTML } from './ui.ts';
+
+export { ProjectDO, RegistryDO };
+
+export interface Env {
+  REGISTRY: DurableObjectNamespace<RegistryDO>;
+  PROJECT: DurableObjectNamespace<ProjectDO>;
+}
+
+const json = (value: unknown, status = 200): Response =>
+  new Response(JSON.stringify(value, null, 2), { status, headers: { 'content-type': 'application/json' } });
+
+interface ProjectSummary {
+  name: string;
+  cards: number;
+  distribution: Distribution;
+  progress: number | null;
+  errors: number;
+}
+
+interface Rollup {
+  distribution: Distribution;
+  progress: number | null;
+  state: Canonical;
+}
+
+function addDist(into: Distribution, from: Distribution): void {
+  for (const k of Object.keys(into) as (keyof Distribution)[]) into[k] += from[k];
+}
+
+function toRollup(dist: Distribution, doneWeight: number, units: number): Rollup {
+  const countable = distributionTotal(dist) - dist.archive;
+  return {
+    distribution: dist,
+    progress: units === 0 ? null : doneWeight / units,
+    state: countable === 0 ? 'todo' : rollupState(dist, countable, defaultRollup()),
+  };
+}
+
+/** Aggregate a project subtree: own board + all descendant projects. */
+function aggregateNode(
+  node: ProjectNode,
+  summaries: Map<string, ProjectSummary>,
+): { dist: Distribution; units: number; doneWeight: number } {
+  const dist = emptyDistribution();
+  let units = 0;
+  let doneWeight = 0;
+  const own = summaries.get(node.id);
+  if (own) {
+    addDist(dist, own.distribution);
+    const ownUnits = distributionTotal(own.distribution) - own.distribution.archive;
+    units += ownUnits;
+    doneWeight += (own.progress ?? 0) * ownUnits;
+  }
+  for (const child of node.children) {
+    const c = aggregateNode(child, summaries);
+    addDist(dist, c.dist);
+    units += c.units;
+    doneWeight += c.doneWeight;
+  }
+  return { dist, units, doneWeight };
+}
+
+function flattenProjects(nodes: ProjectNode[]): string[] {
+  return nodes.flatMap((n) => [n.id, ...flattenProjects(n.children)]);
+}
+
+export default {
+  async fetch(req: Request, env: Env): Promise<Response> {
+    const url = new URL(req.url);
+    const registry = env.REGISTRY.get(env.REGISTRY.idFromName('main'));
+    const project = (id: string) => env.PROJECT.get(env.PROJECT.idFromName(id));
+
+    try {
+      if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
+        return new Response(UI_HTML, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+      }
+      if (!url.pathname.startsWith('/api/')) return json({ error: 'not found' }, 404);
+
+      const status = await registry.status();
+      if (req.method === 'POST' && url.pathname === '/api/setup') {
+        const body = (await req.json()) as { name?: string };
+        const res = await registry.setup(typeof body.name === 'string' && body.name !== '' ? body.name : 'company');
+        return 'error' in res ? json(res, 409) : json(res);
+      }
+      if (!status.initialized) return json({ uninitialized: true }, url.pathname === '/api/org' ? 200 : 403);
+
+      // ---- auth ----
+      const header = req.headers.get('authorization') ?? '';
+      const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+      const identity: TokenIdentity = token === '' ? null : await registry.verifyToken(token);
+      if (identity === null) return json({ error: 'unauthorized' }, 401);
+      const requireAdmin = (): Response | null => (identity.kind === 'admin' ? null : json({ error: 'admin only' }, 403));
+      const actorOf = (body: Record<string, unknown>): string =>
+        typeof body['actor'] === 'string' && body['actor'] !== ''
+          ? (body['actor'] as string)
+          : identity.kind === 'agent'
+            ? identity.label
+            : 'admin';
+
+      // ---- org ----
+      if (req.method === 'GET' && url.pathname === '/api/org') {
+        const denied = requireAdmin();
+        if (denied) return denied;
+        const tree = await registry.tree();
+        const ids = tree.spaces.flatMap((s) => flattenProjects(s.projects));
+        const summaries = new Map<string, ProjectSummary>();
+        await Promise.all(
+          ids.map(async (id) => {
+            summaries.set(id, (await project(id).summary()) as unknown as ProjectSummary);
+          }),
+        );
+        const renderNode = (n: ProjectNode): Record<string, unknown> => {
+          const agg = aggregateNode(n, summaries);
+          return {
+            id: n.id,
+            name: n.name,
+            summary: summaries.get(n.id) ?? null,
+            aggregate: toRollup(agg.dist, agg.doneWeight, agg.units),
+            children: n.children.map(renderNode),
+          };
+        };
+        const orgDist = emptyDistribution();
+        let orgUnits = 0;
+        let orgDone = 0;
+        const spaces = tree.spaces.map((s) => {
+          const sDist = emptyDistribution();
+          let sUnits = 0;
+          let sDone = 0;
+          for (const p of s.projects) {
+            const agg = aggregateNode(p, summaries);
+            addDist(sDist, agg.dist);
+            sUnits += agg.units;
+            sDone += agg.doneWeight;
+          }
+          addDist(orgDist, sDist);
+          orgUnits += sUnits;
+          orgDone += sDone;
+          return { id: s.id, name: s.name, aggregate: toRollup(sDist, sDone, sUnits), projects: s.projects.map(renderNode) };
+        });
+        return json({ name: tree.name, aggregate: toRollup(orgDist, orgDone, orgUnits), spaces });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/spaces') {
+        const denied = requireAdmin();
+        if (denied) return denied;
+        const body = (await req.json()) as { name?: string };
+        if (!body.name) return json({ error: 'name required' }, 400);
+        return json(await registry.createSpace(body.name));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/projects') {
+        const denied = requireAdmin();
+        if (denied) return denied;
+        const body = (await req.json()) as { space?: string; parent?: string; name?: string };
+        if (!body.space || !body.name) return json({ error: 'space and name required' }, 400);
+        const res = await registry.createProject(body.space, body.parent ?? null, body.name);
+        if ('error' in res) return json(res, 400);
+        await project(res.id).ensureInit(body.name);
+        return json(res);
+      }
+      const keyRevoke = /^\/api\/keys\/([^/]+)\/revoke$/.exec(url.pathname);
+      if (req.method === 'POST' && keyRevoke) {
+        const denied = requireAdmin();
+        if (denied) return denied;
+        return json(await registry.revokeKey(keyRevoke[1]!));
+      }
+
+      // ---- project routes ----
+      const match = /^\/api\/projects\/([^/]+)(\/.*)?$/.exec(url.pathname);
+      if (!match) return json({ error: 'not found' }, 404);
+      const pid = match[1]!;
+      const rest = match[2] ?? '';
+      if ((await registry.projectName(pid)) === null) return json({ error: `no project ${pid}` }, 404);
+      if (identity.kind === 'agent' && identity.projectId !== pid) return json({ error: 'key is scoped to another project' }, 403);
+      const stub = project(pid);
+
+      if (req.method === 'GET' && (rest === '' || rest === '/board')) return json(await stub.board());
+      if (req.method === 'GET' && rest === '/export') return json(await stub.exportDocs());
+      if (req.method === 'PUT' && rest === '/import') {
+        const body = (await req.json()) as { config?: string; cards?: BoardDocument[]; actor?: string };
+        if (typeof body.config !== 'string' || !Array.isArray(body.cards)) return json({ error: 'config and cards required' }, 400);
+        return json(await stub.importDocs(body.config, body.cards, actorOf(body as Record<string, unknown>)));
+      }
+      if (req.method === 'GET' && rest === '/events') {
+        const limit = Math.min(500, Number(url.searchParams.get('limit') ?? 100) || 100);
+        return json(await stub.listEvents(limit));
+      }
+      if (req.method === 'GET' && rest === '/keys') {
+        const denied = requireAdmin();
+        if (denied) return denied;
+        return json(await registry.listKeys(pid));
+      }
+      if (req.method === 'POST' && rest === '/keys') {
+        const denied = requireAdmin();
+        if (denied) return denied;
+        const body = (await req.json()) as { label?: string };
+        if (!body.label) return json({ error: 'label required' }, 400);
+        const res = await registry.createKey(pid, body.label);
+        return 'error' in res ? json(res, 400) : json(res);
+      }
+      if (req.method === 'POST' && rest === '/cards') {
+        const body = (await req.json()) as Record<string, unknown>;
+        if (typeof body['title'] !== 'string' || body['title'] === '') return json({ error: 'title required' }, 400);
+        const res = await stub.addCard(
+          {
+            title: body['title'] as string,
+            lane: typeof body['lane'] === 'string' ? (body['lane'] as string) : undefined,
+            type: body['type'] === 'board' ? 'board' : 'task',
+            boardPath: typeof body['board'] === 'string' ? (body['board'] as string) : undefined,
+            labels: Array.isArray(body['labels']) ? (body['labels'] as unknown[]).map(String) : undefined,
+            priority: typeof body['priority'] === 'string' ? (body['priority'] as string) : undefined,
+            deps: Array.isArray(body['deps']) ? (body['deps'] as unknown[]).map(String) : undefined,
+            assignee: typeof body['assignee'] === 'string' ? (body['assignee'] as string) : undefined,
+          },
+          actorOf(body),
+        );
+        return 'error' in res ? json(res, 400) : json(res);
+      }
+      const cardMatch = /^\/cards\/([^/]+)(?:\/([a-z]+))?$/.exec(rest);
+      if (cardMatch) {
+        const cid = cardMatch[1]!;
+        const action = cardMatch[2];
+        if (req.method === 'GET' && action === undefined) {
+          const card = await stub.card(cid);
+          return card === null ? json({ error: `no card ${cid}` }, 404) : json(card);
+        }
+        if (req.method === 'POST' && action !== undefined) {
+          const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+          const res = await stub.action(action, cid, body, actorOf(body));
+          return 'error' in res ? json(res, 400) : json(res);
+        }
+      }
+      return json({ error: 'not found' }, 404);
+    } catch (err) {
+      return json({ error: (err as Error).message }, 500);
+    }
+  },
+} satisfies ExportedHandler<Env>;
