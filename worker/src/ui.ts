@@ -103,6 +103,9 @@ table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink-2)}
 .gate p{color:var(--ink-2);font-size:13px;margin:6px 0 14px}
 .gate form{display:flex;gap:8px}
 .gate input{flex:1}
+.gate .gatefoot{margin-top:18px;padding-top:13px;border-top:1px solid var(--grid);font-size:12px;color:var(--muted);line-height:1.7}
+.gate .gatefoot a{color:var(--progress);text-decoration:none;font-weight:600}
+.gate .gatefoot a:hover{text-decoration:underline}
 .tokenbox{font:12px ui-monospace,Menlo,monospace;background:var(--page);border:1px solid var(--grid);border-radius:6px;padding:10px;word-break:break-all;margin:10px 0}
 .warn{color:var(--p1);font-size:12px}
 .err{color:var(--st-blocked);font-size:13px;margin-top:8px}
@@ -159,6 +162,8 @@ function gate(kind,extra){
       +'<form id="f"><input id="tok" placeholder="bfa_…" required><button class="primary">Open</button></form>';
     $('#f').onsubmit=e=>{e.preventDefault();TOKEN=$('#tok').value.trim();localStorage.setItem('bf_token',TOKEN);start()};
   }
+  g.insertAdjacentHTML('beforeend','<div class="gatefoot">Git-native kanban for AI agents — agents work the board, you watch everything.<br>'
+    +'Self-host free — one click on Cloudflare. <a href="https://github.com/kodareef5/botflow" target="_blank" rel="noopener">GitHub →</a></div>');
 }
 async function start(){
   clearInterval(timer);
