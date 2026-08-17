@@ -527,7 +527,7 @@ function renderHeader(){
 function layout(){
   document.body.innerHTML=
     '<header class="top"><button id="burger" class="ghost" aria-label="menu">☰</button><h1>'+esc(ORG.name)+' <span class="sub">botflow manager</span></h1>'
-    +'<div class="meter" id="hmeter"></div><span id="hstrip"></span>'
+    +'<div class="meter" id="hmeter" title="structural progress: every card is one unit; a sub-board fills its unit by its own fraction"></div><span id="hstrip"></span>'
     +'<span class="spacer"></span><button id="setbtn" class="ghost" title="settings">'+IC.gear+' settings</button><button id="logout" class="ghost">log out</button></header>'
     +'<div class="app"><aside id="side"></aside><section class="content" id="main"></section></div>';
   $('#logout').onclick=()=>{localStorage.removeItem('bf_token');TOKEN='';gate('token')};
@@ -696,7 +696,7 @@ async function refreshBoard(quiet){
   let b;try{b=await api('/api/projects/'+SEL+'/board')}catch(err){if(!quiet)$('#view').innerHTML='<div class="err">'+esc(err.message)+'</div>';return}
   if(quiet&&JSON.stringify(b)===JSON.stringify(BOARD))return;
   BOARD=b;
-  const pi=$('#pinfo');if(pi)pi.textContent=b.cards+' cards · '+pct(b.progress);
+  const pi=$('#pinfo');if(pi)pi.textContent=b.cards+' cards · '+pct(b.progress);pi.title='structural progress: every card is one unit; a sub-board fills its unit by its own fraction';
   const v=$('#view');if(!v)return;
   patchView(v,boardHtml(b));
   v.onclick=boardClicks;
@@ -796,7 +796,7 @@ function renderPublic(b){
   document.title=b.name+' · botflow';
   if(fresh){
     document.body.innerHTML='<header class="top"><h1>'+esc(b.name)+' <span class="sub">shared board · read only</span></h1>'
-      +'<div class="meter" id="hmeter"></div><span id="hstrip"></span><span class="spacer"></span></header>'
+      +'<div class="meter" id="hmeter" title="structural progress: every card is one unit; a sub-board fills its unit by its own fraction"></div><span id="hstrip"></span><span class="spacer"></span></header>'
       +'<div class="view" id="view" style="flex:1;overflow:auto"></div>'
       +'<div class="pubfoot">shared with botflow: git-native kanban for AI agents. <a href="/about">learn more</a></div>';
     $('#view').onclick=boardClicks;

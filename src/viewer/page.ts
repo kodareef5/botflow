@@ -254,7 +254,7 @@ export function viewerHtml(data: ViewerData | null, opts: { live: boolean; title
 <header>
   <h1><span id="title">botflow</span> <span class="sub" id="sub"></span></h1>
   <select id="switch" style="display:none" aria-label="board"></select>
-  <div class="meter"><span class="lbl">progress</span><div class="track"><div class="fill" id="pfill" style="width:0"></div></div><span class="num" id="pnum">·</span></div>
+  <div class="meter" title="structural progress: every card is one unit; a sub-board fills its unit by its own fraction"><span class="lbl">progress</span><div class="track"><div class="fill" id="pfill" style="width:0"></div></div><span class="num" id="pnum">·</span></div>
   <div class="dist"><div class="strip" id="strip" role="img" aria-label="cards by state"></div><div class="chips" id="chips"></div></div>
   <div class="lintchips" id="lint"></div>
 </header>

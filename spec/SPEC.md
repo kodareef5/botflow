@@ -156,6 +156,8 @@ The board-card's frontmatter `lane` remains authoritative for its **position** (
 
 **Progress.** `progress(B) = weight_done / weight_total` over countable cards, where a task card has weight 1 (1 if `done`, else 0 toward done) and a board-card has weight 1 scaled by `progress(K)` (a child 3⁄4 done contributes 0.75). A childless (countable=0) board-card contributes 1 if its effective state is `done`, else 0. `progress` of a board with no countable cards is `null`.
 
+This metric is named **structural progress**, and tools SHOULD present it as such. Every card on a board is one unit of that board's structure: a 500-card child board still fills exactly one parent unit (by its own fraction), the same as a sibling one-line task. That is deliberate: it preserves encapsulation (a parent needs no knowledge of child size) and makes the number mean "how much of this board's own shape is finished", not "how many leaf tasks exist beneath it". Anyone needing leaf-weighted numbers can walk the tree themselves; per-card `weight:` is a possible future extension (§13), not part of this version.
+
 **Recursion** is depth-first. Implementations MUST detect reference cycles and MUST NOT loop: the reference that closes a cycle resolves to nothing, so its board-card falls back to `canonical(c)` (rule 1) and lint reports error `board-cycle`; references upstream of the broken edge roll up over it normally. Aggregate ("rollup") views may render the tree to any depth; canonical distributions are the only cross-level interface.
 
 ## 8. Card ids & merge semantics
@@ -231,4 +233,4 @@ Expected files record, per board: lint findings (rule ids + card ids), per-card 
 
 ## 13. Future (non-normative)
 
-Cross-repo/branch board references (`repo#branch` URLs), cross-board deps, sweep policies (auto-archive of aged done cards), quorum `done_when`, CRDT-grade merge for same-card edits, signed Log entries.
+Cross-repo/branch board references (`repo#branch` URLs), cross-board deps, sweep policies (auto-archive of aged done cards), quorum `done_when`, per-card `weight:` for leaf-weighted progress (today's progress is structural, §7), CRDT-grade merge for same-card edits, signed Log entries.

@@ -178,6 +178,7 @@ export function renderPrime(tree: Tree, analysis: Analysis, root: string): strin
   lines.push('');
   lines.push('Rules: keep moves legal (strict lanes advance one substate), respect wip limits,');
   lines.push('append to `## Log` only, run `botflow lint` after bulk edits. `--json` everywhere.');
+  lines.push('Progress is structural: every card is one unit; a sub-board fills its unit by its own fraction.');
   return lines.join('\n') + '\n';
 }
 
