@@ -98,6 +98,12 @@ botflow remote add https://manager.example.workers.dev p-abc123
 BOTFLOW_TOKEN=bfk_… botflow push   # or pull
 ```
 
+Binary attachment uploads are opt-in: create an R2 bucket and bind it as `ATTACHMENTS`
+(one commented line in `wrangler.jsonc`, or the dashboard). The UI lights up an upload
+button; files land in R2, cards record a normal markdown attachment line pointing at
+`/files/…`, images join the gallery and cover art, and deleting a project purges its
+files. Without the binding everything else works and uploads simply stay hidden.
+
 The sync contract: your repo's documents are truth, and sync is a whole-board snapshot
 (last write wins). The hosted board is that snapshot plus a manager overlay: sub-projects
 created in the manager survive a push even though your repo never carried them. Both

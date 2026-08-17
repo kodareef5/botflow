@@ -225,6 +225,14 @@ test('hosted: concurrent claim storm has one winner, push/pull converges', { tim
     const events = (await call(`/api/projects/${project}/events?limit=50`, { token: admin })).body as unknown as { action: string }[];
     assert.equal(events.filter((e) => e.action === 'claim').length, 1, 'exactly one claim event');
 
+    // No R2 binding on this instance: uploads degrade cleanly.
+    const orgInfo = await call('/api/org', { token: admin });
+    assert.equal(orgInfo.body['uploads'], false, 'org reports uploads off');
+    const noUp = await fetch(`${U}/api/projects/${project}/cards/001/upload?name=x.png`, {
+      method: 'POST', headers: { 'content-type': 'image/png', authorization: `Bearer ${admin}` }, body: new Uint8Array([1]),
+    });
+    assert.equal(noUp.status, 503, 'upload without a bucket is a clear 503');
+
     // Local and hosted edit the same card, then push + pull converge.
     must(dir, 'local-hand', 'log', '002', 'edited locally');
     await call(`/api/projects/${project}/cards/002/comment`, { method: 'POST', token: admin, body: JSON.stringify({ message: 'edited hosted' }) });

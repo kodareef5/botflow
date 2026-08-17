@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
@@ -50,11 +50,29 @@ async function call(path: string, opts: RequestInit & { token?: string } = {}): 
 
 test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180_000 }, async () => {
   const state = mkdtempSync(join(tmpdir(), 'botflow-worker-'));
+  // The shipped wrangler.jsonc deliberately has no R2 binding (uploads are
+  // opt-in); this run gets one via a generated config so the upload path is
+  // exercised for real against workerd's local R2 simulation.
+  const config = {
+    name: 'botflow-manager-test',
+    main: join(import.meta.dirname, '..', 'worker', 'src', 'index.ts'),
+    compatibility_date: '2026-08-01',
+    compatibility_flags: ['nodejs_compat'],
+    migrations: [{ tag: 'v1', new_sqlite_classes: ['RegistryDO', 'ProjectDO'] }],
+    durable_objects: {
+      bindings: [
+        { name: 'REGISTRY', class_name: 'RegistryDO' },
+        { name: 'PROJECT', class_name: 'ProjectDO' },
+      ],
+    },
+    r2_buckets: [{ binding: 'ATTACHMENTS', bucket_name: 'test-attachments' }],
+  };
+  writeFileSync(join(state, 'wrangler.json'), JSON.stringify(config));
   // stdio must be 'ignore': piped output nobody reads fills the pipe buffer
   // and stalls wrangler mid-startup (found the hard way).
   const child = spawn(
     process.execPath,
-    [WRANGLER, 'dev', '--port', String(PORT), '--persist-to', state, '--var', `SETUP_KEY:${SETUP_KEY}`],
+    [WRANGLER, 'dev', '--config', join(state, 'wrangler.json'), '--port', String(PORT), '--persist-to', state, '--var', `SETUP_KEY:${SETUP_KEY}`],
     { cwd: join(import.meta.dirname, '..'), stdio: 'ignore', env: { ...process.env }, detached: true },
   );
   try {
@@ -248,6 +266,39 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
       (await call(`/api/projects/${parent}/shares`, { method: 'POST', token: admin, body: JSON.stringify({ label: 'ghost', card: '999' }) })).status,
       400, 'card share requires a real card',
     );
+    // Binary uploads: R2-backed, format-truthful (a normal attachment line),
+    // capability-served from /files, inline only for safe types.
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10, 1, 2, 3]);
+    const uploaded = await fetch(`${U}/api/projects/${parent}/cards/001/upload?name=shot.png`, {
+      method: 'POST', headers: { 'content-type': 'image/png', authorization: `Bearer ${admin}` }, body: png,
+    });
+    assert.equal(uploaded.status, 200, JSON.stringify(await uploaded.clone().json().catch(() => ({}))));
+    const upUrl = ((await uploaded.json()) as { url: string }).url;
+    assert.match(upUrl, new RegExp(`^/files/${parent}/001/[a-f0-9]{16}-shot\\.png$`));
+    const served = await fetch(U + upUrl);
+    assert.equal(served.status, 200);
+    assert.equal(served.headers.get('content-type'), 'image/png');
+    assert.equal(served.headers.get('content-disposition'), null, 'images render inline');
+    assert.deepEqual(new Uint8Array(await served.arrayBuffer()), png, 'bytes round-trip');
+    const withUpload = await call(`/api/projects/${parent}/cards/001`, { token: admin });
+    const uploadAtts = (withUpload.body['parsed'] as { attachments: { url: string; index: number }[] }).attachments;
+    assert.ok(uploadAtts.some((a) => a.url === upUrl), 'upload recorded as a markdown attachment line');
+
+    const evil = await fetch(`${U}/api/projects/${parent}/cards/001/upload?name=page.html`, {
+      method: 'POST', headers: { 'content-type': 'text/html', authorization: `Bearer ${admin}` }, body: '<script>alert(1)</script>',
+    });
+    const evilUrl = ((await evil.json()) as { url: string }).url;
+    const evilServed = await fetch(U + evilUrl);
+    assert.match(evilServed.headers.get('content-disposition') ?? '', /^attachment/, 'html never renders inline');
+    assert.equal(evilServed.headers.get('content-security-policy'), 'sandbox');
+
+    // Detach drops the R2 object too.
+    const detachIdx = ((await call(`/api/projects/${parent}/cards/001`, { token: admin })).body['parsed'] as { attachments: { url: string; index: number }[] })
+      .attachments.find((a) => a.url === evilUrl)!.index;
+    await call(`/api/projects/${parent}/cards/001/detach`, { method: 'POST', token: admin, body: JSON.stringify({ index: detachIdx }) });
+    assert.equal((await fetch(U + evilUrl)).status, 404, 'detached upload is gone from storage');
+    assert.equal((await call('/api/org', { token: admin })).body['uploads'], true, 'org advertises uploads');
+
     // Post-import the board holds 001 (own task) and 002 (sneak): scope to 001.
     const cardShare = (await call(`/api/projects/${parent}/shares`, { method: 'POST', token: admin, body: JSON.stringify({ label: 'one card', card: '001' }) })).body['token'] as string;
     assert.equal((await call(`/api/public/${cardShare}/cards/001`)).status, 200, 'the scoped card is visible');

@@ -27,7 +27,17 @@ export interface Env {
   /** Optional: when set (wrangler secret/var), /api/setup requires it, which
    *  closes the fresh-deployment claim race. */
   SETUP_KEY?: string;
+  /** Optional R2 bucket: when bound, cards accept binary attachment uploads
+   *  served from /files/. Without it everything else works and the UI hides
+   *  upload affordances. Bind a bucket as ATTACHMENTS to enable. */
+  ATTACHMENTS?: R2Bucket;
 }
+
+// Uploaded files the browser may render inline; anything else downloads.
+// HTML and SVG stay out: same-origin inline markup could script against the
+// operator session. The sandbox CSP below is the second lock on that door.
+const INLINE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'application/pdf', 'text/plain']);
+const MAX_UPLOAD = 10 * 1024 * 1024;
 
 const json = (value: unknown, status = 200): Response =>
   new Response(JSON.stringify(value, null, 2), { status, headers: { 'content-type': 'application/json' } });
@@ -192,6 +202,28 @@ export default {
         const share = await registry.resolveShare(shareMatch[1]!);
         return new Response(uiHtml(shareMatch[1]!, share?.cardId ?? null), { headers: { 'content-type': 'text/html; charset=utf-8' } });
       }
+      // Uploaded attachments: the random key segment is the capability, like
+      // share tokens; objects render in <img> tags and on public card pages,
+      // where auth headers never travel.
+      if (req.method === 'GET' && url.pathname.startsWith('/files/')) {
+        if (!env.ATTACHMENTS) return json({ error: 'uploads are not enabled on this deployment' }, 404);
+        const key = decodeURIComponent(url.pathname.slice('/files/'.length));
+        if (!/^p-[a-z0-9-]+\/[^/]+\/[a-z0-9]+-[^/]+$/.test(key)) return json({ error: 'not found' }, 404);
+        const obj = await env.ATTACHMENTS.get(key);
+        if (obj === null) return json({ error: 'not found' }, 404);
+        const type = obj.httpMetadata?.contentType ?? 'application/octet-stream';
+        const seg = key.slice(key.lastIndexOf('/') + 1);
+        const name = seg.slice(seg.indexOf('-') + 1);
+        return new Response(obj.body, {
+          headers: {
+            'content-type': type,
+            'x-content-type-options': 'nosniff',
+            'content-security-policy': 'sandbox',
+            'cache-control': 'private, max-age=3600',
+            ...(INLINE_TYPES.has(type) ? {} : { 'content-disposition': `attachment; filename="${name.replace(/"/g, '')}"` }),
+          },
+        });
+      }
       if (!url.pathname.startsWith('/api/')) return json({ error: 'not found' }, 404);
 
       // ---- public (no auth): gate listing + shared read-only boards ----
@@ -318,7 +350,7 @@ export default {
           orgDone += sDone;
           return { id: s.id, name: s.name, aggregate: toRollup(sDist, sDone, sUnits), projects: s.projects.map(renderNode) };
         });
-        return json({ name: tree.name, aggregate: toRollup(orgDist, orgDone, orgUnits), spaces });
+        return json({ name: tree.name, aggregate: toRollup(orgDist, orgDone, orgUnits), spaces, uploads: env.ATTACHMENTS !== undefined });
       }
       if (url.pathname === '/api/settings') {
         const denied = requireAdmin();
@@ -530,8 +562,17 @@ export default {
       // and appends the audit event in one transaction. Cross-DO storage/card
       // cleanup is necessarily best effort; failures are reported and audited,
       // while deleted registry ids remain unreachable.
+      const purgeUploads = async (projectId: string): Promise<void> => {
+        if (!env.ATTACHMENTS) return;
+        for (;;) {
+          const batch = await env.ATTACHMENTS.list({ prefix: `${projectId}/`, limit: 1000 });
+          if (batch.objects.length === 0) return;
+          await Promise.all(batch.objects.map((o) => env.ATTACHMENTS!.delete(o.key)));
+          if (!batch.truncated) return;
+        }
+      };
       const finishDeleteCleanup = async (pid: string, ids: string[], parent: string | null): Promise<number> => {
-        const jobs: (() => Promise<unknown>)[] = ids.map((id) => () => project(id).destroy());
+        const jobs: (() => Promise<unknown>)[] = ids.flatMap((id) => [() => project(id).destroy(), () => purgeUploads(id)]);
         if (parent !== null) jobs.push(() => project(parent).removeCardsByRef(`project:${pid}`, 'admin'));
         const first = await Promise.allSettled(jobs.map((job) => job()));
         const retry = jobs.filter((_, i) => first[i]?.status === 'rejected');
@@ -665,11 +706,39 @@ export default {
           const card = await stub.card(cid);
           return card === null ? json({ error: `no card ${cid}` }, 404) : json(card);
         }
+        if (req.method === 'POST' && action === 'upload') {
+          // Binary attachment: store in R2, then record a normal markdown
+          // attachment line pointing at /files/<key>. Format truth intact.
+          if (!env.ATTACHMENTS) return json({ error: 'uploads are not enabled: bind an R2 bucket as ATTACHMENTS' }, 503);
+          const name = (url.searchParams.get('name') ?? 'file').replace(/[^\w.\- ]+/g, '_').slice(0, 80) || 'file';
+          const type = (req.headers.get('content-type') ?? 'application/octet-stream').split(';')[0]!.trim();
+          const bytes = await req.arrayBuffer();
+          if (bytes.byteLength === 0) return json({ error: 'empty upload' }, 400);
+          if (bytes.byteLength > MAX_UPLOAD) return json({ error: 'upload exceeds 10 MiB' }, 413);
+          if ((await stub.card(cid)) === null) return json({ error: `no card ${cid}` }, 404);
+          const rand = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('');
+          const key = `${pid}/${cid}/${rand}-${name}`;
+          await env.ATTACHMENTS.put(key, bytes, { httpMetadata: { contentType: type } });
+          const res = await stub.action('attach', cid, { url: `/files/${key}`, label: name }, actorOf({ actor: url.searchParams.get('actor') ?? '' }));
+          if ('error' in res) {
+            await env.ATTACHMENTS.delete(key).catch(() => {});
+            return json(res, 400);
+          }
+          return json({ url: `/files/${key}`, name });
+        }
         if (req.method === 'POST' && action !== undefined) {
           const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+          // Detaching an uploaded file also drops the R2 object (best effort).
+          let uploadedUrl: string | null = null;
+          if (action === 'detach' && env.ATTACHMENTS) {
+            const detail = (await stub.card(cid)) as { parsed?: { attachments?: { index: number; url: string }[] } } | null;
+            const att = detail?.parsed?.attachments?.find((a) => a.index === Number(body['index']));
+            if (att && att.url.startsWith('/files/')) uploadedUrl = att.url;
+          }
           const res = await stub.action(action, cid, body, actorOf(body));
-          // A lost claim is a 409: the caller raced someone or misread readiness.
-          return 'error' in res ? json(res, 'conflict' in res ? 409 : 400) : json(res);
+          if ('error' in res) return json(res, 'conflict' in res ? 409 : 400);
+          if (uploadedUrl !== null) await env.ATTACHMENTS!.delete(uploadedUrl.slice('/files/'.length)).catch(() => {});
+          return json(res);
         }
       }
       return json({ error: 'not found' }, 404);

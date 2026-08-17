@@ -346,7 +346,7 @@ const PUBCARD=window.__PUBCARD__||null;
 let RO=!!PUB;
 const cardApi=cid=>PUB?'/api/public/'+PUB+'/cards/'+cid:'/api/projects/'+SEL+'/cards/'+cid;
 let THEME={style:'harbor',accent:'pacific',mode:'system',density:'relaxed',custom:null};
-let ORG=null,SEL=null,VIEW='board',BOARD=null,timer=null,MODAL=null;
+let ORG=null,SEL=null,VIEW='board',BOARD=null,timer=null,MODAL=null,UPLOADS=false;
 const mq=matchMedia('(prefers-color-scheme: dark)');
 mq.addEventListener('change',()=>applyTheme(THEME));
 function contrastInk(hex){
@@ -512,7 +512,7 @@ async function start(){
     return gate('token',err.message);
   }
   if(org.uninitialized)return gate('setup');
-  ORG=org;
+  ORG=org;UPLOADS=org.uploads===true;
   if(SEL&&SEL!=='::settings'&&!findAny(SEL))SEL=null;
   if(!SEL){const first=firstProject(ORG);SEL=first?first.id:null}
   layout();
@@ -878,7 +878,7 @@ function paneCard(c){
       +'</div>';
   }
   const atts=p.attachments||[];
-  out+='<h4>attachments'+(RO?'':' <span class="h-act"><button data-attach>+ add link</button></span>')+'</h4>';
+  out+='<h4>attachments'+(RO?'':' <span class="h-act">'+(UPLOADS?'<button data-upload>+ upload</button>':'')+'<button data-attach>+ add link</button></span>')+'</h4>';
   out+=atts.length?atts.map(a=>{
     let host='';try{host=new URL(a.url).hostname}catch{}
     return '<div class="att">'+IC.clip+'<span class="lbl">'+esc(a.label)+'</span><span class="host">'+esc(host)+'</span>'
@@ -921,6 +921,20 @@ function wireCardModal(m,c,tab){
     if(det){await api('/api/projects/'+SEL+'/cards/'+c.id+'/detach',{method:'POST',body:JSON.stringify({index:Number(det.dataset.detach)})});openCard(c.id,'card');return}
     const cov=e.target.closest('[data-cover]');
     if(cov){const v=cov.dataset.cover;await api('/api/projects/'+SEL+'/cards/'+c.id+'/edit',{method:'POST',body:JSON.stringify({cover:v==='auto'?null:v})});openCard(c.id,'card');return}
+    if(e.target.closest('[data-upload]')){
+      const picker=document.createElement('input');picker.type='file';
+      picker.onchange=async()=>{
+        const file=picker.files&&picker.files[0];if(!file)return;
+        const pane=m.querySelector('.pane');
+        const fail=msg=>pane.insertAdjacentHTML('afterbegin','<div class="err" role="alert">'+esc(msg)+'</div>');
+        if(file.size>10*1024*1024)return void fail('that file is over the 10 MiB upload limit');
+        const res=await fetch('/api/projects/'+SEL+'/cards/'+c.id+'/upload?name='+encodeURIComponent(file.name),{
+          method:'POST',headers:{'content-type':file.type||'application/octet-stream',...(TOKEN?{authorization:'Bearer '+TOKEN}:{})},body:file});
+        if(res.ok)openCard(c.id,'card');
+        else{const b=await res.json().catch(()=>({}));fail(b.error||'upload failed')}
+      };
+      picker.click();
+      return}
     if(e.target.closest('[data-attach]')){
       formModal('Attach a link',[{name:'url',label:'url (images join the gallery)',required:true},{name:'label',label:'label (optional)'}],'attach',async d=>{
         await api('/api/projects/'+SEL+'/cards/'+c.id+'/attach',{method:'POST',body:JSON.stringify({url:d.url,label:d.label||undefined})});openCard(c.id,'card')});

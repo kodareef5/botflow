@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // Lives at the repo root so `npx wrangler deploy` works with no flags —
+  // Lives at the repo root so `npx wrangler deploy` works with no flags,
   // which is exactly what the Deploy-to-Cloudflare button runs.
   "name": "botflow-manager",
   "main": "worker/src/index.ts",
@@ -16,4 +16,8 @@
     ]
   },
   "observability": { "enabled": true }
+  // Optional: binary attachment uploads. Create an R2 bucket, then uncomment
+  // (or add the binding in the dashboard); the UI lights up automatically.
+  // Local dev: `wrangler dev --r2 ATTACHMENTS` simulates it with no account.
+  // ,"r2_buckets": [{ "binding": "ATTACHMENTS", "bucket_name": "botflow-attachments" }]
 }
