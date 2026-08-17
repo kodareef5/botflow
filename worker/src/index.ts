@@ -6,14 +6,17 @@ import {
   distributionTotal,
   defaultRollup,
   emptyDistribution,
+  fallbackConfig,
   type Canonical,
   type Distribution,
 } from '../../src/core/model.ts';
+import { resolvePosition } from '../../src/core/ops.ts';
 import type { BoardDocument } from '../../src/core/docs.ts';
-import { ProjectDO } from './project.ts';
+import { ProjectDO, validateImportDocuments } from './project.ts';
 import { RegistryDO, type ProjectNode, type TokenIdentity } from './registry.ts';
 import { ABOUT_HTML } from './about.ts';
 import { DEMO, type OrgImport, type ProjectImport } from './demo.ts';
+import { setupAccess } from './security.ts';
 import { uiHtml } from './ui.ts';
 
 export { ProjectDO, RegistryDO };
@@ -89,6 +92,87 @@ function flattenProjects(nodes: ProjectNode[]): string[] {
   return nodes.flatMap((n) => [n.id, ...flattenProjects(n.children)]);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Validate a company import completely before pass 1 creates any registry
+ *  rows. Version 1 remains accepted for old/demo payloads; restore-grade v2
+ *  requires stable, unique exported project ids. */
+function validateOrgImportPayload(value: unknown): string | null {
+  if (!isRecord(value) || (value['version'] !== 1 && value['version'] !== 2)) return 'version must be 1 or 2';
+  if (!Array.isArray(value['spaces'])) return 'spaces required';
+  const version = value['version'];
+  const ids = new Set<string>();
+  const visit = (node: unknown, ref: string): string | null => {
+    if (!isRecord(node)) return `${ref} must be a project object`;
+    if (typeof node['name'] !== 'string' || node['name'].trim() === '') return `${ref}.name required`;
+    if (node['id'] !== undefined) {
+      if (typeof node['id'] !== 'string' || node['id'] === '') return `${ref}.id must be a string`;
+      if (ids.has(node['id'])) return `duplicate exported project id: ${node['id']}`;
+      ids.add(node['id']);
+    } else if (version === 2) {
+      return `${ref}.id required in version 2`;
+    }
+    if (node['lane'] !== undefined && typeof node['lane'] !== 'string') return `${ref}.lane must be a string`;
+    let config = fallbackConfig(node['name']);
+    if (node['board'] !== undefined) {
+      if (!isRecord(node['board'])) return `${ref}.board must be an object`;
+      const checked = validateImportDocuments(node['board']['config'], node['board']['cards']);
+      if ('error' in checked) return `${ref}.board: ${checked.error}`;
+      config = checked.board.config;
+    }
+    const children = node['children'] ?? [];
+    if (!Array.isArray(children)) return `${ref}.children must be a list`;
+    for (let i = 0; i < children.length; i++) {
+      if (isRecord(children[i])) {
+        const requested = children[i]!['lane'];
+        const lane = typeof requested === 'string'
+          ? requested
+          : (config.lanes.find((l) => l.canonical === 'todo') ?? config.lanes[0])?.id;
+        if (!lane) return `${ref}.board has no lane for child projects`;
+        try {
+          resolvePosition(config, lane);
+        } catch (err) {
+          return `${ref}.children[${i}].lane: ${(err as Error).message}`;
+        }
+      }
+      const error = visit(children[i], `${ref}.children[${i}]`);
+      if (error) return error;
+    }
+    return null;
+  };
+  for (let si = 0; si < value['spaces'].length; si++) {
+    const space = value['spaces'][si];
+    if (!isRecord(space)) return `spaces[${si}] must be an object`;
+    if (typeof space['name'] !== 'string' || space['name'].trim() === '') return `spaces[${si}].name required`;
+    if (!Array.isArray(space['projects'])) return `spaces[${si}].projects must be a list`;
+    for (let pi = 0; pi < space['projects'].length; pi++) {
+      const error = visit(space['projects'][pi], `spaces[${si}].projects[${pi}]`);
+      if (error) return error;
+    }
+  }
+  if (value['keys'] !== undefined) {
+    if (!Array.isArray(value['keys'])) return 'keys must be a list';
+    for (const key of value['keys']) {
+      if (!isRecord(key) || typeof key['hash'] !== 'string' || !/^[a-f0-9]{64}$/.test(key['hash']) ||
+          typeof key['projectId'] !== 'string' || !ids.has(key['projectId']) || typeof key['label'] !== 'string' ||
+          typeof key['created'] !== 'string' || typeof key['revoked'] !== 'boolean') return 'malformed key metadata';
+    }
+  }
+  if (value['shares'] !== undefined) {
+    if (!Array.isArray(value['shares'])) return 'shares must be a list';
+    for (const share of value['shares']) {
+      if (!isRecord(share) || typeof share['token'] !== 'string' || !/^[a-f0-9]{16,64}$/.test(share['token']) ||
+          typeof share['projectId'] !== 'string' || !ids.has(share['projectId']) || typeof share['label'] !== 'string' ||
+          typeof share['created'] !== 'string' || typeof share['revoked'] !== 'boolean') return 'malformed share metadata';
+    }
+  }
+  if (value['theme'] !== undefined && !isRecord(value['theme'])) return 'theme must be an object';
+  if (value['prefs'] !== undefined && !isRecord(value['prefs'])) return 'prefs must be an object';
+  return null;
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
@@ -134,10 +218,10 @@ export default {
         return json(await registry.getTheme());
       }
       if (req.method === 'POST' && url.pathname === '/api/setup') {
+        if (status.initialized) return json({ error: 'already initialized' }, 409);
         const body = (await req.json()) as { name?: string; setupKey?: string };
-        if (typeof env.SETUP_KEY === 'string' && env.SETUP_KEY !== '' && body.setupKey !== env.SETUP_KEY) {
-          return json({ error: 'this deployment requires a setup key' }, 403);
-        }
+        const access = setupAccess(url.hostname, env.SETUP_KEY, body.setupKey);
+        if (!access.ok) return json({ error: access.error }, access.status);
         const res = await registry.setup(typeof body.name === 'string' && body.name !== '' ? body.name : 'company');
         return 'error' in res ? json(res, 409) : json(res);
       }
@@ -251,14 +335,22 @@ export default {
         const denied = requireAdmin();
         if (denied) return denied;
         const isDemo = url.pathname === '/api/demo';
-        const payload = isDemo ? DEMO : ((await req.json()) as OrgImport);
-        if (!payload || !Array.isArray(payload.spaces)) return json({ error: 'spaces required' }, 400);
+        const rawPayload: unknown = isDemo ? DEMO : await req.json();
+        const validationError = validateOrgImportPayload(rawPayload);
+        if (validationError) return json({ error: validationError }, 400);
+        const payload = rawPayload as OrgImport;
         const actor = 'admin';
         const idMap = new Map<string, string>(); // exported id → restored id
+        const createdSpaceIds: string[] = [];
         let projects = 0;
+        const previousMetadata = isDemo ? null : {
+          name: status.name ?? 'company',
+          theme: await registry.getTheme(),
+          prefs: await registry.getPrefs(),
+        };
 
         // Pass 1: recreate the tree so every exported id has a new id.
-        interface CreatedNode { node: ProjectImport; id: string; parentId: string | null; children: CreatedNode[] }
+        interface CreatedNode { node: ProjectImport; id: string; children: CreatedNode[] }
         const createTree = async (spaceId: string, parentId: string | null, node: ProjectImport): Promise<CreatedNode> => {
           const created = await registry.createProject(parentId === null ? spaceId : null, parentId, node.name);
           if ('error' in created) throw new Error(created.error);
@@ -267,12 +359,12 @@ export default {
           await project(created.id).ensureInit(node.name);
           const children: CreatedNode[] = [];
           for (const child of node.children ?? []) children.push(await createTree(spaceId, created.id, child));
-          return { node, id: created.id, parentId, children };
+          return { node, id: created.id, children };
         };
         // Pass 2: import boards with project: refs rewritten to the new ids,
         // then add project cards only for children the board doesn't carry.
         const fillTree = async (created: CreatedNode): Promise<void> => {
-          let boardText = '';
+          const importedRefs = new Set<string>();
           if (created.node.board) {
             const rewrite = (text: string): string => {
               let out = text;
@@ -280,16 +372,21 @@ export default {
               return out;
             };
             const docs = created.node.board.cards.map((d) => ({ path: d.path, text: rewrite(d.text) }));
+            const checked = validateImportDocuments(created.node.board.config, docs);
+            if ('error' in checked) throw new Error(checked.error);
+            for (const card of checked.board.cards) {
+              if (card.type === 'board' && card.boardPath !== null) importedRefs.add(card.boardPath);
+            }
             const res = (await project(created.id).importDocs(created.node.board.config, docs, actor)) as { error?: unknown };
             if (res.error) throw new Error(String(res.error));
-            boardText = docs.map((d) => d.text).join('\n');
           }
           for (const child of created.children) {
-            if (!boardText.includes(`project:${child.id}`)) {
-              await project(created.id).addCard(
+            if (!importedRefs.has(`project:${child.id}`)) {
+              const added = await project(created.id).addCard(
                 { title: child.node.name, type: 'board', boardPath: `project:${child.id}`, lane: child.node.lane },
                 actor,
               );
+              if ('error' in added) throw new Error(added.error);
             }
             await fillTree(child);
           }
@@ -297,6 +394,7 @@ export default {
         try {
           for (const space of payload.spaces) {
             const s = await registry.createSpace(space.name);
+            createdSpaceIds.push(s.id);
             const roots: CreatedNode[] = [];
             for (const p of space.projects) roots.push(await createTree(s.id, null, p));
             for (const r of roots) await fillTree(r);
@@ -317,7 +415,23 @@ export default {
             }
           }
         } catch (err) {
-          return json({ error: (err as Error).message }, 400);
+          const message = (err as Error).message;
+          let cleanup = 'rollback complete';
+          try {
+            const rolledBack = await registry.rollbackSpaces(createdSpaceIds);
+            const storageCleanup = await Promise.allSettled(rolledBack.ids.map((id) => project(id).destroy()));
+            const storageFailures = storageCleanup.filter((result) => result.status === 'rejected').length;
+            if (storageFailures > 0) cleanup = `registry rollback complete; ${storageFailures} unreachable storage cleanup failure(s)`;
+            if (previousMetadata) {
+              await registry.setOrgName(previousMetadata.name);
+              await registry.setTheme(previousMetadata.theme);
+              await registry.setPrefs(previousMetadata.prefs);
+            }
+          } catch (rollbackErr) {
+            cleanup = `rollback failed: ${(rollbackErr as Error).message}`;
+          }
+          await registry.audit('admin', 'import-failed', `${message}; ${cleanup}`);
+          return json({ error: message }, 400);
         }
         await registry.audit('admin', isDemo ? 'demo' : 'import', `${payload.spaces.length} space(s), ${projects} project(s)`);
         return json({ imported: { spaces: payload.spaces.length, projects } });
@@ -385,33 +499,29 @@ export default {
         if (denied) return denied;
         return json(await registry.listAllShares());
       }
-      // Hard deletion. Ordering matters for failure modes: registry rows go
-      // first (one synchronous DO transaction, cutting auth and the tree at
-      // once), then the parent's project card, then best-effort DO wipes:
-      // leftover DO storage is unreachable garbage, never an orphaned live
-      // project. Every deletion lands in the org audit log; the company
-      // export is the parachute.
-      const deleteProjectCascade = async (pid: string): Promise<number> => {
-        const ids = await registry.subtreeIds(pid);
-        const parent = await registry.parentOf(pid);
-        const name = await registry.projectName(pid);
-        await registry.deleteProjects(ids);
-        await registry.audit('admin', 'delete-project', `"${name ?? pid}" (${ids.length} project(s): ${ids.join(', ')})`);
-        if (parent !== null) await project(parent).removeCardsByRef(`project:${pid}`, 'admin');
-        await Promise.allSettled(ids.map((id) => project(id).destroy()));
-        return ids.length;
+      // Hard deletion. RegistryDO resolves the subtree, cuts auth/tree rows,
+      // and appends the audit event in one transaction. Cross-DO storage/card
+      // cleanup is necessarily best effort; failures are reported and audited,
+      // while deleted registry ids remain unreachable.
+      const finishDeleteCleanup = async (pid: string, ids: string[], parent: string | null): Promise<number> => {
+        const jobs: (() => Promise<unknown>)[] = ids.map((id) => () => project(id).destroy());
+        if (parent !== null) jobs.push(() => project(parent).removeCardsByRef(`project:${pid}`, 'admin'));
+        const first = await Promise.allSettled(jobs.map((job) => job()));
+        const retry = jobs.filter((_, i) => first[i]?.status === 'rejected');
+        const second = await Promise.allSettled(retry.map((job) => job()));
+        const failures = second.filter((r) => r.status === 'rejected').length;
+        if (failures > 0) await registry.audit('system', 'delete-cleanup-failed', `${pid}: ${failures} cleanup operation(s)`);
+        return failures;
       };
       const spaceDelete = /^\/api\/spaces\/([^/]+)$/.exec(url.pathname);
       if (req.method === 'DELETE' && spaceDelete) {
         const denied = requireAdmin();
         if (denied) return denied;
         const sid = spaceDelete[1]!;
-        const ids = await registry.projectIdsInSpace(sid);
-        await registry.deleteProjects(ids);
-        await registry.deleteSpace(sid);
-        await registry.audit('admin', 'delete-space', `${sid} (${ids.length} project(s))`);
-        await Promise.allSettled(ids.map((id) => project(id).destroy()));
-        return json({ deleted: { space: sid, projects: ids.length } });
+        const removed = await registry.deleteSpaceCascade(sid, 'admin');
+        if ('error' in removed) return json(removed, 404);
+        const cleanupFailures = await finishDeleteCleanup(sid, removed.ids, null);
+        return json({ deleted: { space: sid, projects: removed.ids.length }, cleanupFailures });
       }
       if (req.method === 'GET' && url.pathname === '/api/org/activity') {
         const denied = requireAdmin();
@@ -435,8 +545,10 @@ export default {
       if (req.method === 'DELETE' && (rest === '' || rest === '/')) {
         const denied = requireAdmin();
         if (denied) return denied;
-        const projects = await deleteProjectCascade(pid);
-        return json({ deleted: { project: pid, projects } });
+        const removed = await registry.deleteProjectCascade(pid, 'admin');
+        if ('error' in removed) return json(removed, 404);
+        const cleanupFailures = await finishDeleteCleanup(pid, removed.ids, removed.parent);
+        return json({ deleted: { project: pid, projects: removed.ids.length }, cleanupFailures });
       }
       if (req.method === 'GET' && (rest === '' || rest === '/board')) return json(await stub.board());
       if (req.method === 'GET' && rest === '/export') return json(await stub.exportDocs());
@@ -482,7 +594,7 @@ export default {
         // DO enforces this at resolution time too, this is the friendly error.
         if (typeof body['board'] === 'string' && body['board'].startsWith('project:')) {
           const ref = (body['board'] as string).slice('project:'.length);
-          if ((await registry.projectName(ref)) === null || !(await registry.isWithin(ref, pid))) {
+          if (ref === pid || (await registry.projectName(ref)) === null || !(await registry.isWithin(ref, pid))) {
             return json({ error: 'a project card may only reference a project nested beneath this board' }, 400);
           }
         }

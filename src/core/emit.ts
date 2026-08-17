@@ -1,5 +1,5 @@
 // Emitter for the strict YAML subset: the inverse of yaml.ts for the shapes
-// botflow writes: flat mappings, nested mappings, and scalar lists.
+// botflow writes, including recursive maps and every parseable list shape.
 
 const PLAIN_INT_RE = /^-?(0|[1-9][0-9]*)$/;
 
@@ -44,6 +44,10 @@ export function emitMap(obj: Record<string, unknown>, indent = 0): string {
         for (const item of value) {
           if (isScalar(item)) {
             lines.push(`${pad}  - ${emitScalar(item)}`);
+          } else if (Array.isArray(item) && item.every(isScalar)) {
+            // The parser accepts a flow list as a sequence item (`- [a, b]`).
+            // This is the only nested-list shape its closed subset can produce.
+            lines.push(`${pad}  - [${item.map(emitScalar).join(', ')}]`);
           } else if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
             // `- first: v` with continuation keys two deeper (the parser's shape).
             const innerLines = emitMap(item as Record<string, unknown>, indent + 4).split('\n');

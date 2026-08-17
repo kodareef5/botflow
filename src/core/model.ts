@@ -91,7 +91,7 @@ export interface Card {
   blocked: string | null;
   created: string | null;
   updated: string | null;
-  /** Unknown frontmatter keys, preserved verbatim (SPEC §5). */
+  /** Unknown frontmatter keys, preserved semantically (SPEC §5). */
   extra: Record<string, unknown>;
   /** Path relative to the board root, e.g. "cards/042-fix-auth.md". */
   file: string;

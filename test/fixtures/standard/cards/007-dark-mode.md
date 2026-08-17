@@ -3,7 +3,8 @@ id: 007
 title: Dark mode
 lane: wishlist
 labels: [ui]
-effort: xl
+effort:
+  - [xl, ui]
 created: 2026-08-09
 ---
 ## Description

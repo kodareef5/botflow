@@ -56,6 +56,43 @@ interface ProjectEnv {
 
 const PROJECT_REF = 'project:';
 
+export type ImportValidation =
+  | { docs: BoardDocument[]; board: LoadedBoard }
+  | { error: string };
+
+function safeCardDocumentPath(path: string): boolean {
+  if (!path.startsWith('cards/') || !path.endsWith('.md') || path.includes('\\')) return false;
+  const parts = path.split('/');
+  return parts.length >= 2 && parts.every((part) => part !== '' && part !== '.' && part !== '..');
+}
+
+/** Validate a snapshot completely before any Durable Object mutates. Reject
+ *  structural findings that would drop or invent card data; ordinary lint
+ *  findings (unknown lanes, dangling deps, id-scheme drift) remain visible but
+ *  do not make snapshot sync unusably strict. */
+export function validateImportDocuments(config: unknown, cards: unknown): ImportValidation {
+  if (typeof config !== 'string' || !Array.isArray(cards)) return { error: 'config and cards required' };
+  const docs: BoardDocument[] = [];
+  const seenPaths = new Set<string>();
+  for (const value of cards) {
+    if (value === null || typeof value !== 'object') return { error: 'malformed card document' };
+    const doc = value as { path?: unknown; text?: unknown };
+    if (typeof doc.path !== 'string' || typeof doc.text !== 'string') return { error: 'malformed card document' };
+    if (!safeCardDocumentPath(doc.path)) return { error: `unsafe card path in import: ${doc.path}` };
+    if (seenPaths.has(doc.path)) return { error: `duplicate card path in import: ${doc.path}` };
+    seenPaths.add(doc.path);
+    docs.push({ path: doc.path, text: doc.text });
+  }
+  const board = boardFromDocuments(config, docs, 'import');
+  const fatalRules = new Set(['yaml-error', 'frontmatter-missing', 'schema', 'dup-id']);
+  const errors = board.findings.filter((f) => fatalRules.has(f.rule));
+  if (errors.length > 0) {
+    const detail = errors.slice(0, 3).map((f) => `${f.rule}(${f.ref}): ${f.message}`).join('; ');
+    return { error: `invalid board import: ${detail}` };
+  }
+  return { docs, board };
+}
+
 const DDL = `
   CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS cards(id TEXT PRIMARY KEY, file TEXT NOT NULL, text TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -241,14 +278,11 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
    *  manager-native project cards (`board: project:…`) the snapshot doesn't
    *  carry, so a repo push can't sever hosted sub-projects. */
   importDocs(config: string, cards: BoardDocument[], actor: string): Record<string, unknown> {
-    const seenPaths = new Set<string>();
-    for (const doc of cards) {
-      if (typeof doc.path !== 'string' || typeof doc.text !== 'string') return { error: 'malformed card document' };
-      if (seenPaths.has(doc.path)) return { error: `duplicate card path in import: ${doc.path}` };
-      seenPaths.add(doc.path);
-    }
+    const validation = validateImportDocuments(config, cards);
+    if ('error' in validation) return validation;
+    const docs = validation.docs;
     const current = this.loadBoardDocs();
-    const parsed = boardFromDocuments(config, cards, 'import');
+    const parsed = validation.board;
     // Preserve manager-native project cards whose referenced project the
     // snapshot doesn't itself carry (matched by ref, not card id: a snapshot
     // representing the same child under any id already covers it). When a
@@ -272,24 +306,29 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       takenIds.add(card.id);
     }
 
-    this.sql.exec("INSERT INTO meta(key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", config);
-    this.sql.exec('DELETE FROM cards');
     const now = new Date().toISOString();
-    for (const card of parsed.cards) {
-      const doc = cards.find((d) => d.path === card.file);
-      this.sql.exec('INSERT OR REPLACE INTO cards(id, file, text, updated_at) VALUES (?, ?, ?, ?)', card.id, card.file, doc?.text ?? serializeCard(card), now);
-    }
-    for (const card of preserved) {
-      this.sql.exec('INSERT OR REPLACE INTO cards(id, file, text, updated_at) VALUES (?, ?, ?, ?)', card.id, card.file, serializeCard(card), now);
-    }
-    this.event(
-      actor,
-      'import',
-      null,
-      `imported ${parsed.cards.length} cards (snapshot, last-write-wins)` +
-        (preserved.length > 0 ? `; preserved ${preserved.length} project card(s)` : '') +
-        (reIds.length > 0 ? `; re-id on collision: ${reIds.join(', ')}` : ''),
-    );
+    const byPath = new Map(docs.map((doc) => [doc.path, doc.text]));
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec("INSERT INTO meta(key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", config);
+      this.sql.exec('DELETE FROM cards');
+      for (const card of parsed.cards) {
+        this.sql.exec(
+          'INSERT INTO cards(id, file, text, updated_at) VALUES (?, ?, ?, ?)',
+          card.id, card.file, byPath.get(card.file) ?? serializeCard(card), now,
+        );
+      }
+      for (const card of preserved) {
+        this.sql.exec('INSERT INTO cards(id, file, text, updated_at) VALUES (?, ?, ?, ?)', card.id, card.file, serializeCard(card), now);
+      }
+      this.event(
+        actor,
+        'import',
+        null,
+        `imported ${parsed.cards.length} cards (snapshot, last-write-wins)` +
+          (preserved.length > 0 ? `; preserved ${preserved.length} project card(s)` : '') +
+          (reIds.length > 0 ? `; re-id on collision: ${reIds.join(', ')}` : ''),
+      );
+    });
     return { imported: parsed.cards.length, preserved: preserved.length, reIds, findings: parsed.findings.length };
   }
 

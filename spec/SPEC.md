@@ -99,7 +99,10 @@ Frontmatter keys:
 | `created` | date string | no | `YYYY-MM-DD` or ISO datetime; stored as a plain string. |
 | `updated` | date string | no | Tools SHOULD touch this only on meaningful changes (merge-noise discipline). |
 
-Unknown frontmatter keys are lint `info` (`unknown-key`) and MUST be preserved verbatim by any tool that rewrites a card.
+Unknown frontmatter keys are lint `info` (`unknown-key`) and MUST be preserved
+semantically by any tool that rewrites a card. Rewriters MAY normalize key order,
+scalar quoting, whitespace, and comments inside frontmatter; the parsed value and
+all markdown body content outside the requested edit MUST survive.
 
 Body: free markdown. Conventional sections, all optional:
 

@@ -44,23 +44,32 @@ cd my-project && botflow prime
 ```sh
 npm run dev:manager                # local: http://127.0.0.1:8787
 npm run deploy:manager             # deploy to your Cloudflare account
+npx wrangler secret put SETUP_KEY  # required before public first-run setup
 ```
 
 The dev server is a **full local instance**: workerd with SQLite Durable Objects persisted
 under `.wrangler/state/`, no Cloudflare account or network needed. Keep one running under a
 supervisor for local testing (`pm2 start "npm run dev:manager -- --port 4700" --name
 botflow-manager --cwd <repo>`); source changes hot-reload. Deleting `.wrangler/` resets the
-instance: company, tokens, boards, everything.
+instance: company, tokens, boards, everything. Loopback setup is intentionally zero-config;
+an internet-hosted deployment refuses initialization until `SETUP_KEY` is configured as a
+Worker secret. Deploy-button users can add it under **Settings → Variables and Secrets** in
+the Cloudflare dashboard. Enter that value once in the setup form—it is not the admin token.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/kodareef5/botflow)
 *(the button needs this repo public on GitHub; `wrangler deploy` works regardless)*
 
-Visitors get a consumer pitch at `/about`, live public share links can sit right on the
-login page (admin-controlled), and settings offers a one-click **Scoops Empire** demo
+Visitors get a consumer pitch at `/about`, live public share links can optionally sit on the
+login page (admin-controlled and off by default), and settings offers a one-click **Scoops Empire** demo
 company plus a full **company export** (every space, project, board, and card as one
-JSON; the demo source ships in `demo/icecream-empire.json`).
+restore-grade JSON, including key hashes and share links; store it like a credential). The
+demo source ships in `demo/icecream-empire.json`.
 
-First visit initializes the company and mints the admin token (shown exactly once). From the UI: create spaces and projects, mint scoped agent keys (the key's label becomes the agent's actor identity in the audit trail), watch boards and activity live. Agents drive projects via REST with their key: same verbs as the CLI. Link a repo board and sync snapshots:
+After the setup key is configured, the first visit initializes the company and mints the
+admin token (shown exactly once). From the UI: create spaces and projects, mint scoped agent
+keys (the key's label becomes the agent's actor identity in the audit trail), watch boards and
+activity live. Agents drive projects via REST with their key: same verbs as the CLI. Link a
+repo board and sync snapshots:
 
 ```sh
 botflow remote add https://manager.example.workers.dev p-abc123

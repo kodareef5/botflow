@@ -311,9 +311,9 @@ function gate(kind,extra){
   document.body.innerHTML='<div class="gate" id="gate"></div>';
   const g=$('#gate');
   if(kind==='setup'){
-    g.innerHTML='<h2>Set up botflow manager</h2><p>Name your company to initialize this deployment. You will get the admin token exactly once.</p>'
+    g.innerHTML='<h2>Set up botflow manager</h2><p>Name your company to initialize this deployment. Public deployments require the <code>SETUP_KEY</code> Worker secret; loopback development does not. You will get the admin token exactly once.</p>'
       +'<form id="f" style="flex-direction:column"><input id="name" placeholder="company name" required style="margin-bottom:8px">'
-      +'<input id="skey" placeholder="setup key (only if this deployment configured one)" style="margin-bottom:8px">'
+      +'<input id="skey" placeholder="setup key" autocomplete="off" style="margin-bottom:8px">'
       +'<button class="primary">Initialize</button></form><div class="err" id="err"></div>';
     $('#f').onsubmit=async e=>{e.preventDefault();
       try{const r=await api('/api/setup',{method:'POST',body:JSON.stringify({name:$('#name').value,setupKey:$('#skey').value||undefined})});
@@ -621,7 +621,7 @@ async function refreshSharing(){
           +'<td class="mono">'+esc(s.created.slice(0,10))+'</td>'
           +'<td><button data-ds="'+esc(s.id)+'">delete</button></td></tr>').join('')+'</table>'
         :'<div class="empty">no share links yet</div>')
-      +(live.length?'<p style="color:var(--muted);font-size:12px;margin-top:10px">live links are listed on the login page unless you turn that off in settings.</p>':'');
+      +(live.length?'<p style="color:var(--muted);font-size:12px;margin-top:10px">Direct links are live now. Listing them on the login page is an explicit setting.</p>':'');
     $('#mksh').onclick=()=>formModal('New share link',[{name:'label',label:'label (for your own bookkeeping)',required:true}],'create',async d=>{
       const r=await api('/api/projects/'+SEL+'/shares',{method:'POST',body:JSON.stringify({label:d.label})});
       refreshSharing();
@@ -660,7 +660,7 @@ function renderSettings(main){
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">company data</h4>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button id="orgexp">download company export</button>'
     +'<button id="demoload">load the Scoops Empire demo</button></div>'
-    +'<p style="color:var(--muted);font-size:12px;margin-top:6px">The export is one JSON with every space, project, board, and card. The demo adds a sample ice cream company as a new space.</p>'
+    +'<p style="color:var(--muted);font-size:12px;margin-top:6px">The export is restore-grade JSON: every space, project, board, card, key hash, and share link. Store it like a credential. The demo adds a sample ice cream company as a new space.</p>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">manage: spaces and projects</h4>'
     +'<div id="mtree" style="max-width:560px"></div>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">manage: share links</h4>'

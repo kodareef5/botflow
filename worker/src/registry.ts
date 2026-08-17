@@ -88,17 +88,17 @@ export class RegistryDO extends DurableObject {
 
   getPrefs(): { gateShares: boolean } {
     const row = this.sql.exec("SELECT value FROM settings WHERE key = 'prefs'").toArray()[0];
-    if (!row) return { gateShares: true };
+    if (!row) return { gateShares: false };
     try {
       const parsed = JSON.parse(row['value'] as string) as { gateShares?: unknown };
-      return { gateShares: parsed.gateShares !== false };
+      return { gateShares: parsed.gateShares === true };
     } catch {
-      return { gateShares: true };
+      return { gateShares: false };
     }
   }
 
   setPrefs(prefs: { gateShares?: unknown }): { gateShares: boolean } {
-    const next = { gateShares: prefs.gateShares !== false };
+    const next = { gateShares: prefs.gateShares === true };
     this.sql.exec(
       "INSERT INTO settings(key, value) VALUES ('prefs', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
       JSON.stringify(next),
@@ -161,7 +161,7 @@ export class RegistryDO extends DurableObject {
   // ---- deletion (hard; the export tool is the parachute) ----
 
   /** A project id plus every project nested beneath it. */
-  subtreeIds(pid: string): string[] {
+  private subtreeIds(pid: string): string[] {
     const rows = this.sql.exec('SELECT id, parent_id FROM projects').toArray() as { id: string; parent_id: string | null }[];
     const kids = new Map<string, string[]>();
     for (const r of rows) {
@@ -179,29 +179,66 @@ export class RegistryDO extends DurableObject {
     return out;
   }
 
-  parentOf(pid: string): string | null {
-    const row = this.sql.exec('SELECT parent_id FROM projects WHERE id = ?', pid).toArray()[0];
-    const parent: unknown = row?.['parent_id'];
-    return typeof parent === 'string' ? parent : null;
-  }
-
-  projectIdsInSpace(spaceId: string): string[] {
+  private projectIdsInSpace(spaceId: string): string[] {
     return this.sql.exec('SELECT id FROM projects WHERE space_id = ?', spaceId).toArray().map((r) => r['id'] as string);
   }
 
-  /** Remove project rows plus their keys and shares. DO storage is wiped by the caller. */
-  deleteProjects(ids: string[]): { ok: boolean } {
+  /** Remove project rows plus their keys and shares. Must run inside a
+   *  transactionSync closure owned by the public cascade methods below. */
+  private deleteProjectRows(ids: string[]): void {
     for (const id of ids) {
       this.sql.exec('DELETE FROM keys WHERE project_id = ?', id);
       this.sql.exec('DELETE FROM shares WHERE project_id = ?', id);
       this.sql.exec('DELETE FROM projects WHERE id = ?', id);
     }
-    return { ok: true };
   }
 
-  deleteSpace(id: string): { ok: boolean } {
-    this.sql.exec('DELETE FROM spaces WHERE id = ?', id);
-    return { ok: true };
+  /** Resolve, authorize-cut, delete, and audit one project subtree as a
+   *  single RegistryDO transaction. A concurrent child create therefore runs
+   *  wholly before this snapshot (and is included) or after it (and sees no
+   *  parent); it cannot become an orphan between separate RPCs. */
+  deleteProjectCascade(pid: string, actor: string):
+    | { ids: string[]; parent: string | null; name: string }
+    | { error: string } {
+    return this.ctx.storage.transactionSync(() => {
+      const row = this.sql.exec('SELECT name, parent_id FROM projects WHERE id = ?', pid).toArray()[0];
+      if (!row) return { error: `no project ${pid}` };
+      const ids = this.subtreeIds(pid);
+      const parentValue: unknown = row['parent_id'];
+      const parent = typeof parentValue === 'string' ? parentValue : null;
+      const name = row['name'] as string;
+      this.deleteProjectRows(ids);
+      this.audit(actor, 'delete-project', `"${name}" (${ids.length} project(s): ${ids.join(', ')})`);
+      return { ids, parent, name };
+    });
+  }
+
+  /** Space equivalent of deleteProjectCascade: registry rows and the audit
+   *  record commit together; ProjectDO storage cleanup remains best effort. */
+  deleteSpaceCascade(id: string, actor: string): { ids: string[]; name: string } | { error: string } {
+    return this.ctx.storage.transactionSync(() => {
+      const row = this.sql.exec('SELECT name FROM spaces WHERE id = ?', id).toArray()[0];
+      if (!row) return { error: `no space ${id}` };
+      const ids = this.projectIdsInSpace(id);
+      this.deleteProjectRows(ids);
+      this.sql.exec('DELETE FROM spaces WHERE id = ?', id);
+      const name = row['name'] as string;
+      this.audit(actor, 'delete-space', `"${name}" (${id}, ${ids.length} project(s))`);
+      return { ids, name };
+    });
+  }
+
+  /** Best-effort compensation for a company import that failed after staging
+   *  new spaces. The caller records one import-failed audit event. */
+  rollbackSpaces(spaceIds: string[]): { ids: string[] } {
+    return this.ctx.storage.transactionSync(() => {
+      const projectIds = new Set<string>();
+      for (const sid of spaceIds) for (const pid of this.projectIdsInSpace(sid)) projectIds.add(pid);
+      const ids = [...projectIds];
+      this.deleteProjectRows(ids);
+      for (const sid of spaceIds) this.sql.exec('DELETE FROM spaces WHERE id = ?', sid);
+      return { ids };
+    });
   }
 
   // ---- restore-grade export metadata ----

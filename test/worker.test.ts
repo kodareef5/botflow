@@ -5,14 +5,36 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
 
+import { setupAccess } from '../worker/src/security.ts';
+
 const PORT = 8901 + Math.floor(Math.random() * 90);
 const U = `http://127.0.0.1:${PORT}`;
 const SETUP_KEY = 'test-setup-key';
+const WRANGLER = join(import.meta.dirname, '..', 'node_modules', 'wrangler', 'bin', 'wrangler.js');
+
+async function stopWorker(child: ReturnType<typeof spawn>, state: string): Promise<void> {
+  const signalGroup = (signal: NodeJS.Signals): void => {
+    try {
+      if (process.platform === 'win32' || child.pid === undefined) child.kill(signal);
+      else process.kill(-child.pid, signal);
+    } catch {
+      // It already exited.
+    }
+  };
+  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  signalGroup('SIGTERM');
+  await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 1_000))]);
+  if (child.exitCode === null) {
+    signalGroup('SIGKILL');
+    await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
+  }
+  rmSync(state, { recursive: true, force: true });
+}
 
 async function call(path: string, opts: RequestInit & { token?: string } = {}): Promise<{ status: number; body: Record<string, unknown> }> {
   const res = await fetch(U + path, {
@@ -20,6 +42,7 @@ async function call(path: string, opts: RequestInit & { token?: string } = {}): 
     headers: {
       'content-type': 'application/json',
       ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
+      ...((opts.headers as Record<string, string> | undefined) ?? {}),
     },
   });
   return { status: res.status, body: (await res.json().catch(() => ({}))) as Record<string, unknown> };
@@ -30,9 +53,9 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
   // stdio must be 'ignore': piped output nobody reads fills the pipe buffer
   // and stalls wrangler mid-startup (found the hard way).
   const child = spawn(
-    'npx',
-    ['wrangler', 'dev', '--port', String(PORT), '--persist-to', state, '--var', `SETUP_KEY:${SETUP_KEY}`],
-    { cwd: join(import.meta.dirname, '..'), stdio: 'ignore', env: { ...process.env }, detached: false },
+    process.execPath,
+    [WRANGLER, 'dev', '--port', String(PORT), '--persist-to', state, '--var', `SETUP_KEY:${SETUP_KEY}`],
+    { cwd: join(import.meta.dirname, '..'), stdio: 'ignore', env: { ...process.env }, detached: true },
   );
   try {
     // Wait for the server.
@@ -48,6 +71,11 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     const setup = await call('/api/setup', { method: 'POST', body: JSON.stringify({ name: 'testco', setupKey: SETUP_KEY }) });
     assert.equal(setup.status, 200);
     const admin = setup.body['token'] as string;
+    assert.equal(
+      (await call('/api/setup', { method: 'POST', body: JSON.stringify({ name: 'again', setupKey: 'guess' }) })).status,
+      409,
+      'initialized deployments do not act as setup-key oracles',
+    );
 
     // Org structure: space, parent, child.
     const space = (await call('/api/spaces', { method: 'POST', token: admin, body: JSON.stringify({ name: 'eng' }) })).body['id'] as string;
@@ -86,12 +114,52 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.equal(sneak.state, 'todo', 'out-of-scope ref falls back to its lane');
     assert.equal(sneak.childProgress, null, 'no distribution leak');
 
+    // A project cannot reference itself through the friendly card API.
+    const selfRef = await call(`/api/projects/${childP}/cards`, {
+      method: 'POST', token: admin,
+      body: JSON.stringify({ title: 'self cycle', type: 'board', board: `project:${childP}` }),
+    });
+    assert.equal(selfRef.status, 400);
+
     // Duplicate paths are rejected.
     const dup = await call(`/api/projects/${parent}/import`, {
       method: 'PUT', token: admin,
       body: JSON.stringify({ config: 'botflow: 0\nname: parent\n', cards: [smuggle.cards[0], { ...smuggle.cards[0], text: smuggle.cards[0]!.text.replace('001', '003') }] }),
     });
     assert.equal(dup.status, 400);
+
+    // Distinct files with the same card id are also rejected atomically.
+    const beforeDupId = await call(`/api/projects/${parent}/export`, { token: admin });
+    const dupId = await call(`/api/projects/${parent}/import`, {
+      method: 'PUT', token: admin,
+      body: JSON.stringify({
+        config: 'botflow: 0\nname: parent\n',
+        cards: [
+          { path: 'cards/003-first.md', text: '---\nid: 003\ntitle: First\nlane: todo\n---\n' },
+          { path: 'cards/003-second.md', text: '---\nid: 003\ntitle: Second\nlane: done\n---\n' },
+        ],
+      }),
+    });
+    assert.equal(dupId.status, 400);
+    assert.deepEqual((await call(`/api/projects/${parent}/export`, { token: admin })).body, beforeDupId.body, 'rejected import is atomic');
+
+    // Org imports are fully validated before they create registry state.
+    const badOrg = await call('/api/org/import', {
+      method: 'PUT', token: admin,
+      body: JSON.stringify({
+        version: 2,
+        spaces: [{ name: 'must-not-stick', projects: [{
+          id: 'old-bad', name: 'bad', children: [],
+          board: { config: 'botflow: 0\nname: bad\n', cards: [
+            { path: 'cards/001-a.md', text: '---\nid: 001\ntitle: A\nlane: todo\n---\n' },
+            { path: 'cards/001-a.md', text: '---\nid: 002\ntitle: B\nlane: todo\n---\n' },
+          ] },
+        }] }],
+      }),
+    });
+    assert.equal(badOrg.status, 400);
+    const afterBadOrg = (await call('/api/org', { token: admin })).body as { spaces: { name: string }[] };
+    assert.equal(afterBadOrg.spaces.some((s) => s.name === 'must-not-stick'), false, 'failed import created no space');
 
     // Aggregation must not double-count nested work: parent has 1 done task,
     // child has 1 done task, tree aggregate done must be exactly 2.
@@ -113,6 +181,13 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
 
     // Share link + export/import round trip as a restore.
     const share = (await call(`/api/projects/${parent}/shares`, { method: 'POST', token: admin, body: JSON.stringify({ label: 'peek' }) })).body['token'] as string;
+    assert.equal((await call(`/api/public/${share}/board`)).status, 200, 'direct share url remains usable');
+    const closedGate = (await call('/api/public/gate')).body as { shares: { token: string }[] };
+    assert.equal(closedGate.shares.length, 0, 'share directory is off by default');
+    await call('/api/settings', { method: 'POST', token: admin, body: JSON.stringify({ gateShares: true }) });
+    const openGate = (await call('/api/public/gate')).body as { shares: { token: string }[] };
+    assert.ok(openGate.shares.some((s) => s.token === share), 'admin can opt in to the share directory');
+    await call('/api/settings', { method: 'POST', token: admin, body: JSON.stringify({ gateShares: false }) });
     const exported = (await call('/api/org/export', { token: admin })).body as Record<string, unknown>;
     assert.equal(exported['version'], 2);
     assert.ok(Array.isArray(exported['keys']) && (exported['keys'] as unknown[]).length === 1, 'keys exported');
@@ -124,7 +199,7 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     const imported = await call('/api/org/import', { method: 'PUT', token: admin, body: JSON.stringify(exported) });
     assert.equal(imported.status, 200, JSON.stringify(imported.body));
     const org2 = (await call('/api/org', { token: admin })).body as {
-      spaces: { name: string; projects: { id: string; name: string; children: { id: string; name: string }[] }[] }[];
+      spaces: { id: string; name: string; projects: { id: string; name: string; children: { id: string; name: string }[] }[] }[];
     };
     const restoredSpace = org2.spaces.find((s) => s.name === 'eng')!;
     const restoredParent = restoredSpace.projects.find((p) => p.name === 'parent')!;
@@ -145,13 +220,66 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.equal(whoami.status, 200, 'exported key survives restore');
     assert.equal(whoami.body['label'], 'alpha-agent');
 
+    // A prose mention of an exported project id is not mistaken for a project
+    // card during restore: the registry child still gets exactly one card.
+    const mentionImport = await call('/api/org/import', {
+      method: 'PUT', token: admin,
+      body: JSON.stringify({
+        version: 2,
+        spaces: [{ name: 'mention-space', projects: [{
+          id: 'old-parent', name: 'mention-parent',
+          board: { config: 'botflow: 0\nname: mention-parent\n', cards: [{
+            path: 'cards/001-note.md',
+            text: '---\nid: 001\ntitle: Note\nlane: todo\n---\nmentions project:old-child in prose\n',
+          }] },
+          children: [{ id: 'old-child', name: 'mention-child', children: [] }],
+        }] }],
+      }),
+    });
+    assert.equal(mentionImport.status, 200, JSON.stringify(mentionImport.body));
+    const org3 = (await call('/api/org', { token: admin })).body as {
+      spaces: { name: string; projects: { id: string; children: { id: string }[] }[] }[];
+    };
+    const mentionParent = org3.spaces.find((s) => s.name === 'mention-space')!.projects[0]!;
+    const mentionChild = mentionParent.children[0]!.id;
+    const mentionBoard = (await call(`/api/projects/${mentionParent.id}/board`, { token: admin })).body as {
+      lanes: { cards: { type: string; child: string | null }[] }[];
+    };
+    assert.equal(
+      mentionBoard.lanes.flatMap((l) => l.cards).filter((c) => c.type === 'board' && c.child === mentionChild).length,
+      1,
+      'restore creates the missing project card based on parsed frontmatter',
+    );
+
+    // Registry snapshot + delete is one serialized transaction. Children that
+    // win the race are included; later creates see no parent. None may survive.
+    const raceParent = (await call('/api/projects', {
+      method: 'POST', token: admin, body: JSON.stringify({ space: restoredSpace.id, name: 'race-parent' }),
+    })).body['id'] as string;
+    const deleting = call(`/api/projects/${raceParent}`, { method: 'DELETE', token: admin });
+    const creating = Array.from({ length: 40 }, (_, i) => call('/api/projects', {
+      method: 'POST', token: admin, body: JSON.stringify({ parent: raceParent, name: `race-${i}` }),
+    }));
+    const [, ...created] = await Promise.all([deleting, ...creating]);
+    const successfulIds = created.filter((r) => r.status === 200).map((r) => r.body['id'] as string);
+    for (const id of successfulIds) {
+      assert.equal((await call(`/api/projects/${id}/board`, { token: admin })).status, 404, `racing child ${id} survived cascade`);
+    }
+
     // Deletion is audited.
     const audit = (await call('/api/org/activity?limit=50', { token: admin })).body as unknown as { action: string }[];
     assert.ok(audit.some((a) => a.action === 'delete-space'), 'deletion in org audit log');
     assert.ok(audit.some((a) => a.action === 'import'), 'restore in org audit log');
   } finally {
-    child.kill('SIGTERM');
-    await new Promise((r) => setTimeout(r, 500));
-    child.kill('SIGKILL');
+    await stopWorker(child, state);
   }
+});
+
+test('setup policy: public hosts fail closed while loopback stays zero-config', () => {
+  assert.deepEqual(setupAccess('manager.example.test', undefined, undefined), {
+    ok: false, status: 503, error: 'setup is locked: configure the SETUP_KEY Worker secret, then enter it here',
+  });
+  assert.deepEqual(setupAccess('127.0.0.1', undefined, undefined), { ok: true });
+  assert.equal(setupAccess('manager.example.test', 'secret', 'wrong').ok, false);
+  assert.deepEqual(setupAccess('manager.example.test', 'secret', 'secret'), { ok: true });
 });

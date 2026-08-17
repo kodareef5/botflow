@@ -71,6 +71,7 @@ test('emit round-trips unknown keys of any parseable shape', async () => {
     title: 'x',
     lane: 'todo',
     meta: [{ kind: 'link', n: 2 }, { kind: 'note' }, 'plain'],
+    matrix: [['a', 'b'], ['c', 3]],
     tags: ['a', 'b'],
   };
   const text = emitMap(value);
