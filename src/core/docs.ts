@@ -97,3 +97,43 @@ export function singleBoardTree(board: LoadedBoard): Tree {
     boards: new Map([['.', { key: '.', board, childKeyByCard }]]),
   };
 }
+
+/** A card doc path a snapshot may write: inside cards/, .md, no traversal. */
+export function safeCardDocumentPath(path: string): boolean {
+  if (!path.startsWith('cards/') || !path.endsWith('.md') || path.includes('\\')) return false;
+  const parts = path.split('/');
+  return parts.length >= 2 && parts.every((part) => part !== '' && part !== '.' && part !== '..');
+}
+
+export type SnapshotValidation =
+  | { docs: BoardDocument[]; board: LoadedBoard }
+  | { error: string };
+
+/** Validate a whole board snapshot before anything persists it: hosted import
+ *  and CLI pull both gate on this, so a malformed snapshot can never leave a
+ *  board half-transformed. Structural findings that would drop or invent card
+ *  data are fatal; ordinary lint findings (unknown lanes, dangling deps,
+ *  id-scheme drift) remain visible but do not make snapshot sync unusably
+ *  strict. */
+export function validateBoardDocuments(config: unknown, cards: unknown): SnapshotValidation {
+  if (typeof config !== 'string' || !Array.isArray(cards)) return { error: 'config and cards required' };
+  const docs: BoardDocument[] = [];
+  const seenPaths = new Set<string>();
+  for (const value of cards) {
+    if (value === null || typeof value !== 'object') return { error: 'malformed card document' };
+    const doc = value as { path?: unknown; text?: unknown };
+    if (typeof doc.path !== 'string' || typeof doc.text !== 'string') return { error: 'malformed card document' };
+    if (!safeCardDocumentPath(doc.path)) return { error: `unsafe card path in import: ${doc.path}` };
+    if (seenPaths.has(doc.path)) return { error: `duplicate card path in import: ${doc.path}` };
+    seenPaths.add(doc.path);
+    docs.push({ path: doc.path, text: doc.text });
+  }
+  const board = boardFromDocuments(config, docs, 'import');
+  const fatalRules = new Set(['yaml-error', 'frontmatter-missing', 'schema', 'dup-id']);
+  const errors = board.findings.filter((f) => fatalRules.has(f.rule));
+  if (errors.length > 0) {
+    const detail = errors.slice(0, 3).map((f) => `${f.rule}(${f.ref}): ${f.message}`).join('; ');
+    return { error: `invalid board import: ${detail}` };
+  }
+  return { docs, board };
+}

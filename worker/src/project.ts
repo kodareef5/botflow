@@ -10,7 +10,7 @@
 import { DurableObject } from 'cloudflare:workers';
 
 import { analyzeSingle, type ExternalChild } from '../../src/core/analyze.ts';
-import { boardFromDocuments, type BoardDocument } from '../../src/core/docs.ts';
+import { boardFromDocuments, validateBoardDocuments, type BoardDocument } from '../../src/core/docs.ts';
 import { boardJson, cardDetailJson, cardJson } from '../../src/core/json.ts';
 import type { BoardAnalysis } from '../../src/core/analyze.ts';
 import type { BoardNode, Card, LoadedBoard } from '../../src/core/model.ts';
@@ -61,38 +61,9 @@ export type ImportValidation =
   | { docs: BoardDocument[]; board: LoadedBoard }
   | { error: string };
 
-function safeCardDocumentPath(path: string): boolean {
-  if (!path.startsWith('cards/') || !path.endsWith('.md') || path.includes('\\')) return false;
-  const parts = path.split('/');
-  return parts.length >= 2 && parts.every((part) => part !== '' && part !== '.' && part !== '..');
-}
-
-/** Validate a snapshot completely before any Durable Object mutates. Reject
- *  structural findings that would drop or invent card data; ordinary lint
- *  findings (unknown lanes, dangling deps, id-scheme drift) remain visible but
- *  do not make snapshot sync unusably strict. */
-export function validateImportDocuments(config: unknown, cards: unknown): ImportValidation {
-  if (typeof config !== 'string' || !Array.isArray(cards)) return { error: 'config and cards required' };
-  const docs: BoardDocument[] = [];
-  const seenPaths = new Set<string>();
-  for (const value of cards) {
-    if (value === null || typeof value !== 'object') return { error: 'malformed card document' };
-    const doc = value as { path?: unknown; text?: unknown };
-    if (typeof doc.path !== 'string' || typeof doc.text !== 'string') return { error: 'malformed card document' };
-    if (!safeCardDocumentPath(doc.path)) return { error: `unsafe card path in import: ${doc.path}` };
-    if (seenPaths.has(doc.path)) return { error: `duplicate card path in import: ${doc.path}` };
-    seenPaths.add(doc.path);
-    docs.push({ path: doc.path, text: doc.text });
-  }
-  const board = boardFromDocuments(config, docs, 'import');
-  const fatalRules = new Set(['yaml-error', 'frontmatter-missing', 'schema', 'dup-id']);
-  const errors = board.findings.filter((f) => fatalRules.has(f.rule));
-  if (errors.length > 0) {
-    const detail = errors.slice(0, 3).map((f) => `${f.rule}(${f.ref}): ${f.message}`).join('; ');
-    return { error: `invalid board import: ${detail}` };
-  }
-  return { docs, board };
-}
+/** Snapshot validation lives in core (docs.ts) so hosted import and CLI pull
+ *  share one gate; this alias keeps the worker-side name. */
+export const validateImportDocuments = validateBoardDocuments;
 
 const DDL = `
   CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);

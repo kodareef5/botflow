@@ -76,6 +76,12 @@ botflow remote add https://manager.example.workers.dev p-abc123
 BOTFLOW_TOKEN=bfk_… botflow push   # or pull
 ```
 
+The sync contract: your repo's documents are truth, and sync is a whole-board snapshot
+(last write wins). The hosted board is that snapshot plus a manager overlay: sub-projects
+created in the manager survive a push even though your repo never carried them. Both
+directions validate the entire snapshot before writing anything, and `pull` refuses to
+overwrite uncommitted board changes unless you pass `--force`.
+
 ## What it looks like
 
 The manager includes five complete visual worlds: Harbor, Phosphor, Field Notes,

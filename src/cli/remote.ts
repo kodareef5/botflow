@@ -1,13 +1,21 @@
 // Sync a file-truth board with a hosted botflow manager project.
 // remote.yaml (committable: no secrets) holds the url + project id; the
-// token always comes from --token or BOTFLOW_TOKEN. Push/pull are whole-board
-// snapshots: last write wins, and every import lands in the audit log.
+// token always comes from --token or BOTFLOW_TOKEN.
+//
+// The sync contract (SPEC §12): repo documents are truth; hosted state is a
+// snapshot of them plus a manager overlay (hosted-native project cards
+// survive a push). Push and pull are whole-board snapshots, last write wins,
+// and every import lands in the audit log. Pull validates the entire remote
+// snapshot before touching a single file and refuses to overwrite
+// uncommitted board changes unless forced.
 
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 
-import type { BoardDocument } from '../core/docs.ts';
+import { validateBoardDocuments } from '../core/docs.ts';
 import { readBoardDocuments } from '../core/load.ts';
+import { atomicWrite, withBoardLock } from '../core/mutate.ts';
 import { UsageError } from '../core/ops.ts';
 import { parseYaml } from '../core/yaml.ts';
 
@@ -55,38 +63,62 @@ export async function push(root: string, token: string, actor: string): Promise<
   })) as { imported: number; findings: number };
 }
 
-/** Card doc paths must stay inside cards/: refuse anything path-traversal-shaped. */
-function safeCardPath(path: string): boolean {
-  return path.startsWith('cards/') && !path.split('/').some((part) => part === '..' || part === '' || part.includes(sep));
+/** Board files with uncommitted git changes (tracked edits or untracked
+ *  files). Outside a git repo, or without git, there is nothing to guard. */
+function dirtyBoardFiles(root: string): string[] {
+  const res = spawnSync('git', ['status', '--porcelain', '--', '.'], { cwd: root, encoding: 'utf8' });
+  if (res.error || res.status !== 0) return [];
+  return res.stdout
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .map((line) => line.slice(3));
 }
 
-export async function pull(root: string, token: string): Promise<{ written: number; removed: number }> {
+export async function pull(root: string, token: string, force = false): Promise<{ written: number; removed: number }> {
   const remote = loadRemote(root);
-  const data = (await call(remote, token, '/export')) as { config: string | null; cards: BoardDocument[] };
-  if (typeof data.config !== 'string' || !Array.isArray(data.cards)) throw new UsageError('malformed export from remote');
+  const data = (await call(remote, token, '/export')) as { config: unknown; cards: unknown };
 
-  writeFileSync(join(root, 'board.yaml'), data.config);
+  // Gate 1: the entire snapshot must validate before a single file changes.
+  const validation = validateBoardDocuments(data.config, data.cards);
+  if ('error' in validation) throw new UsageError(`refusing pull, remote snapshot is invalid: ${validation.error}`);
+  const docs = validation.docs;
 
-  // Snapshot semantics: local card files not present remotely are removed.
-  const cardsDir = join(root, 'cards');
-  let removed = 0;
-  const remotePaths = new Set(data.cards.map((c) => c.path));
-  if (existsSync(cardsDir) && statSync(cardsDir).isDirectory()) {
-    for (const rel of readdirSync(cardsDir, { recursive: true, encoding: 'utf8' }).filter((f) => f.endsWith('.md'))) {
-      const path = `cards/${rel.split(sep).join('/')}`;
-      if (!remotePaths.has(path)) {
-        rmSync(join(root, path));
-        removed++;
-      }
+  // Gate 2: never destroy work git has not seen. Snapshot pull removes local
+  // cards missing remotely, so uncommitted changes need an explicit --force.
+  if (!force) {
+    const dirty = dirtyBoardFiles(root);
+    if (dirty.length > 0) {
+      const shown = dirty.slice(0, 5).map((f) => `  ${f}`).join('\n');
+      throw new UsageError(
+        `refusing pull: ${dirty.length} board file(s) have uncommitted changes:\n${shown}${dirty.length > 5 ? '\n  …' : ''}\ncommit or stash first, or re-run with --force`,
+      );
     }
   }
-  let written = 0;
-  for (const doc of data.cards) {
-    if (!safeCardPath(doc.path) || typeof doc.text !== 'string') continue;
-    const target = join(root, doc.path);
-    mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, doc.text);
-    written++;
-  }
-  return { written, removed };
+
+  // Apply under the board lock: config, upserts, then snapshot deletions,
+  // each write crash-safe. Validation already passed, so nothing here can
+  // half-transform the checkout on bad data.
+  return withBoardLock(root, () => {
+    atomicWrite(join(root, 'board.yaml'), data.config as string);
+    let written = 0;
+    for (const doc of docs) {
+      const target = join(root, doc.path);
+      mkdirSync(dirname(target), { recursive: true });
+      atomicWrite(target, doc.text);
+      written++;
+    }
+    const cardsDir = join(root, 'cards');
+    let removed = 0;
+    const remotePaths = new Set(docs.map((c) => c.path));
+    if (existsSync(cardsDir) && statSync(cardsDir).isDirectory()) {
+      for (const rel of readdirSync(cardsDir, { recursive: true, encoding: 'utf8' }).filter((f) => f.endsWith('.md'))) {
+        const path = `cards/${rel.split(sep).join('/')}`;
+        if (!remotePaths.has(path)) {
+          rmSync(join(root, path));
+          removed++;
+        }
+      }
+    }
+    return { written, removed };
+  });
 }

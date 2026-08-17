@@ -103,7 +103,7 @@ export function withBoardLock<T>(root: string, fn: () => T): T {
 }
 
 /** Crash-safe write: temp file in the same directory, then rename. */
-function atomicWrite(path: string, content: string): void {
+export function atomicWrite(path: string, content: string): void {
   const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
   writeFileSync(tmp, content);
   renameSync(tmp, path);

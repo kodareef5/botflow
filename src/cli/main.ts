@@ -58,7 +58,9 @@ usage: botflow <command> [args]
   new <src>[#branch] <dir> [--name n]   instantiate a workspace template
   setup [agents|claude|codex]           wire the playbook into AGENTS.md/CLAUDE.md
   remote add <url> <project-id>         link this board to a hosted manager project
-  push | pull [--token t]               snapshot-sync with the hosted manager
+  push | pull [--token t]               snapshot-sync with the hosted manager;
+                                        pull refuses over uncommitted board
+                                        changes unless --force
   ready [--json]                        unblocked todo cards
   lint [--json]                         check the board; exit 1 on errors
   card add <title> [--lane l] [--labels a,b] [--priority p0-p3] [--deps 1,2]
@@ -237,7 +239,7 @@ export function run(argv: string[]): number {
     }
     case 'push':
     case 'pull': {
-      const { values } = parse(rest, { ...COMMON, token: { type: 'string' } });
+      const { values } = parse(rest, { ...COMMON, token: { type: 'string' }, force: { type: 'boolean', default: false } });
       const root = getRoot(values);
       const token = (values['token'] as string | undefined) ?? process.env['BOTFLOW_TOKEN'];
       if (!token) throw new UsageError('a token is required: --token or BOTFLOW_TOKEN');
@@ -250,7 +252,7 @@ export function run(argv: string[]): number {
           },
         );
       } else {
-        void pull(root, token).then(
+        void pull(root, token, values['force'] as boolean).then(
           (res) => out(`✓ pulled · ${res.written} cards written, ${res.removed} removed`),
           (err: Error) => {
             process.stderr.write(`botflow: ${err.message}\n`);
