@@ -165,7 +165,8 @@ function validateOrgImportPayload(value: unknown): string | null {
     for (const share of value['shares']) {
       if (!isRecord(share) || typeof share['token'] !== 'string' || !/^[a-f0-9]{16,64}$/.test(share['token']) ||
           typeof share['projectId'] !== 'string' || !ids.has(share['projectId']) || typeof share['label'] !== 'string' ||
-          typeof share['created'] !== 'string' || typeof share['revoked'] !== 'boolean') return 'malformed share metadata';
+          typeof share['created'] !== 'string' || typeof share['revoked'] !== 'boolean' ||
+          (share['cardId'] !== undefined && typeof share['cardId'] !== 'string')) return 'malformed share metadata';
     }
   }
   if (value['theme'] !== undefined && !isRecord(value['theme'])) return 'theme must be an object';
@@ -188,7 +189,8 @@ export default {
       }
       const shareMatch = /^\/s\/([a-f0-9]{16,64})$/.exec(url.pathname);
       if (req.method === 'GET' && shareMatch) {
-        return new Response(uiHtml(shareMatch[1]!), { headers: { 'content-type': 'text/html; charset=utf-8' } });
+        const share = await registry.resolveShare(shareMatch[1]!);
+        return new Response(uiHtml(shareMatch[1]!, share?.cardId ?? null), { headers: { 'content-type': 'text/html; charset=utf-8' } });
       }
       if (!url.pathname.startsWith('/api/')) return json({ error: 'not found' }, 404);
 
@@ -203,9 +205,15 @@ export default {
         if (share === null) return json({ error: 'this link is no longer live' }, 404);
         const rest = pub[2] ?? '/board';
         const stub = project(share.projectId);
-        if (rest === '' || rest === '/board') return json(await stub.board());
+        // A card-scoped link is a capability for exactly that card: the rest
+        // of the board does not exist through it.
+        if (rest === '' || rest === '/board') {
+          if (share.cardId !== null) return json({ error: 'this link shares a single card' }, 404);
+          return json(await stub.board());
+        }
         const cardMatch = /^\/cards\/([^/]+)$/.exec(rest);
         if (cardMatch) {
+          if (share.cardId !== null && cardMatch[1] !== share.cardId) return json({ error: 'no such card' }, 404);
           const card = await stub.card(cardMatch[1]!);
           return card === null ? json({ error: 'no such card' }, 404) : json(card);
         }
@@ -343,6 +351,7 @@ export default {
           keys: await registry.exportKeys(),
           shares: (await registry.listAllShares()).map((s) => ({
             token: s.token, projectId: s.projectId, label: s.label, created: s.created, revoked: s.revoked,
+            ...(s.cardId ? { cardId: s.cardId } : {}),
           })),
           spaces: await Promise.all(
             tree.spaces.map(async (s) => ({ name: s.name, projects: await Promise.all(s.projects.map(exportNode)) })),
@@ -429,7 +438,7 @@ export default {
             }
             for (const s of payload.shares ?? []) {
               const pid = idMap.get(s.projectId);
-              if (pid) await registry.restoreShare(s.token, pid, s.label, s.created, s.revoked);
+              if (pid) await registry.restoreShare(s.token, pid, s.label, s.created, s.revoked, s.cardId ?? null);
             }
           }
         } catch (err) {
@@ -595,9 +604,16 @@ export default {
         if (denied) return denied;
         if (req.method === 'GET') return json(await registry.listShares(pid));
         if (req.method === 'POST') {
-          const body = (await req.json()) as { label?: string };
-          const res = await registry.createShare(pid, body.label ?? 'public link');
-          if (!('error' in res)) await registry.audit('admin', 'create-share', `"${body.label ?? 'public link'}" for ${pid}`);
+          const body = (await req.json()) as { label?: string; card?: string };
+          let cardId: string | null = null;
+          if (typeof body.card === 'string' && body.card !== '') {
+            if ((await stub.card(body.card)) === null) return json({ error: `no card ${body.card}` }, 400);
+            cardId = body.card;
+          }
+          const res = await registry.createShare(pid, body.label ?? 'public link', cardId);
+          if (!('error' in res)) {
+            await registry.audit('admin', 'create-share', `"${body.label ?? 'public link'}" for ${pid}${cardId ? ` (card ${cardId})` : ''}`);
+          }
           return 'error' in res ? json(res, 400) : json(res);
         }
       }

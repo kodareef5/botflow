@@ -242,6 +242,23 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     await call('/api/settings', { method: 'POST', token: admin, body: JSON.stringify({ gateShares: true }) });
     const openGate = (await call('/api/public/gate')).body as { shares: { token: string }[] };
     assert.ok(openGate.shares.some((s) => s.token === share), 'admin can opt in to the share directory');
+
+    // Card-scoped share: a capability for exactly one card.
+    assert.equal(
+      (await call(`/api/projects/${parent}/shares`, { method: 'POST', token: admin, body: JSON.stringify({ label: 'ghost', card: '999' }) })).status,
+      400, 'card share requires a real card',
+    );
+    // Post-import the board holds 001 (own task) and 002 (sneak): scope to 001.
+    const cardShare = (await call(`/api/projects/${parent}/shares`, { method: 'POST', token: admin, body: JSON.stringify({ label: 'one card', card: '001' }) })).body['token'] as string;
+    assert.equal((await call(`/api/public/${cardShare}/cards/001`)).status, 200, 'the scoped card is visible');
+    assert.equal((await call(`/api/public/${cardShare}/board`)).status, 404, 'the board is not');
+    assert.equal((await call(`/api/public/${cardShare}/cards/002`)).status, 404, 'sibling cards are not');
+    const gateWithCard = (await call('/api/public/gate')).body as { shares: { token: string }[] };
+    assert.ok(!gateWithCard.shares.some((s) => s.token === cardShare), 'card shares never list on the gate');
+    const shareRows = (await call(`/api/projects/${parent}/shares`, { token: admin })).body as unknown as { token: string; cardId: string | null }[];
+    assert.equal(shareRows.find((s) => s.token === cardShare)?.cardId, '001', 'scope visible in the listing');
+    const cardPage = await fetch(`${U}/s/${cardShare}`);
+    assert.ok((await cardPage.text()).includes('__PUBCARD__="001"'), 'card page carries its scope');
     const themed = await call('/api/settings', {
       method: 'POST', token: admin,
       body: JSON.stringify({ style: 'fieldnotes', accent: 'redpencil', mode: 'dark', density: 'compact', gateShares: false }),

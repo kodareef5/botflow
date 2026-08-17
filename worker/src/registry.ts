@@ -66,9 +66,15 @@ export class RegistryDO extends DurableObject {
       CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, space_id TEXT NOT NULL, parent_id TEXT, name TEXT NOT NULL, created TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS keys(id TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, label TEXT NOT NULL, created TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS shares(id TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, label TEXT NOT NULL, created TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS shares(id TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, label TEXT NOT NULL, created TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, card_id TEXT);
       CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL);
     `);
+    try {
+      // Upgrade path for instances created before card-scoped shares.
+      this.sql.exec('ALTER TABLE shares ADD COLUMN card_id TEXT');
+    } catch {
+      // Column already exists (fresh DDL above or a prior upgrade).
+    }
   }
 
   // ---- org audit log: every org-level action, append-only ----
@@ -108,26 +114,27 @@ export class RegistryDO extends DurableObject {
 
   // ---- public share links (read-only capability urls) ----
 
-  createShare(projectId: string, label: string): { id: string; token: string } | { error: string } {
+  createShare(projectId: string, label: string, cardId: string | null = null): { id: string; token: string } | { error: string } {
     if (this.projectName(projectId) === null) return { error: `no project ${projectId}` };
     const token = randomToken('bfs').slice(4); // bare hex; the url is the capability
     const id = `sh-${shortId()}`;
-    this.sql.exec('INSERT INTO shares(id, token, project_id, label, created) VALUES (?, ?, ?, ?, ?)', id, token, projectId, cleanName(label, 'public link'), new Date().toISOString());
+    this.sql.exec('INSERT INTO shares(id, token, project_id, label, created, card_id) VALUES (?, ?, ?, ?, ?, ?)', id, token, projectId, cleanName(label, 'public link'), new Date().toISOString(), cardId);
     return { id, token };
   }
 
-  listShares(projectId: string): { id: string; token: string; label: string; created: string; revoked: boolean }[] {
+  listShares(projectId: string): { id: string; token: string; label: string; created: string; revoked: boolean; cardId: string | null }[] {
     return this.sql
-      .exec('SELECT id, token, label, created, revoked FROM shares WHERE project_id = ? ORDER BY created', projectId)
+      .exec('SELECT id, token, label, created, revoked, card_id FROM shares WHERE project_id = ? ORDER BY created', projectId)
       .toArray()
-      .map((r) => ({ id: r['id'] as string, token: r['token'] as string, label: r['label'] as string, created: r['created'] as string, revoked: r['revoked'] === 1 }));
+      .map((r) => ({ id: r['id'] as string, token: r['token'] as string, label: r['label'] as string, created: r['created'] as string, revoked: r['revoked'] === 1, cardId: (r['card_id'] as string | null) ?? null }));
   }
 
-  /** Active shares across the org, for the login-page listing. */
+  /** Active board shares across the org, for the login-page listing.
+   *  Card-scoped shares stay off the gate: it lists live boards. */
   listGateShares(): { token: string; name: string }[] {
     if (!this.getPrefs().gateShares) return [];
     return this.sql
-      .exec('SELECT s.token AS token, p.name AS name FROM shares s JOIN projects p ON p.id = s.project_id WHERE s.revoked = 0 ORDER BY s.created')
+      .exec('SELECT s.token AS token, p.name AS name FROM shares s JOIN projects p ON p.id = s.project_id WHERE s.revoked = 0 AND s.card_id IS NULL ORDER BY s.created')
       .toArray()
       .map((r) => ({ token: r['token'] as string, name: r['name'] as string }));
   }
@@ -143,9 +150,9 @@ export class RegistryDO extends DurableObject {
   }
 
   /** Every share link in the org, with its project name (admin manage view). */
-  listAllShares(): { id: string; token: string; label: string; created: string; revoked: boolean; projectId: string; projectName: string }[] {
+  listAllShares(): { id: string; token: string; label: string; created: string; revoked: boolean; projectId: string; projectName: string; cardId: string | null }[] {
     return this.sql
-      .exec('SELECT s.id AS id, s.token AS token, s.label AS label, s.created AS created, s.revoked AS revoked, s.project_id AS pid, p.name AS pname FROM shares s JOIN projects p ON p.id = s.project_id ORDER BY s.created')
+      .exec('SELECT s.id AS id, s.token AS token, s.label AS label, s.created AS created, s.revoked AS revoked, s.project_id AS pid, p.name AS pname, s.card_id AS cid FROM shares s JOIN projects p ON p.id = s.project_id ORDER BY s.created')
       .toArray()
       .map((r) => ({
         id: r['id'] as string,
@@ -155,6 +162,7 @@ export class RegistryDO extends DurableObject {
         revoked: r['revoked'] === 1,
         projectId: r['pid'] as string,
         projectName: r['pname'] as string,
+        cardId: (r['cid'] as string | null) ?? null,
       }));
   }
 
@@ -265,19 +273,19 @@ export class RegistryDO extends DurableObject {
     return { ok: true };
   }
 
-  restoreShare(token: string, projectId: string, label: string, created: string, revoked: boolean): { ok: boolean } {
+  restoreShare(token: string, projectId: string, label: string, created: string, revoked: boolean, cardId: string | null = null): { ok: boolean } {
     this.sql.exec(
-      'INSERT OR IGNORE INTO shares(id, token, project_id, label, created, revoked) VALUES (?, ?, ?, ?, ?, ?)',
-      `sh-${shortId()}`, token, projectId, cleanName(label, 'public link'), created, revoked ? 1 : 0,
+      'INSERT OR IGNORE INTO shares(id, token, project_id, label, created, revoked, card_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      `sh-${shortId()}`, token, projectId, cleanName(label, 'public link'), created, revoked ? 1 : 0, cardId,
     );
     return { ok: true };
   }
 
-  resolveShare(token: string): { projectId: string; name: string } | null {
+  resolveShare(token: string): { projectId: string; name: string; cardId: string | null } | null {
     const row = this.sql
-      .exec('SELECT s.project_id AS pid, p.name AS name FROM shares s JOIN projects p ON p.id = s.project_id WHERE s.token = ? AND s.revoked = 0', token)
+      .exec('SELECT s.project_id AS pid, p.name AS name, s.card_id AS cid FROM shares s JOIN projects p ON p.id = s.project_id WHERE s.token = ? AND s.revoked = 0', token)
       .toArray()[0];
-    return row ? { projectId: row['pid'] as string, name: row['name'] as string } : null;
+    return row ? { projectId: row['pid'] as string, name: row['name'] as string, cardId: (row['cid'] as string | null) ?? null } : null;
   }
 
   getTheme(): ThemeChoice {

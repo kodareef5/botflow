@@ -113,6 +113,8 @@ table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink2)}
 .gateshares a{color:var(--ink2);text-decoration:none;border:var(--bw) var(--bs) var(--grid);border-radius:999px;padding:2px 10px;background:var(--page)}
 .gateshares a:hover{border-color:var(--baseline);color:var(--ink)}
 .pubfoot{padding:10px 18px;border-top:var(--bw) var(--bs) var(--grid);font-size:11.5px;color:var(--muted)}
+.pubcard #pcbox{max-width:780px}
+.pubcard .cardmodal .close{display:none}
 .pubfoot a{color:var(--muted);text-decoration:underline;text-underline-offset:2px}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:5vh 16px;z-index:20;overflow-y:auto}
 .modal{background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);box-shadow:var(--shadow);width:100%;max-width:400px;padding:20px}
@@ -340,6 +342,7 @@ const IC={check:'<svg class="ic" viewBox="0 0 16 16"><rect x="2" y="2" width="12
   open:'<svg class="ic" viewBox="0 0 16 16"><path d="M6.5 3.5h-3v9h9v-3M9.5 2.5h4v4M13 3L7.5 8.5"/></svg>'};
 let TOKEN=localStorage.getItem('bf_token')||'';
 const PUB=window.__PUB__||null;
+const PUBCARD=window.__PUBCARD__||null;
 let RO=!!PUB;
 const cardApi=cid=>PUB?'/api/public/'+PUB+'/cards/'+cid:'/api/projects/'+SEL+'/cards/'+cid;
 let THEME={style:'harbor',accent:'pacific',mode:'system',density:'relaxed',custom:null};
@@ -776,19 +779,45 @@ async function boardEditor(){
   refreshMigTargets();
 }
 // ---- public (shared link) mode: read-only, no org chrome ----
+function publicDead(message){
+  document.body.innerHTML='<div class="gate"><h2>'+esc(message)+'</h2>'
+    +'<div class="gatefoot">Git-native kanban for AI agents. <a href="/about">learn more</a> · <a href="https://github.com/kodareef5/botflow" target="_blank" rel="noopener">GitHub</a></div></div>';
+}
 async function publicStart(){
   try{applyTheme(await api('/api/theme'))}catch{}
+  if(PUBCARD)return publicCardStart();
   let b;
-  try{b=await api('/api/public/'+PUB+'/board')}catch(err){
-    document.body.innerHTML='<div class="gate"><h2>'+esc(err.message)+'</h2>'
-      +'<div class="gatefoot">Git-native kanban for AI agents. <a href="/about">learn more</a> · <a href="https://github.com/kodareef5/botflow" target="_blank" rel="noopener">GitHub</a></div></div>';
-    return;
-  }
+  try{b=await api('/api/public/'+PUB+'/board')}catch(err){return publicDead(err.message)}
   renderPublic(b);
   setInterval(async()=>{
     if(MODAL)return;
     try{const nb=await api('/api/public/'+PUB+'/board');if(JSON.stringify(nb)!==JSON.stringify(BOARD))renderPublic(nb)}catch{}
   },4000);
+}
+// A card-scoped link renders that one card as the whole page: same card
+// anatomy as the modal, standing alone, read only, live.
+let PUBTAB='card',PUBLAST='';
+async function publicCardStart(){
+  let c;
+  try{c=await api('/api/public/'+PUB+'/cards/'+PUBCARD)}catch(err){return publicDead(err.message)}
+  document.body.classList.add('pubcard');
+  document.body.innerHTML='<header class="top"><h1 id="pctitle"></h1><span class="spacer"></span></header>'
+    +'<div class="view" style="flex:1;overflow:auto"><div class="modal cardmodal" style="margin:0 auto" id="pcbox"></div></div>'
+    +'<div class="pubfoot">a single card shared with botflow: git-native kanban for AI agents. <a href="/about">learn more</a></div>';
+  renderPublicCard(c);
+  setInterval(async()=>{
+    try{const nc=await api('/api/public/'+PUB+'/cards/'+PUBCARD);
+      const next=JSON.stringify(nc);
+      if(next!==PUBLAST)renderPublicCard(nc)}catch{}
+  },4000);
+}
+function renderPublicCard(c){
+  PUBLAST=JSON.stringify(c);
+  document.title=c.title+' · botflow';
+  $('#pctitle').innerHTML=esc(c.id)+' <span class="sub">shared card · read only</span>';
+  const box=$('#pcbox');
+  box.innerHTML=cardModalHtml(c,PUBTAB);
+  box.querySelector('.tabbar').onclick=e=>{const b=e.target.closest('[data-ctab]');if(b){PUBTAB=b.dataset.ctab;renderPublicCard(c)}};
 }
 function renderPublic(b){
   const fresh=!BOARD;
@@ -821,7 +850,8 @@ function cardModalHtml(c,tab){
   if(c.priority)meta.push('<span class="badges"><span class="'+(c.priority==='p0'?'p0':'')+'">'+c.priority+'</span></span>');
   for(const l of c.labels||[])meta.push('<span class="badges"><span>#'+esc(l)+'</span></span>');
   if(c.blocked)meta.push('<span class="badges"><span class="blk">⛔ '+esc(c.blocked)+'</span></span>');
-  if(!RO)meta.push('<button class="ghost" data-editcard title="edit title, priority, labels, deps, assignee">✎ edit</button>');
+  if(!RO)meta.push('<button class="ghost" data-editcard title="edit title, priority, labels, deps, assignee">✎ edit</button>'
+    +'<button class="ghost" data-sharecard title="public read-only link to just this card">↗ share</button>');
   const tabs=[['card','card'],['chat','chat '+((p.comments||[]).length||'')],['activity','activity']];
   return (c.cover?'<img class="banner" src="'+esc(c.cover)+'" alt="">':'')
     +'<div class="inner"><button class="close ghost" data-x aria-label="close card">✕</button>'
@@ -904,6 +934,17 @@ function wireCardModal(m,c,tab){
       formModal('Add task',[{name:'text',label:'task',required:true}],'add task',async d=>{
         await api('/api/projects/'+SEL+'/cards/'+c.id+'/checkadd',{method:'POST',body:JSON.stringify({text:d.text,section:ai.dataset.additem})});openCard(c.id,'card')});
       return}
+    if(e.target.closest('[data-sharecard]')){
+      formModal('Share this card',[{name:'label',label:'label (for your own bookkeeping)',required:true,value:c.id+' '+c.title}],'create link',async d=>{
+        const r=await api('/api/projects/'+SEL+'/shares',{method:'POST',body:JSON.stringify({label:d.label,card:c.id})});
+        setTimeout(()=>{ // after the form modal closes itself
+          const m2=overlay('<h3>Card link is live</h3><p style="font-size:13px;color:var(--ink2)">Anyone with this url sees exactly this card, read only.</p>'
+            +'<div class="tokenbox">'+location.origin+'/s/'+esc(r.token)+'</div>'
+            +'<div class="actions"><button class="primary" data-x2>done</button></div>',null,'Card link');
+          m2.querySelector('[data-x2]').onclick=()=>{closeOverlay();openCard(c.id,'card')};
+        },0);
+      });
+      return}
     if(e.target.closest('[data-editcard]')){
       formModal('Edit card',[
         {name:'title',label:'title',required:true,value:c.title},
@@ -961,16 +1002,20 @@ async function refreshSharing(){
     const shares=await api('/api/projects/'+SEL+'/shares');
     const live=shares.filter(s=>!s.revoked);
     $('#view').innerHTML='<p style="margin-bottom:10px"><button class="primary" id="mksh">+ share link</button>'
-      +' <span style="color:var(--muted);font-size:12px">read-only public url for this board. anyone with the link can view.</span></p>'
-      +(shares.length?'<table class="list"><tr><th>label</th><th>url</th><th>created</th><th></th></tr>'
+      +' <span style="color:var(--muted);font-size:12px">read-only public url. share the whole board, or scope it to a single card from the card itself.</span></p>'
+      +(shares.length?'<table class="list"><tr><th>label</th><th>scope</th><th>url</th><th>created</th><th></th></tr>'
         +shares.map(s=>'<tr'+(s.revoked?' style="opacity:.5"':'')+'><td>'+esc(s.label)+'</td>'
+          +'<td class="mono">'+(s.cardId?'card '+esc(s.cardId):'board')+'</td>'
           +'<td class="mono">'+(s.revoked?'revoked':'<a href="/s/'+esc(s.token)+'" target="_blank" style="color:var(--acc)">/s/'+esc(s.token.slice(0,10))+'…</a> <button class="ghost" data-copy="'+esc(s.token)+'">copy</button>')+'</td>'
           +'<td class="mono">'+esc(s.created.slice(0,10))+'</td>'
           +'<td><button data-ds="'+esc(s.id)+'">delete</button></td></tr>').join('')+'</table>'
         :'<div class="empty">no share links yet</div>')
-      +(live.length?'<p style="color:var(--muted);font-size:12px;margin-top:10px">Direct links are live now. Listing them on the login page is an explicit setting.</p>':'');
-    $('#mksh').onclick=()=>formModal('New share link',[{name:'label',label:'label (for your own bookkeeping)',required:true}],'create',async d=>{
-      const r=await api('/api/projects/'+SEL+'/shares',{method:'POST',body:JSON.stringify({label:d.label})});
+      +(live.length?'<p style="color:var(--muted);font-size:12px;margin-top:10px">Direct links are live now. Listing board links on the login page is an explicit setting; card links never appear there.</p>':'');
+    $('#mksh').onclick=()=>formModal('New share link',[
+      {name:'label',label:'label (for your own bookkeeping)',required:true},
+      {name:'card',label:'card id (optional: scopes the link to that one card)'},
+    ],'create',async d=>{
+      const r=await api('/api/projects/'+SEL+'/shares',{method:'POST',body:JSON.stringify({label:d.label,card:d.card||undefined})});
       refreshSharing();
       setTimeout(()=>$('#view').insertAdjacentHTML('afterbegin','<div class="tokenbox">'+location.origin+'/s/'+esc(r.token)+'</div>'),150);
     });
@@ -1103,7 +1148,7 @@ applyTheme(THEME);
 if(PUB)publicStart();else start();
 `;
 
-export function uiHtml(pub: string | null): string {
+export function uiHtml(pub: string | null, pubCard: string | null = null): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -1114,7 +1159,7 @@ export function uiHtml(pub: string | null): string {
 <style>${CSS}</style>
 </head>
 <body>
-<script>window.__THEMES__=${JSON.stringify(STYLES)};window.__PUB__=${JSON.stringify(pub)};</script>
+<script>window.__THEMES__=${JSON.stringify(STYLES)};window.__PUB__=${JSON.stringify(pub)};window.__PUBCARD__=${JSON.stringify(pubCard)};</script>
 <script>${JS}</script>
 </body>
 </html>`;

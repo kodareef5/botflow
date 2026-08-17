@@ -32,7 +32,7 @@ export interface OrgImport {
   theme?: Record<string, unknown>;
   prefs?: Record<string, unknown>;
   keys?: { hash: string; projectId: string; label: string; created: string; revoked: boolean }[];
-  shares?: { token: string; projectId: string; label: string; created: string; revoked: boolean }[];
+  shares?: { token: string; projectId: string; label: string; created: string; revoked: boolean; cardId?: string | null }[];
   spaces: SpaceImport[];
 }
 
