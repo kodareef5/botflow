@@ -55,6 +55,8 @@ instance: company, tokens, boards, everything. Loopback setup is intentionally z
 an internet-hosted deployment refuses initialization until `SETUP_KEY` is configured as a
 Worker secret. Deploy-button users can add it under **Settings → Variables and Secrets** in
 the Cloudflare dashboard. Enter that value once in the setup form; it is not the admin token.
+The same secret is the recovery path: "lost your token?" on the login page mints a fresh
+admin token (the lost one dies), and settings can rotate the token at any time. Both are audited.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/kodareef5/botflow)
 *(the button needs this repo public on GitHub; `wrangler deploy` works regardless)*

@@ -339,6 +339,24 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     const audit = (await call('/api/org/activity?limit=50', { token: admin })).body as unknown as { action: string }[];
     assert.ok(audit.some((a) => a.action === 'delete-space'), 'deletion in org audit log');
     assert.ok(audit.some((a) => a.action === 'import'), 'restore in org audit log');
+
+    // Token rotation and setup-key recovery: each mints a fresh admin token
+    // and the previous one dies instantly. Runs last: it retires `admin`.
+    assert.equal((await call('/api/rotate-token', { method: 'POST', token: key })).status, 403, 'agents cannot rotate the admin token');
+    const rotated = await call('/api/rotate-token', { method: 'POST', token: admin });
+    assert.equal(rotated.status, 200);
+    const admin2 = rotated.body['token'] as string;
+    assert.equal((await call('/api/org', { token: admin })).status, 401, 'old admin token is dead after rotation');
+    assert.equal((await call('/api/org', { token: admin2 })).status, 200, 'new token works');
+    assert.equal((await call('/api/recover', { method: 'POST', body: JSON.stringify({ setupKey: 'wrong' }) })).status, 403, 'recovery rejects a wrong setup key');
+    const recovered = await call('/api/recover', { method: 'POST', body: JSON.stringify({ setupKey: SETUP_KEY }) });
+    assert.equal(recovered.status, 200);
+    const admin3 = recovered.body['token'] as string;
+    assert.equal((await call('/api/org', { token: admin2 })).status, 401, 'rotated token dies on recovery');
+    assert.equal((await call('/api/org', { token: admin3 })).status, 200);
+    const postRotate = (await call('/api/org/activity?limit=10', { token: admin3 })).body as unknown as { action: string }[];
+    assert.ok(postRotate.some((a) => a.action === 'rotate-token'), 'rotation audited');
+    assert.ok(postRotate.some((a) => a.action === 'recover-admin'), 'recovery audited');
   } finally {
     await stopWorker(child, state);
   }

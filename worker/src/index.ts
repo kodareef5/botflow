@@ -225,6 +225,17 @@ export default {
         const res = await registry.setup(typeof body.name === 'string' && body.name !== '' ? body.name : 'company');
         return 'error' in res ? json(res, 409) : json(res);
       }
+      // Lost-token recovery rides the same trust anchor as first-run setup:
+      // the SETUP_KEY secret (loopback stays zero-config). It mints a fresh
+      // admin token and kills the old one; the audit log records it.
+      if (req.method === 'POST' && url.pathname === '/api/recover') {
+        if (!status.initialized) return json({ error: 'not initialized: use setup' }, 409);
+        const body = (await req.json().catch(() => ({}))) as { setupKey?: string };
+        const access = setupAccess(url.hostname, env.SETUP_KEY, body.setupKey);
+        if (!access.ok) return json({ error: access.error }, access.status);
+        const res = await registry.rotateAdminToken('recover-admin');
+        return 'error' in res ? json(res, 409) : json(res);
+      }
       if (!status.initialized) return json({ uninitialized: true }, url.pathname === '/api/org' ? 200 : 403);
 
       // ---- auth ----
@@ -242,6 +253,13 @@ export default {
           project: identity.projectId,
           projectName: await registry.projectName(identity.projectId),
         });
+      }
+      // Rotate the admin credential: new token minted, old one dead, audited.
+      if (req.method === 'POST' && url.pathname === '/api/rotate-token') {
+        const denied = requireAdmin();
+        if (denied) return denied;
+        const res = await registry.rotateAdminToken('rotate-token');
+        return 'error' in res ? json(res, 409) : json(res);
       }
       // Agent identity is the key's label, always: request bodies cannot forge
       // the audit trail. Only the admin may act under a chosen name.

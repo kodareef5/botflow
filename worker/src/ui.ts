@@ -473,11 +473,25 @@ function gate(kind,extra){
           +'<button class="primary" id="go">I saved it, continue</button>';
         $('#go').onclick=()=>{TOKEN=r.token;localStorage.setItem('bf_token',TOKEN);start()};
       }catch(err){$('#err').textContent=err.message}};
+  }else if(kind==='recover'){
+    g.innerHTML='<h2>Recover admin access</h2><p>The <code>SETUP_KEY</code> Worker secret mints a fresh admin token; the lost one dies and the audit log records the recovery. Loopback development needs no key.</p>'
+      +'<form id="f"><input id="rkey" placeholder="setup key" autocomplete="off"><button class="primary">recover →</button></form>'
+      +'<div class="err" id="err"></div>'
+      +'<div style="margin-top:10px"><a href="#" id="backlogin" style="font-size:11.5px;color:var(--muted)">back to login</a></div>';
+    $('#f').onsubmit=async e=>{e.preventDefault();
+      try{const r=await api('/api/recover',{method:'POST',body:JSON.stringify({setupKey:$('#rkey').value||undefined})});
+        g.innerHTML='<h2>New admin token</h2><p class="warn">Copy it now. It is never shown again.</p><div class="tokenbox">'+esc(r.token)+'</div>'
+          +'<button class="primary" id="go">I saved it, continue</button>';
+        $('#go').onclick=()=>{TOKEN=r.token;localStorage.setItem('bf_token',TOKEN);start()};
+      }catch(err){$('#err').textContent=err.message}};
+    $('#backlogin').onclick=e=>{e.preventDefault();gate('token')};
   }else{
     g.innerHTML='<h2>botflow manager</h2>'+(extra?'<p class="err">'+esc(extra)+'</p>':'')
       +'<form id="f"><input id="tok" placeholder="bfa_admin token" autocomplete="off" required><button class="primary">admin login →</button></form>'
-      +'<div id="gateshares"></div>';
+      +'<div id="gateshares"></div>'
+      +'<div style="margin-top:10px"><a href="#" id="lost" style="font-size:11.5px;color:var(--muted)">lost your token?</a></div>';
     $('#f').onsubmit=e=>{e.preventDefault();TOKEN=$('#tok').value.trim();localStorage.setItem('bf_token',TOKEN);start()};
+    $('#lost').onclick=e=>{e.preventDefault();gate('recover')};
     api('/api/public/gate').then(r=>{
       if(r.shares&&r.shares.length)$('#gateshares').outerHTML='<div class="gateshares"><span class="lbl">live boards</span>'
         +r.shares.map(s=>'<a href="/s/'+esc(s.token)+'">'+esc(s.name)+'</a>').join('')+'</div>';
@@ -997,6 +1011,9 @@ function renderSettings(main){
     +'<p class="setting-note">Saved company-wide. Operators and public share pages use the same visual system and density.</p>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">login page</h4>'
     +'<label style="font-size:13px;display:flex;gap:8px;align-items:center"><input type="checkbox" id="gs"> list public board links on the login page</label>'
+    +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">security</h4>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button id="rotate">rotate admin token</button></div>'
+    +'<p class="setting-note">Mints a new admin token and kills the current one immediately; this browser switches over automatically. A lost token is recovered from the login page with the SETUP_KEY secret.</p>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">company data</h4>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button id="orgexp">download company export</button>'
     +'<button id="demoload">load the Scoops Empire demo</button></div>'
@@ -1037,6 +1054,14 @@ function renderSettings(main){
   };
   api('/api/settings').then(cur=>{const gs=$('#gs');if(gs){gs.checked=cur.gateShares!==false;
     gs.onchange=()=>api('/api/settings',{method:'POST',body:JSON.stringify({...THEME,gateShares:gs.checked})}).catch(err=>{$('#serr').textContent=err.message})}});
+  $('#rotate').onclick=()=>confirmModal('Rotate admin token',
+    'The current token stops working the moment you confirm. The new one appears exactly once at the top of settings, and this browser switches to it automatically.',
+    'rotate now',async()=>{
+      const r=await api('/api/rotate-token',{method:'POST'});
+      TOKEN=r.token;localStorage.setItem('bf_token',TOKEN);
+      renderSettings(main);
+      $('.settings').insertAdjacentHTML('afterbegin','<div class="tokenbox">'+esc(r.token)+'</div><p class="warn">New admin token. Copy it now: it is never shown again.</p>');
+    });
   $('#orgexp').onclick=async()=>{
     try{const data=await api('/api/org/export');
       const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});

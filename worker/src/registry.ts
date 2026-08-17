@@ -324,6 +324,17 @@ export class RegistryDO extends DurableObject {
     return { token };
   }
 
+  /** Mint a fresh admin token and retire the old one, in one update. Used by
+   *  authenticated rotation and by setup-key recovery; the caller supplies
+   *  the audit action so the trail says which path was taken. */
+  async rotateAdminToken(auditAction: 'rotate-token' | 'recover-admin'): Promise<{ token: string } | { error: string }> {
+    if (!this.initialized()) return { error: 'not initialized' };
+    const token = randomToken('bfa');
+    this.sql.exec('UPDATE org SET admin_hash = ? WHERE id = 1', await sha256hex(token));
+    this.audit('admin', auditAction, auditAction === 'rotate-token' ? 'admin token rotated; previous token is dead' : 'admin token recovered via setup key; previous token is dead');
+    return { token };
+  }
+
   status(): { initialized: boolean; name: string | null } {
     const rows = this.sql.exec('SELECT name FROM org').toArray();
     return { initialized: rows.length === 1, name: rows.length === 1 ? (rows[0]!['name'] as string) : null };
