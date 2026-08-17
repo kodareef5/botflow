@@ -85,13 +85,28 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
 
     // Agent key on parent; actor forgery must be impossible.
     const key = (await call(`/api/projects/${parent}/keys`, { method: 'POST', token: admin, body: JSON.stringify({ label: 'alpha-agent' }) })).body['token'] as string;
-    await call(`/api/projects/${parent}/cards`, { method: 'POST', token: key, body: JSON.stringify({ title: 'Own task', actor: 'admin' }) });
-    await call(`/api/projects/${parent}/cards/001/claim`, { method: 'POST', token: key, body: JSON.stringify({ actor: 'root' }) });
-    const forged = await call(`/api/projects/${parent}/cards/001`, { token: admin });
+    const own = (await call(`/api/projects/${parent}/cards`, { method: 'POST', token: key, body: JSON.stringify({ title: 'Own task', actor: 'admin' }) })).body['id'] as string;
+    const claimed = await call(`/api/projects/${parent}/cards/${own}/claim`, { method: 'POST', token: key, body: JSON.stringify({ actor: 'root' }) });
+    assert.equal(claimed.status, 200, 'ready unassigned card claims fine');
+    const forged = await call(`/api/projects/${parent}/cards/${own}`, { token: admin });
     assert.equal(forged.body['assignee'], 'alpha-agent', 'assignee bound to key label');
     const events = (await call(`/api/projects/${parent}/events?limit=10`, { token: admin })).body as unknown as { actor: string }[];
     assert.ok(events.filter((e) => e.actor === 'alpha-agent').length >= 2, 'audit records the key label');
     assert.equal(events.some((e) => e.actor === 'root'), false, 'forged actor never recorded');
+
+    // Claim is conditional: re-claim by the holder is a no-op, a rival gets a
+    // structured 409, force overrides.
+    const again = await call(`/api/projects/${parent}/cards/${own}/claim`, { method: 'POST', token: key, body: JSON.stringify({}) });
+    assert.equal(again.status, 200);
+    assert.equal(again.body['alreadyYours'], true, 're-claim by holder is idempotent');
+    const lost = await call(`/api/projects/${parent}/cards/${own}/claim`, { method: 'POST', token: admin, body: JSON.stringify({}) });
+    assert.equal(lost.status, 409, 'claiming a held card conflicts');
+    const conflict = lost.body['conflict'] as { reason: string; holder: string };
+    assert.equal(conflict.reason, 'assigned');
+    assert.equal(conflict.holder, 'alpha-agent');
+    const forcedClaim = await call(`/api/projects/${parent}/cards/${own}/claim`, { method: 'POST', token: admin, body: JSON.stringify({ force: true }) });
+    assert.equal(forcedClaim.status, 200);
+    assert.equal(forcedClaim.body['assignee'], 'admin', 'force takes the card');
 
     // Scoping: a card referencing an unrelated project is rejected, and a
     // smuggled ref (via board import) leaks nothing at resolution time.

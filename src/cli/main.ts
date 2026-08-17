@@ -65,7 +65,9 @@ usage: botflow <command> [args]
            [--type board --board-path <dir>] [--assignee name]
   card show <id> [--json]
   card mv <id> <lane[.substate]> [--force]
-  card claim <id>                       assign to --actor and move to doing
+  card claim <id> [--force]             take a ready unassigned card into doing;
+                                        conflicts (assigned/blocked/not-ready/deps)
+                                        refuse unless --force
   card close <id> [--reason r]          move to done, clear blocked flag
   card block <id> --reason <r>          set the blocked flag
   card unblock <id>
@@ -360,13 +362,21 @@ function runCard(argv: string[]): number {
     }
     case 'claim':
     case 'close': {
-      const { values, positionals } = parse(rest, { ...COMMON, reason: { type: 'string' } });
+      const { values, positionals } = parse(rest, { ...COMMON, reason: { type: 'string' }, force: { type: 'boolean', default: false } });
       const id = positionals[0];
       if (!id) throw new UsageError(`usage: botflow card ${sub} <id>`);
       const root = getRoot(values);
       const actor = getActor(values);
       const res =
-        sub === 'claim' ? claimCard(root, id, actor) : closeCard(root, id, actor, values['reason'] as string | undefined);
+        sub === 'claim'
+          ? claimCard(root, id, actor, values['force'] as boolean)
+          : closeCard(root, id, actor, values['reason'] as string | undefined);
+      if (res.alreadyYours) {
+        values['json']
+          ? emitJson({ id: res.card.id, from: res.from, to: res.to, assignee: res.card.assignee, alreadyYours: true, warnings: [] })
+          : out(`= ${res.card.id} already yours (${res.to})`);
+        return 0;
+      }
       values['json']
         ? emitJson({ id: res.card.id, from: res.from, to: res.to, assignee: res.card.assignee, warnings: res.warnings })
         : out(`✓ ${res.card.id} ${res.from} → ${res.to}${sub === 'claim' ? ` (@${res.card.assignee})` : ''}${res.warnings.map((w) => `\n⚠ ${w}`).join('')}`);

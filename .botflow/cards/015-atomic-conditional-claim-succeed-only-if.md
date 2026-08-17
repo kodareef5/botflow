@@ -1,8 +1,9 @@
 ---
 id: 015
 title: "Atomic conditional claim: succeed only if ready and unassigned, else conflict (core + DO + MCP)"
-lane: todo
+lane: done
 labels: [engine, concurrency]
+assignee: claude
 priority: p0
 created: 2026-08-17
 updated: 2026-08-17
@@ -12,3 +13,6 @@ From ChatGPT review. opClaim currently sets assignee and moves to doing uncondit
 
 ## Log
 - 2026-08-17 21:27 claude: created in todo
+- 2026-08-17 21:51 claude: claimed, moved todo → doing
+- 2026-08-17 21:58 claude: conditional claim shipped: claimability + ClaimConflict in ops.ts, force flag on CLI/MCP/REST, DO returns 409 with structured conflict, SPEC 12 rewritten, 10 ops tests + worker e2e conflict cases
+- 2026-08-17 21:58 claude: closed: claim is a real coordination primitive on every surface

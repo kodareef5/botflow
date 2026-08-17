@@ -624,7 +624,8 @@ export default {
         if (req.method === 'POST' && action !== undefined) {
           const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
           const res = await stub.action(action, cid, body, actorOf(body));
-          return 'error' in res ? json(res, 400) : json(res);
+          // A lost claim is a 409: the caller raced someone or misread readiness.
+          return 'error' in res ? json(res, 'conflict' in res ? 409 : 400) : json(res);
         }
       }
       return json({ error: 'not found' }, 404);

@@ -11,6 +11,24 @@ import { logMutation, nowDate, nowDateTime } from './write.ts';
 /** An error caused by how a tool was invoked: message for the caller, no stack. */
 export class UsageError extends Error {}
 
+/** A claim that lost: the card is not claimable by this actor right now.
+ *  Extends UsageError so every surface that already reports usage errors
+ *  degrades to a clear message; surfaces that know about claims can read the
+ *  structured fields (REST returns 409 with them). */
+export class ClaimConflict extends UsageError {
+  readonly reason: 'assigned' | 'blocked' | 'not-ready' | 'deps';
+  /** Current assignee when reason is "assigned". */
+  readonly holder: string | null;
+  /** The card's current lane[.substate]. */
+  readonly position: string;
+  constructor(message: string, reason: ClaimConflict['reason'], holder: string | null, position: string) {
+    super(message);
+    this.reason = reason;
+    this.holder = holder;
+    this.position = position;
+  }
+}
+
 export function defaultBoardYaml(name: string): string {
   // emitScalar quotes anything that could escape the value position, so a
   // hostile name cannot inject extra yaml keys.
@@ -138,6 +156,8 @@ export interface MoveResult {
   from: string;
   to: string;
   warnings: string[];
+  /** Claim no-op: the actor already holds this card in doing. */
+  alreadyYours?: boolean;
 }
 
 export function opMove(board: LoadedBoard, card: Card, spec: string, actor: string, force = false): MoveResult {
@@ -168,14 +188,62 @@ export function opMove(board: LoadedBoard, card: Card, spec: string, actor: stri
   return { card, from, to, warnings: wipWarnings(board, card) };
 }
 
-export function opClaim(board: LoadedBoard, card: Card, actor: string): MoveResult {
+/** A card's canonical state seen locally: blocked flag (outside done/archive)
+ *  wins, else the lane's canonical; unknown lanes read as todo, matching
+ *  analyze. Board-cards use their lane here: rollup needs children ops
+ *  cannot see, and claim is a local coordination question. */
+function localCanonical(board: LoadedBoard, card: Card): string {
+  const lane = board.config.lanes.find((l) => l.id === card.laneId);
+  const laneCanonical = lane?.canonical ?? 'todo';
+  const closed = laneCanonical === 'done' || laneCanonical === 'archive';
+  return card.blocked !== null && !closed ? 'blocked' : laneCanonical;
+}
+
+export type Claimability = { ok: true; alreadyYours: boolean } | { ok: false; conflict: ClaimConflict };
+
+/** Claim is a coordination primitive (SPEC §12): it succeeds only for a card
+ *  that is ready (todo, unblocked, deps done) and unassigned, or already
+ *  assigned to the claiming actor. Everything else is a conflict. */
+export function claimability(board: LoadedBoard, card: Card, actor: string): Claimability {
+  const position = positionLabel({ laneId: card.laneId, substate: card.substate });
+  const fail = (message: string, reason: ClaimConflict['reason'], holder: string | null = null): Claimability => ({
+    ok: false,
+    conflict: new ClaimConflict(`cannot claim ${card.id}: ${message}`, reason, holder, position),
+  });
+
+  const state = localCanonical(board, card);
+  if (card.assignee !== null && card.assignee !== actor) {
+    return fail(`already assigned to ${card.assignee} (${position})`, 'assigned', card.assignee);
+  }
+  if (card.assignee === actor && state === 'doing') return { ok: true, alreadyYours: true };
+  if (state === 'blocked') return fail(`blocked: ${card.blocked}`, 'blocked');
+  if (state !== 'todo') return fail(`not ready, it sits in ${position}`, 'not-ready');
+  const unmet = card.deps.filter((dep) => {
+    const depCard = board.cards.find((c) => c.id === dep);
+    if (!depCard) return true;
+    const depState = localCanonical(board, depCard);
+    return depState !== 'done' && depState !== 'archive';
+  });
+  if (unmet.length > 0) return fail(`deps not done: ${unmet.join(', ')}`, 'deps');
+  return { ok: true, alreadyYours: false };
+}
+
+export function opClaim(board: LoadedBoard, card: Card, actor: string, force = false): MoveResult {
+  const check = claimability(board, card, actor);
+  if (check.ok && check.alreadyYours) {
+    const at = positionLabel({ laneId: card.laneId, substate: card.substate });
+    return { card, from: at, to: at, warnings: [], alreadyYours: true };
+  }
+  if (!check.ok && !force) throw check.conflict;
+  const forced = !check.ok;
   const lane = laneByCanonical(board.config, 'doing', 'claim into');
   const from = positionLabel({ laneId: card.laneId, substate: card.substate });
   card.assignee = actor;
   card.laneId = lane.id;
   card.substate = lane.substates.length > 0 ? lane.substates[0]! : null;
   const to = positionLabel({ laneId: card.laneId, substate: card.substate });
-  logMutation(card, actor, from === to ? 'claimed' : `claimed, moved ${from} → ${to}`);
+  const verb = forced ? 'claimed (forced)' : 'claimed';
+  logMutation(card, actor, from === to ? verb : `${verb}, moved ${from} → ${to}`);
   return { card, from, to, warnings: wipWarnings(board, card) };
 }
 

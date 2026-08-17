@@ -61,10 +61,10 @@ export function moveCard(root: string, id: string, spec: string, actor: string, 
   return res;
 }
 
-export function claimCard(root: string, id: string, actor: string): MoveResult {
+export function claimCard(root: string, id: string, actor: string, force = false): MoveResult {
   const board = loadBoard(root);
-  const res = opClaim(board, getCard(board, id), actor);
-  writeCard(root, res.card);
+  const res = opClaim(board, getCard(board, id), actor, force);
+  if (!res.alreadyYours) writeCard(root, res.card);
   return res;
 }
 

@@ -144,10 +144,12 @@ function buildTools(root: string, defaultActor: string): Tool[] {
     },
     {
       name: 'card_claim',
-      description: 'Atomically claim a card: set assignee to the actor and move it into the doing lane.',
-      inputSchema: schema(['id'], { id: str, actor: str }),
+      description:
+        'Atomically claim a card: succeeds only if it is ready (todo, unblocked, deps done) and unassigned, then sets assignee to the actor and moves it into doing. Anything else is a conflict error; force overrides.',
+      inputSchema: schema(['id'], { id: str, actor: str, force: bool }),
       run: (args) => {
-        const res = claimCard(root, String(args['id']), actorOf(args));
+        const res = claimCard(root, String(args['id']), actorOf(args), args['force'] === true);
+        if (res.alreadyYours) return { id: res.card.id, at: res.to, assignee: res.card.assignee, alreadyYours: true };
         return { id: res.card.id, from: res.from, to: res.to, assignee: res.card.assignee, warnings: res.warnings };
       },
     },

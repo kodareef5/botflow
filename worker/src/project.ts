@@ -15,6 +15,7 @@ import { boardJson, cardDetailJson, cardJson } from '../../src/core/json.ts';
 import type { BoardAnalysis } from '../../src/core/analyze.ts';
 import type { BoardNode, Card, LoadedBoard } from '../../src/core/model.ts';
 import {
+  ClaimConflict,
   UsageError,
   defaultBoardYaml,
   getCard,
@@ -357,7 +358,8 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           return { id, from: res.from, to: res.to, warnings: res.warnings };
         }
         case 'claim': {
-          const res = opClaim(board, card, actor);
+          const res = opClaim(board, card, actor, args['force'] === true);
+          if (res.alreadyYours) return { id, at: res.to, assignee: card.assignee, alreadyYours: true };
           this.persistCard(card);
           this.event(actor, 'claim', id, `${res.from} → ${res.to}`);
           return { id, from: res.from, to: res.to, assignee: card.assignee, warnings: res.warnings };
@@ -435,6 +437,9 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           return { error: `unknown action "${kind}"` };
       }
     } catch (err) {
+      if (err instanceof ClaimConflict) {
+        return { error: err.message, conflict: { reason: err.reason, holder: err.holder, position: err.position } };
+      }
       if (err instanceof UsageError) return { error: err.message };
       throw err;
     }

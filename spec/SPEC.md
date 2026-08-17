@@ -218,7 +218,7 @@ Expected files record, per board: lint findings (rule ids + card ids), per-card 
 
 ## 12. Conventions for tools
 
-- **Claim** = set `assignee` to the actor and move the card to a `doing`-canonical lane (first substate if any), appending a Log entry: one atomic rewrite.
+- **Claim is a coordination primitive, not a shortcut.** A claim MUST succeed only when the card is claimable by the actor: its local canonical state (lane canonical, or `blocked` when the flag is set) is `todo`, every dep resolves to a card whose local canonical state is `done` or `archive`, and `assignee` is empty or already the actor. Success = set `assignee` to the actor and move the card to a `doing`-canonical lane (first substate if any), appending a Log entry: one atomic rewrite. A claim of a card the actor already holds in `doing` is an idempotent no-op. Anything else MUST fail with a conflict that names the reason (`assigned`, `blocked`, `not-ready`, `deps`) and MUST NOT modify the card; two actors racing to claim the same card get exactly one winner. Tools MAY offer an explicit force override for human operators; a forced claim logs that it was forced. Board-cards judge claimability by their own lane: rollup state is a view, not a lock.
 - Every mutation appends a Log line; never rewrite existing Log lines. Comments append to `## Comments` and bump `updated` without a Log line (discourse isn't audit); checklist toggles and attachment changes DO log.
 - Preserve unknown frontmatter keys and all body content outside the section being edited.
 - Only bump `updated` on meaningful change.

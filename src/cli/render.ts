@@ -169,7 +169,8 @@ export function renderPrime(tree: Tree, analysis: Analysis, root: string): strin
   lines.push('');
   lines.push('## Workflow');
   lines.push('1. `botflow ready` → pick a card (respect priority p0 > p3)');
-  lines.push('2. `botflow card claim <id> --actor <you>`');
+  lines.push('2. `botflow card claim <id> --actor <you>`: claims only ready unassigned cards;');
+  lines.push('   a conflict means someone holds it or it is not ready: pick another card');
   lines.push('3. work; narrate with `botflow log <id> "<what happened>"`');
   lines.push('4. advance with `botflow card mv <id> <lane[.substate]>`');
   lines.push('5. stuck? `botflow card block <id> --reason "<why>"`: never park silently');
