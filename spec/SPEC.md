@@ -191,6 +191,7 @@ Not supported (parse error): anchors/aliases (`&`, `*`), tags (`!`), block scala
 | `unknown-lane` | error | Card's lane id not in the board's lanes. |
 | `bad-substate` | error | Substate not among the lane's `substates`. |
 | `dangling-dep` | error | Dep references a nonexistent card id. |
+| `dep-cycle` | error | Dependency cycle (`deps` closes a loop): every member is permanently non-ready. Reported once per cycle, naming the loop. |
 | `board-path-missing` | error | Board-card path doesn't resolve (§3). |
 | `board-cycle` | error | Board reference cycle. |
 | `id-scheme-mismatch` | error | Card id doesn't match the board's `ids` scheme. |

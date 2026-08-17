@@ -26,6 +26,7 @@ export const RULE_SEVERITY: Record<string, Severity> = {
   'unknown-lane': 'error',
   'bad-substate': 'error',
   'dangling-dep': 'error',
+  'dep-cycle': 'error',
   'board-path-missing': 'error',
   'board-cycle': 'error',
   'id-scheme-mismatch': 'error',
