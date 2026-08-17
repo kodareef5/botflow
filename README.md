@@ -54,7 +54,7 @@ botflow-manager --cwd <repo>`); source changes hot-reload. Deleting `.wrangler/`
 instance: company, tokens, boards, everything. Loopback setup is intentionally zero-config;
 an internet-hosted deployment refuses initialization until `SETUP_KEY` is configured as a
 Worker secret. Deploy-button users can add it under **Settings → Variables and Secrets** in
-the Cloudflare dashboard. Enter that value once in the setup form—it is not the admin token.
+the Cloudflare dashboard. Enter that value once in the setup form; it is not the admin token.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/kodareef5/botflow)
 *(the button needs this repo public on GitHub; `wrangler deploy` works regardless)*
@@ -78,8 +78,8 @@ BOTFLOW_TOKEN=bfk_… botflow push   # or pull
 
 ## What it looks like
 
-The manager includes five complete visual worlds—Harbor, Phosphor, Field Notes,
-Mochi, and Block Party—with four tuned accents apiece, light and dark modes, and
+The manager includes five complete visual worlds: Harbor, Phosphor, Field Notes,
+Mochi, and Block Party. Each has four tuned accents, light and dark modes, and
 purpose-built compact or relaxed density. The workflow stays familiar while the
 character, color, type, shape, and rhythm change together.
 

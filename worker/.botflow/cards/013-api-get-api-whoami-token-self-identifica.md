@@ -1,6 +1,6 @@
 ---
 id: 013
-title: API: GET /api/whoami — token self-identification for agents
+title: API: GET /api/whoami: token self-identification for agents
 lane: done
 labels: [api]
 assignee: claude

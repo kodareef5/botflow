@@ -172,7 +172,7 @@ table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink2)}
 .actlist .when{font:11px ui-monospace,Menlo,monospace;color:var(--muted);white-space:nowrap;padding-top:2px}
 .actlist .who{font-weight:600}
 
-/* Harbor — translucent, calm, and dimensional. */
+/* Harbor: translucent, calm, and dimensional. */
 html[data-style="harbor"] body{background-image:
   radial-gradient(circle at 5% 0%,color-mix(in srgb,var(--acc) 16%,transparent) 0,transparent 30%),
   radial-gradient(circle at 95% 4%,color-mix(in srgb,var(--surface2) 82%,transparent) 0,transparent 28%);background-attachment:fixed}
@@ -182,7 +182,7 @@ html[data-style="harbor"] .card{border-color:color-mix(in srgb,var(--grid) 76%,t
 html[data-style="harbor"] .card:hover{transform:translateY(-2px);box-shadow:inset 0 3px 0 var(--acc),0 8px 20px color-mix(in srgb,var(--ink) 12%,transparent)}
 html[data-style="harbor"] .row.sel{outline:none;box-shadow:inset 3px 0 0 var(--acc)}
 
-/* Phosphor — a working terminal, including grid, prompts, and signal glow. */
+/* Phosphor: a working terminal, including grid, prompts, and signal glow. */
 html[data-style="phosphor"] body{background-image:
   linear-gradient(color-mix(in srgb,var(--acc) 7%,transparent) 1px,transparent 1px),
   linear-gradient(90deg,color-mix(in srgb,var(--acc) 7%,transparent) 1px,transparent 1px);background-size:24px 24px;background-attachment:fixed}
@@ -197,7 +197,7 @@ html[data-style="phosphor"] button.primary{box-shadow:0 0 16px color-mix(in srgb
 html[data-style="phosphor"] .statechip,html[data-style="phosphor"] .badges span,html[data-style="phosphor"] .meter .track,html[data-style="phosphor"] .strip{border-radius:0}
 html[data-style="phosphor"] .card .t{font-weight:600;letter-spacing:-.02em}
 
-/* Field Notes — an editorial notebook, not a beige software theme. */
+/* Field Notes: an editorial notebook, not a beige software theme. */
 html[data-style="fieldnotes"] body{background-image:repeating-linear-gradient(to bottom,transparent 0,transparent 31px,color-mix(in srgb,var(--baseline) 22%,transparent) 32px);background-attachment:local}
 html[data-style="fieldnotes"] header.top,html[data-style="fieldnotes"] aside,html[data-style="fieldnotes"] .phead{background:color-mix(in srgb,var(--surface) 92%,transparent)}
 html[data-style="fieldnotes"] header.top h1{font-style:italic;letter-spacing:-.025em}
@@ -209,7 +209,7 @@ html[data-style="fieldnotes"] .col .card:nth-child(3n+2){transform:rotate(.18deg
 html[data-style="fieldnotes"] .card:hover{transform:translateY(-1px) rotate(0);box-shadow:2px 4px 0 color-mix(in srgb,var(--ink) 20%,transparent)}
 html[data-style="fieldnotes"] .col h3{border-bottom:1px solid var(--baseline)}
 
-/* Mochi — soft bento trays, candy light, and generous rounded objects. */
+/* Mochi: soft bento trays, candy light, and generous rounded objects. */
 html[data-style="mochi"] body{background-image:
   radial-gradient(circle at 8% 2%,color-mix(in srgb,var(--acc) 17%,transparent) 0,transparent 25%),
   radial-gradient(circle at 86% 12%,color-mix(in srgb,var(--surface2) 88%,transparent) 0,transparent 30%);background-attachment:fixed}
@@ -221,7 +221,7 @@ html[data-style="mochi"] button{font-weight:600}
 html[data-style="mochi"] .row.sel{outline:none;box-shadow:inset 4px 0 0 var(--acc)}
 html[data-style="mochi"] .statechip{border:2px solid color-mix(in srgb,var(--surface) 78%,transparent);padding-block:0}
 
-/* Block Party — poster ink, offset registration, and hard physical edges. */
+/* Block Party: poster ink, offset registration, and hard physical edges. */
 html[data-style="blockparty"] body{background-image:radial-gradient(color-mix(in srgb,var(--grid) 18%,transparent) .9px,transparent .9px);background-size:16px 16px;background-attachment:fixed}
 html[data-style="blockparty"] header.top{border-top:8px solid var(--acc);border-bottom:2px solid var(--grid)}
 html[data-style="blockparty"] aside{background:var(--surface);border-right:2px solid var(--grid)}
