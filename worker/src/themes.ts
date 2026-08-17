@@ -1,11 +1,11 @@
-// The style catalog: five looks over one structural stylesheet. A style sets
-// shape (radius, borders, shadows, font, density) and palettes per mode; an
-// accent recolors chrome (buttons, meters, links), never the six canonical
-// state colors, which stay semantic and CVD-validated as a set.
+// Five complete visual systems over one semantic UI. Each style owns its
+// typography, surfaces, shape, flare, accents, and both density treatments.
+// Canonical workflow-state colors stay fixed so status meaning never moves.
 
 export interface Palette {
   page: string;
   surface: string;
+  surface2: string;
   ink: string;
   ink2: string;
   muted: string;
@@ -27,63 +27,95 @@ export interface Accent {
   dark: { acc: string; accInk: string };
 }
 
+export interface DensityTokens {
+  baseSize: string;
+  lineHeight: string;
+  headerPad: string;
+  sideWidth: string;
+  sidePad: string;
+  paneHeadPad: string;
+  viewPad: string;
+  columnWidth: string;
+  columnGap: string;
+  columnPad: string;
+  cardGap: string;
+  cardPad: string;
+  controlPad: string;
+  fieldPad: string;
+  artHeight: string;
+}
+
 export interface Style {
   id: string;
   name: string;
   blurb: string;
   font: string;
+  displayFont: string;
   radiusCard: string;
   radiusCtl: string;
   borderW: string;
-  /** CSS border-style for hairlines/cards: solid, dashed, ... */
   borderStyle: string;
   shadowLight: string;
   shadowDark: string;
   light: Palette;
   dark: Palette;
   accents: Accent[];
+  densities: { compact: DensityTokens; relaxed: DensityTokens };
 }
 
-// Canonical state colors (validated: strip order wishlist·todo·blocked·doing·
-// done·archive passes CVD adjacency in both modes; neutrals are deliberately
-// recessive and always chip-labeled).
+// This set was checked as a whole: adjacent strip states remain distinguishable
+// under common color-vision simulations, while every state is also text-labeled.
 const ST_LIGHT = { stTodo: '#898781', stBlocked: '#d03b3b', stDoing: '#2a78d6', stDone: '#0ca30c' };
 const ST_DARK = { stTodo: '#898781', stBlocked: '#d03b3b', stDoing: '#3987e5', stDone: '#0ca30c' };
 
 export const STYLES: Style[] = [
   {
-    id: 'reef',
-    name: 'Reef',
-    blurb: 'calm neutral, the default',
+    id: 'harbor',
+    name: 'Harbor',
+    blurb: 'airy coastal product studio',
     font: 'system-ui, -apple-system, "Segoe UI", sans-serif',
-    radiusCard: '10px',
-    radiusCtl: '6px',
+    displayFont: '"Avenir Next", "Segoe UI", system-ui, sans-serif',
+    radiusCard: '16px',
+    radiusCtl: '10px',
     borderW: '1px',
     borderStyle: 'solid',
-    shadowLight: '0 1px 3px rgba(0,0,0,.06)',
-    shadowDark: '0 1px 3px rgba(0,0,0,.45)',
+    shadowLight: '0 10px 30px rgba(35, 84, 91, .10)',
+    shadowDark: '0 14px 34px rgba(0, 0, 0, .34)',
     light: {
-      page: '#f9f9f7', surface: '#fcfcfb', ink: '#0b0b0b', ink2: '#52514e', muted: '#898781',
-      grid: '#e1e0d9', baseline: '#c3c2b7', ring: 'rgba(11,11,11,.10)',
-      stWishlist: '#c3c2b7', stArchive: '#e1e0d9', ...ST_LIGHT,
+      page: '#edf5f5', surface: '#ffffff', surface2: '#e1efef', ink: '#112d31', ink2: '#496367', muted: '#586f73',
+      grid: '#d1e1e1', baseline: '#a7c1c3', ring: 'rgba(17,45,49,.12)',
+      stWishlist: '#b7cccd', stArchive: '#dce8e8', ...ST_LIGHT,
     },
     dark: {
-      page: '#0d0d0d', surface: '#1a1a19', ink: '#ffffff', ink2: '#c3c2b7', muted: '#898781',
-      grid: '#2c2c2a', baseline: '#383835', ring: 'rgba(255,255,255,.10)',
-      stWishlist: '#383835', stArchive: '#2c2c2a', ...ST_DARK,
+      page: '#061417', surface: '#0c2024', surface2: '#123139', ink: '#eefafb', ink2: '#afcacc', muted: '#728f92',
+      grid: '#1f3a3f', baseline: '#365a60', ring: 'rgba(238,250,251,.12)',
+      stWishlist: '#365a60', stArchive: '#172f34', ...ST_DARK,
     },
     accents: [
-      { id: 'reef', name: 'Reef blue', light: { acc: '#2a78d6', accInk: '#ffffff' }, dark: { acc: '#3987e5', accInk: '#ffffff' } },
-      { id: 'lagoon', name: 'Lagoon', light: { acc: '#0e8f83', accInk: '#ffffff' }, dark: { acc: '#17b3a5', accInk: '#03211e' } },
-      { id: 'coral', name: 'Coral', light: { acc: '#d95b43', accInk: '#ffffff' }, dark: { acc: '#f07a5f', accInk: '#33120a' } },
-      { id: 'grape', name: 'Grape', light: { acc: '#6c4bd1', accInk: '#ffffff' }, dark: { acc: '#9a7ef0', accInk: '#1c1040' } },
+      { id: 'pacific', name: 'Pacific', light: { acc: '#176fe8', accInk: '#ffffff' }, dark: { acc: '#6ca7ff', accInk: '#071b36' } },
+      { id: 'kelp', name: 'Kelp', light: { acc: '#087f6d', accInk: '#ffffff' }, dark: { acc: '#4bd0b5', accInk: '#05251f' } },
+      { id: 'coral', name: 'Coral', light: { acc: '#c94a36', accInk: '#ffffff' }, dark: { acc: '#ff8a70', accInk: '#35130c' } },
+      { id: 'marigold', name: 'Marigold', light: { acc: '#9a5b00', accInk: '#ffffff' }, dark: { acc: '#ffc45a', accInk: '#2d1b00' } },
     ],
+    densities: {
+      compact: {
+        baseSize: '13px', lineHeight: '1.38', headerPad: '9px 13px', sideWidth: '248px', sidePad: '10px',
+        paneHeadPad: '9px 13px', viewPad: '10px 13px', columnWidth: '232px', columnGap: '9px', columnPad: '7px',
+        cardGap: '5px', cardPad: '6px 8px 7px', controlPad: '3px 9px', fieldPad: '5px 8px', artHeight: '76px',
+      },
+      relaxed: {
+        baseSize: '14.5px', lineHeight: '1.5', headerPad: '14px 20px', sideWidth: '292px', sidePad: '16px',
+        paneHeadPad: '14px 20px', viewPad: '18px 20px', columnWidth: '282px', columnGap: '16px', columnPad: '11px',
+        cardGap: '9px', cardPad: '9px 12px 10px', controlPad: '6px 13px', fieldPad: '8px 11px', artHeight: '104px',
+      },
+    },
   },
   {
     id: 'phosphor',
     name: 'Phosphor',
-    blurb: 'terminal: mono, dense, square',
+    blurb: 'operator terminal and live telemetry',
     font: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
+    displayFont: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
     radiusCard: '0px',
     radiusCtl: '0px',
     borderW: '1px',
@@ -91,182 +123,156 @@ export const STYLES: Style[] = [
     shadowLight: 'none',
     shadowDark: 'none',
     light: {
-      page: '#eff0e6', surface: '#f9faf0', ink: '#1c241e', ink2: '#48544a', muted: '#78847a',
-      grid: '#d6d9c6', baseline: '#b4b9a4', ring: 'rgba(28,36,30,.14)',
-      stWishlist: '#b4b9a4', stArchive: '#d6d9c6', ...ST_LIGHT,
+      page: '#e9eee6', surface: '#f8fcf4', surface2: '#dce8d8', ink: '#142019', ink2: '#415149', muted: '#5d6f65',
+      grid: '#c9d4c5', baseline: '#9daf99', ring: 'rgba(20,32,25,.16)',
+      stWishlist: '#aebda9', stArchive: '#d6e0d2', ...ST_LIGHT,
     },
     dark: {
-      page: '#060a06', surface: '#0c130c', ink: '#d7f2dc', ink2: '#9fc3a6', muted: '#6d8a72',
-      grid: '#1c291e', baseline: '#2c3c2e', ring: 'rgba(215,242,220,.14)',
-      stWishlist: '#2c3c2e', stArchive: '#182418', ...ST_DARK,
+      page: '#030704', surface: '#071009', surface2: '#0b1a10', ink: '#d8f5dd', ink2: '#9bc7a4', muted: '#64866b',
+      grid: '#193020', baseline: '#2a4b31', ring: 'rgba(76,255,136,.16)',
+      stWishlist: '#2a4b31', stArchive: '#112619', ...ST_DARK,
     },
     accents: [
-      { id: 'green', name: 'Phosphor green', light: { acc: '#0a7a33', accInk: '#ffffff' }, dark: { acc: '#37d97a', accInk: '#06240f' } },
-      { id: 'amber', name: 'Amber', light: { acc: '#9c5f00', accInk: '#ffffff' }, dark: { acc: '#e0a63a', accInk: '#241703' } },
-      { id: 'ice', name: 'Ice', light: { acc: '#0b6a8a', accInk: '#ffffff' }, dark: { acc: '#59d8e6', accInk: '#04252a' } },
+      { id: 'green', name: 'Phosphor', light: { acc: '#087832', accInk: '#ffffff' }, dark: { acc: '#4cff88', accInk: '#03230d' } },
+      { id: 'amber', name: 'Amber CRT', light: { acc: '#965b00', accInk: '#ffffff' }, dark: { acc: '#ffbd4a', accInk: '#2c1900' } },
+      { id: 'cyan', name: 'Cold signal', light: { acc: '#006f82', accInk: '#ffffff' }, dark: { acc: '#54e8ff', accInk: '#00262c' } },
+      { id: 'violet', name: 'Ultraviolet', light: { acc: '#6842b8', accInk: '#ffffff' }, dark: { acc: '#b495ff', accInk: '#20123f' } },
     ],
+    densities: {
+      compact: {
+        baseSize: '12px', lineHeight: '1.32', headerPad: '7px 10px', sideWidth: '226px', sidePad: '8px',
+        paneHeadPad: '7px 10px', viewPad: '8px 10px', columnWidth: '212px', columnGap: '7px', columnPad: '5px',
+        cardGap: '4px', cardPad: '4px 6px 5px', controlPad: '2px 7px', fieldPad: '3px 6px', artHeight: '64px',
+      },
+      relaxed: {
+        baseSize: '13.5px', lineHeight: '1.48', headerPad: '11px 15px', sideWidth: '266px', sidePad: '12px',
+        paneHeadPad: '11px 15px', viewPad: '13px 15px', columnWidth: '254px', columnGap: '11px', columnPad: '8px',
+        cardGap: '7px', cardPad: '7px 9px 8px', controlPad: '4px 10px', fieldPad: '6px 8px', artHeight: '88px',
+      },
+    },
   },
   {
-    id: 'papercut',
-    name: 'Papercut',
-    blurb: 'warm paper, ruled-card borders',
-    font: 'system-ui, -apple-system, "Segoe UI", sans-serif',
-    radiusCard: '4px',
-    radiusCtl: '3px',
-    borderW: '1.5px',
+    id: 'fieldnotes',
+    name: 'Field Notes',
+    blurb: 'ink, paper, rules, and margin marks',
+    font: '"Iowan Old Style", "Palatino Linotype", Georgia, serif',
+    displayFont: 'Georgia, "Times New Roman", serif',
+    radiusCard: '3px',
+    radiusCtl: '2px',
+    borderW: '1px',
     borderStyle: 'solid',
-    shadowLight: 'none',
-    shadowDark: 'none',
+    shadowLight: '1px 2px 0 rgba(62, 49, 25, .20)',
+    shadowDark: '1px 2px 0 rgba(0, 0, 0, .48)',
     light: {
-      page: '#f5efe2', surface: '#fdf9ee', ink: '#2c2618', ink2: '#5c5340', muted: '#8c8168',
-      grid: '#e2d7bd', baseline: '#c8bb9b', ring: 'rgba(44,38,24,.14)',
-      stWishlist: '#c8bb9b', stArchive: '#e2d7bd', ...ST_LIGHT,
+      page: '#f1e8d5', surface: '#fffaf0', surface2: '#e8dcc3', ink: '#302817', ink2: '#62563e', muted: '#6f624b',
+      grid: '#d7c8aa', baseline: '#ad9a73', ring: 'rgba(48,40,23,.16)',
+      stWishlist: '#c7b894', stArchive: '#e5dac4', ...ST_LIGHT,
     },
     dark: {
-      page: '#171410', surface: '#201c15', ink: '#ece4d2', ink2: '#b8ac92', muted: '#877d66',
-      grid: '#322c20', baseline: '#443d2d', ring: 'rgba(236,228,210,.12)',
-      stWishlist: '#443d2d', stArchive: '#322c20', ...ST_DARK,
+      page: '#17130d', surface: '#211c13', surface2: '#2b2418', ink: '#f1e7d2', ink2: '#c5b697', muted: '#8e8066',
+      grid: '#3c3222', baseline: '#5b4c32', ring: 'rgba(241,231,210,.13)',
+      stWishlist: '#594c35', stArchive: '#30281b', ...ST_DARK,
     },
     accents: [
-      { id: 'inkwell', name: 'Inkwell', light: { acc: '#2f4fae', accInk: '#ffffff' }, dark: { acc: '#7d97e8', accInk: '#101a36' } },
-      { id: 'redpen', name: 'Red-pen', light: { acc: '#b4342c', accInk: '#ffffff' }, dark: { acc: '#e06a5e', accInk: '#2b0f0c' } },
-      { id: 'moss', name: 'Moss', light: { acc: '#4a7c2f', accInk: '#ffffff' }, dark: { acc: '#8fbf6f', accInk: '#14260b' } },
+      { id: 'fountain', name: 'Fountain blue', light: { acc: '#2856a1', accInk: '#ffffff' }, dark: { acc: '#82a9ef', accInk: '#102044' } },
+      { id: 'redpencil', name: 'Red pencil', light: { acc: '#b23831', accInk: '#ffffff' }, dark: { acc: '#f0786c', accInk: '#32100c' } },
+      { id: 'herb', name: 'Pressed herb', light: { acc: '#4f762e', accInk: '#ffffff' }, dark: { acc: '#a0ca74', accInk: '#1c2d0c' } },
+      { id: 'ochre', name: 'Ochre', light: { acc: '#916000', accInk: '#ffffff' }, dark: { acc: '#e8b54b', accInk: '#2b1c00' } },
     ],
+    densities: {
+      compact: {
+        baseSize: '13px', lineHeight: '1.4', headerPad: '9px 14px', sideWidth: '244px', sidePad: '10px',
+        paneHeadPad: '10px 14px', viewPad: '11px 14px', columnWidth: '238px', columnGap: '10px', columnPad: '7px',
+        cardGap: '6px', cardPad: '7px 9px 8px', controlPad: '3px 9px', fieldPad: '5px 8px', artHeight: '78px',
+      },
+      relaxed: {
+        baseSize: '15px', lineHeight: '1.58', headerPad: '15px 22px', sideWidth: '300px', sidePad: '18px',
+        paneHeadPad: '15px 22px', viewPad: '20px 22px', columnWidth: '294px', columnGap: '18px', columnPad: '12px',
+        cardGap: '10px', cardPad: '10px 14px 12px', controlPad: '6px 14px', fieldPad: '8px 12px', artHeight: '108px',
+      },
+    },
   },
   {
     id: 'mochi',
     name: 'Mochi',
-    blurb: 'soft, plush, pastel',
-    font: 'system-ui, -apple-system, "Segoe UI", sans-serif',
-    radiusCard: '14px',
-    radiusCtl: '10px',
+    blurb: 'playful candy bento with soft depth',
+    font: 'ui-rounded, "SF Pro Rounded", system-ui, -apple-system, sans-serif',
+    displayFont: 'ui-rounded, "SF Pro Rounded", system-ui, -apple-system, sans-serif',
+    radiusCard: '20px',
+    radiusCtl: '14px',
     borderW: '1px',
     borderStyle: 'solid',
-    shadowLight: '0 4px 14px rgba(150,110,160,.13)',
-    shadowDark: '0 4px 14px rgba(0,0,0,.5)',
+    shadowLight: '0 12px 28px rgba(126, 79, 137, .14)',
+    shadowDark: '0 14px 32px rgba(0, 0, 0, .38)',
     light: {
-      page: '#faf6fa', surface: '#ffffff', ink: '#2a2331', ink2: '#5f5568', muted: '#948a9c',
-      grid: '#ece2ef', baseline: '#d4c6da', ring: 'rgba(42,35,49,.10)',
-      stWishlist: '#d4c6da', stArchive: '#ece2ef', ...ST_LIGHT,
+      page: '#faf3f8', surface: '#fffefe', surface2: '#f0e3f2', ink: '#33253a', ink2: '#685870', muted: '#75657d',
+      grid: '#eadceb', baseline: '#d3c0d7', ring: 'rgba(51,37,58,.10)',
+      stWishlist: '#d4c4d8', stArchive: '#eee4ef', ...ST_LIGHT,
     },
     dark: {
-      page: '#16121a', surface: '#201a26', ink: '#f2ecf6', ink2: '#c2b6cc', muted: '#8d8298',
-      grid: '#2f2738', baseline: '#453a52', ring: 'rgba(242,236,246,.10)',
-      stWishlist: '#453a52', stArchive: '#2f2738', ...ST_DARK,
+      page: '#17111c', surface: '#22182a', surface2: '#30213b', ink: '#f7eff9', ink2: '#cabbd0', muted: '#8f8098',
+      grid: '#3b2b43', baseline: '#574062', ring: 'rgba(247,239,249,.10)',
+      stWishlist: '#574062', stArchive: '#32243a', ...ST_DARK,
     },
     accents: [
-      { id: 'ichigo', name: 'Ichigo', light: { acc: '#d6537f', accInk: '#ffffff' }, dark: { acc: '#e87ba0', accInk: '#33101d' } },
-      { id: 'ume', name: 'Ume', light: { acc: '#7d5bc6', accInk: '#ffffff' }, dark: { acc: '#a58ae8', accInk: '#1e1236' } },
-      { id: 'matcha', name: 'Matcha', light: { acc: '#58924a', accInk: '#ffffff' }, dark: { acc: '#97d189', accInk: '#10260c' } },
-      { id: 'sora', name: 'Sora', light: { acc: '#4a7dd6', accInk: '#ffffff' }, dark: { acc: '#8fb3f0', accInk: '#0d1d3d' } },
+      { id: 'strawberry', name: 'Strawberry', light: { acc: '#bd3f68', accInk: '#ffffff' }, dark: { acc: '#f087aa', accInk: '#36101e' } },
+      { id: 'ube', name: 'Ube', light: { acc: '#7354c4', accInk: '#ffffff' }, dark: { acc: '#aa91ef', accInk: '#21143d' } },
+      { id: 'matcha', name: 'Matcha', light: { acc: '#43783a', accInk: '#ffffff' }, dark: { acc: '#9ad28b', accInk: '#142a0f' } },
+      { id: 'ramune', name: 'Ramune', light: { acc: '#2c70b2', accInk: '#ffffff' }, dark: { acc: '#8bc6ef', accInk: '#10283b' } },
     ],
+    densities: {
+      compact: {
+        baseSize: '13px', lineHeight: '1.38', headerPad: '9px 13px', sideWidth: '246px', sidePad: '10px',
+        paneHeadPad: '9px 13px', viewPad: '10px 13px', columnWidth: '236px', columnGap: '9px', columnPad: '7px',
+        cardGap: '6px', cardPad: '7px 9px 8px', controlPad: '4px 10px', fieldPad: '5px 8px', artHeight: '78px',
+      },
+      relaxed: {
+        baseSize: '14.5px', lineHeight: '1.54', headerPad: '15px 22px', sideWidth: '300px', sidePad: '17px',
+        paneHeadPad: '15px 22px', viewPad: '19px 22px', columnWidth: '288px', columnGap: '17px', columnPad: '12px',
+        cardGap: '10px', cardPad: '10px 14px 12px', controlPad: '7px 15px', fieldPad: '9px 12px', artHeight: '110px',
+      },
+    },
   },
   {
-    id: 'bricks',
-    name: 'Bricks',
-    blurb: 'neobrutalist: thick borders, hard shadows',
-    font: 'system-ui, -apple-system, "Segoe UI", sans-serif',
+    id: 'blockparty',
+    name: 'Block Party',
+    blurb: 'graphic poster, loud ink, hard shadows',
+    font: 'Arial, "Helvetica Neue", Helvetica, sans-serif',
+    displayFont: '"Arial Black", Impact, "Helvetica Neue", sans-serif',
     radiusCard: '0px',
     radiusCtl: '0px',
     borderW: '2px',
     borderStyle: 'solid',
-    shadowLight: '4px 4px 0 #141414',
-    shadowDark: '4px 4px 0 rgba(232,228,218,.9)',
+    shadowLight: '5px 5px 0 #151515',
+    shadowDark: '5px 5px 0 #f2ecde',
     light: {
-      page: '#efe9dc', surface: '#fffdf6', ink: '#141414', ink2: '#3c3a34', muted: '#6e6a60',
-      grid: '#141414', baseline: '#6e6a60', ring: 'rgba(20,20,20,.85)',
-      stWishlist: '#c9c3b2', stArchive: '#e3ddcc', ...ST_LIGHT,
+      page: '#f2ead8', surface: '#fffdf5', surface2: '#ded5bd', ink: '#151515', ink2: '#3d3a32', muted: '#6e685a',
+      grid: '#151515', baseline: '#686154', ring: 'rgba(21,21,21,.78)',
+      stWishlist: '#c6bda7', stArchive: '#e1d9c5', ...ST_LIGHT,
     },
     dark: {
-      page: '#121212', surface: '#1b1b1b', ink: '#f2eee4', ink2: '#c9c4b6', muted: '#8f8a7c',
-      grid: '#e8e4da', baseline: '#8f8a7c', ring: 'rgba(232,228,218,.85)',
-      stWishlist: '#3a3a36', stArchive: '#2a2a26', ...ST_DARK,
+      page: '#11100e', surface: '#1c1a16', surface2: '#29261f', ink: '#f2ecde', ink2: '#cbc3b2', muted: '#918979',
+      grid: '#f2ecde', baseline: '#918979', ring: 'rgba(242,236,222,.78)',
+      stWishlist: '#413d34', stArchive: '#2b2822', ...ST_DARK,
     },
     accents: [
-      { id: 'taxi', name: 'Taxi', light: { acc: '#f5c518', accInk: '#141414' }, dark: { acc: '#f5c518', accInk: '#141414' } },
-      { id: 'cobalt', name: 'Cobalt', light: { acc: '#2456e0', accInk: '#ffffff' }, dark: { acc: '#5b82f0', accInk: '#0c1e4d' } },
-      { id: 'poppy', name: 'Poppy', light: { acc: '#e0342b', accInk: '#ffffff' }, dark: { acc: '#ff6b5e', accInk: '#330b07' } },
+      { id: 'taxi', name: 'Taxi', light: { acc: '#f6c915', accInk: '#151515' }, dark: { acc: '#ffd62e', accInk: '#151515' } },
+      { id: 'cobalt', name: 'Cobalt', light: { acc: '#2457df', accInk: '#ffffff' }, dark: { acc: '#6d91ff', accInk: '#10204e' } },
+      { id: 'poppy', name: 'Poppy', light: { acc: '#cf2f26', accInk: '#ffffff' }, dark: { acc: '#ff7063', accInk: '#3a0d08' } },
+      { id: 'acid', name: 'Acid', light: { acc: '#74ae00', accInk: '#151515' }, dark: { acc: '#b8ff3d', accInk: '#1b2b00' } },
     ],
-  },
-  {
-    id: 'vapor',
-    name: 'Vapor',
-    blurb: 'synthwave neon on deep violet',
-    font: 'system-ui, -apple-system, "Segoe UI", sans-serif',
-    radiusCard: '8px',
-    radiusCtl: '6px',
-    borderW: '1px',
-    borderStyle: 'solid',
-    shadowLight: '0 2px 10px rgba(150,60,200,.16)',
-    shadowDark: '0 0 14px rgba(255,61,220,.22)',
-    light: {
-      page: '#f4eefc', surface: '#fdf9ff', ink: '#241536', ink2: '#5c4880', muted: '#907eb0',
-      grid: '#e2d4f4', baseline: '#c5aee6', ring: 'rgba(36,21,54,.12)',
-      stWishlist: '#c5aee6', stArchive: '#e2d4f4', ...ST_LIGHT,
+    densities: {
+      compact: {
+        baseSize: '12.5px', lineHeight: '1.32', headerPad: '8px 11px', sideWidth: '232px', sidePad: '9px',
+        paneHeadPad: '9px 11px', viewPad: '10px 11px', columnWidth: '224px', columnGap: '10px', columnPad: '6px',
+        cardGap: '8px', cardPad: '6px 8px 7px', controlPad: '3px 9px', fieldPad: '4px 7px', artHeight: '70px',
+      },
+      relaxed: {
+        baseSize: '14px', lineHeight: '1.46', headerPad: '14px 18px', sideWidth: '282px', sidePad: '15px',
+        paneHeadPad: '14px 18px', viewPad: '18px 18px', columnWidth: '274px', columnGap: '17px', columnPad: '10px',
+        cardGap: '12px', cardPad: '9px 12px 10px', controlPad: '6px 13px', fieldPad: '7px 10px', artHeight: '100px',
+      },
     },
-    dark: {
-      page: '#0a0118', surface: '#160b2e', ink: '#f2e9ff', ink2: '#c0aee0', muted: '#8a76b0',
-      grid: '#2c1b52', baseline: '#43307a', ring: 'rgba(255,61,220,.35)',
-      stWishlist: '#43307a', stArchive: '#241245', ...ST_DARK,
-    },
-    accents: [
-      { id: 'hotline', name: 'Hotline', light: { acc: '#c1179e', accInk: '#ffffff' }, dark: { acc: '#ff3ddc', accInk: '#2a0124' } },
-      { id: 'cyandream', name: 'Cyan dream', light: { acc: '#0d7fa8', accInk: '#ffffff' }, dark: { acc: '#3de8ff', accInk: '#002229' } },
-      { id: 'sunset', name: 'Sunset', light: { acc: '#d1521f', accInk: '#ffffff' }, dark: { acc: '#ff7a45', accInk: '#2b0f00' } },
-    ],
-  },
-  {
-    id: 'blueprint',
-    name: 'Blueprint',
-    blurb: 'cyanotype drafting paper',
-    font: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
-    radiusCard: '2px',
-    radiusCtl: '2px',
-    borderW: '1px',
-    borderStyle: 'dashed',
-    shadowLight: 'none',
-    shadowDark: 'none',
-    light: {
-      page: '#eef3f8', surface: '#fbfdff', ink: '#10314f', ink2: '#3d5c78', muted: '#7490a8',
-      grid: '#a9c2d6', baseline: '#8fb0c8', ring: 'rgba(16,49,79,.16)',
-      stWishlist: '#b9cede', stArchive: '#dbe6ef', ...ST_LIGHT,
-    },
-    dark: {
-      page: '#071e33', surface: '#0d2a45', ink: '#dcebf8', ink2: '#a8c4dc', muted: '#6f92b2',
-      grid: '#2e5678', baseline: '#3e6a90', ring: 'rgba(220,235,248,.22)',
-      stWishlist: '#2e5678', stArchive: '#16334d', ...ST_DARK,
-    },
-    accents: [
-      { id: 'drafting', name: 'Drafting', light: { acc: '#1d5f9e', accInk: '#ffffff' }, dark: { acc: '#7ec3ff', accInk: '#04263e' } },
-      { id: 'redline', name: 'Redline', light: { acc: '#c23b2a', accInk: '#ffffff' }, dark: { acc: '#ff8a75', accInk: '#33100a' } },
-    ],
-  },
-  {
-    id: 'newsprint',
-    name: 'Newsprint',
-    blurb: 'stark serif black & white',
-    font: 'Georgia, "Times New Roman", serif',
-    radiusCard: '0px',
-    radiusCtl: '0px',
-    borderW: '1px',
-    borderStyle: 'solid',
-    shadowLight: 'none',
-    shadowDark: 'none',
-    light: {
-      page: '#f7f5ef', surface: '#fffefa', ink: '#191919', ink2: '#444440', muted: '#757068',
-      grid: '#c6c0b2', baseline: '#191919', ring: 'rgba(25,25,25,.25)',
-      stWishlist: '#c6c0b2', stArchive: '#e5e0d4', ...ST_LIGHT,
-    },
-    dark: {
-      page: '#121110', surface: '#1c1a17', ink: '#efece4', ink2: '#c2bdb0', muted: '#8b867a',
-      grid: '#4a463e', baseline: '#efece4', ring: 'rgba(239,236,228,.25)',
-      stWishlist: '#3a3730', stArchive: '#2a2823', ...ST_DARK,
-    },
-    accents: [
-      { id: 'ink', name: 'Ink', light: { acc: '#191919', accInk: '#fffefa' }, dark: { acc: '#efece4', accInk: '#191919' } },
-      { id: 'crimson', name: 'Crimson', light: { acc: '#a31621', accInk: '#ffffff' }, dark: { acc: '#e05252', accInk: '#2b0a0d' } },
-      { id: 'union', name: 'Union', light: { acc: '#1c4e9e', accInk: '#ffffff' }, dark: { acc: '#7da3e8', accInk: '#0c1c3d' } },
-    ],
   },
 ];
 
@@ -275,20 +281,28 @@ export interface ThemeChoice {
   /** An accent id from the style's list, or 'custom' (uses `custom` hex). */
   accent: string;
   mode: 'system' | 'light' | 'dark';
+  density: 'compact' | 'relaxed';
   /** Custom accent hex (#rrggbb) when accent === 'custom'. */
   custom: string | null;
 }
 
-export const DEFAULT_THEME: ThemeChoice = { style: 'reef', accent: 'reef', mode: 'system', custom: null };
+export const DEFAULT_THEME: ThemeChoice = {
+  style: 'harbor',
+  accent: 'pacific',
+  mode: 'system',
+  density: 'relaxed',
+  custom: null,
+};
 
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
 export function validTheme(t: Partial<ThemeChoice>): ThemeChoice {
-  const style = STYLES.find((s) => s.id === t.style) ?? STYLES[0]!;
+  const style = STYLES.find((candidate) => candidate.id === t.style) ?? STYLES[0]!;
   const custom = typeof t.custom === 'string' && HEX_RE.test(t.custom) ? t.custom.toLowerCase() : null;
   let accent: string;
   if (t.accent === 'custom' && custom !== null) accent = 'custom';
-  else accent = (style.accents.find((a) => a.id === t.accent) ?? style.accents[0]!).id;
+  else accent = (style.accents.find((candidate) => candidate.id === t.accent) ?? style.accents[0]!).id;
   const mode = t.mode === 'light' || t.mode === 'dark' ? t.mode : 'system';
-  return { style: style.id, accent, mode, custom };
+  const density = t.density === 'compact' ? 'compact' : 'relaxed';
+  return { style: style.id, accent, mode, density, custom };
 }

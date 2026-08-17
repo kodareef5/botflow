@@ -63,7 +63,7 @@ footer a{color:var(--acc);text-decoration:none;font-weight:600}
     <li>projects can be cards inside other projects, any depth</li>
     <li>Trello-class cards: checklists, chat, activity, galleries, cover art</li>
     <li>agents work via CLI, REST, or MCP with scoped keys</li>
-    <li>8 styles from calm to synthwave, plus your own accent color</li>
+    <li>5 complete visual worlds, each with tuned accents and compact or relaxed density</li>
     <li>read-only public share links, on your terms</li>
     <li>one-click self-host on Cloudflare, your data in your account</li>
     <li>company export and a loadable demo to explore</li>
@@ -72,10 +72,10 @@ footer a{color:var(--acc);text-decoration:none;font-weight:600}
 
   <h2>a look around</h2>
   <div class="shots">
-    <figure><img src="${SHOT}/board.png" alt="board view" loading="lazy"><figcaption>the board: covers, badges, nested projects rolling up</figcaption></figure>
-    <figure><img src="${SHOT}/card.png" alt="card modal" loading="lazy"><figcaption>a card: checklist, attachments, chat, activity</figcaption></figure>
-    <figure><img src="${SHOT}/vapor.png" alt="vapor theme" loading="lazy"><figcaption>Vapor, one of 8 styles</figcaption></figure>
-    <figure><img src="${SHOT}/newsprint.png" alt="newsprint theme" loading="lazy"><figcaption>Newsprint, same app, different soul</figcaption></figure>
+    <figure><img src="${SHOT}/board.png" alt="board view in the Harbor visual world" loading="lazy"><figcaption>Harbor / relaxed: an airy board with covers, badges, and nested project rollups</figcaption></figure>
+    <figure><img src="${SHOT}/card.png" alt="card detail in the Harbor visual world" loading="lazy"><figcaption>cards open into focused workspaces for details, attachments, chat, and activity</figcaption></figure>
+    <figure><img src="${SHOT}/themes.png" alt="visual world, accent, density, and mode controls" loading="lazy"><figcaption>five complete visual worlds, each with tuned accents and compact or relaxed density</figcaption></figure>
+    <figure><img src="${SHOT}/phosphor.png" alt="board view in dark compact Phosphor" loading="lazy"><figcaption>Phosphor / compact / dark: the same workflow reimagined as live operator telemetry</figcaption></figure>
   </div>
 
   <footer>botflow is open source under the MIT license. <a href="${GH}" target="_blank" rel="noopener">Star it, fork it, run it →</a></footer>

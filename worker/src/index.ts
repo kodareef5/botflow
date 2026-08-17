@@ -302,7 +302,7 @@ export default {
           const body = (await req.json()) as Record<string, unknown>;
           const theme = await registry.setTheme(body as never);
           const prefs = 'gateShares' in body ? await registry.setPrefs(body) : await registry.getPrefs();
-          await registry.audit('admin', 'settings', `style ${theme.style}/${theme.accent} mode ${theme.mode}, gate shares ${prefs.gateShares ? 'on' : 'off'}`);
+          await registry.audit('admin', 'settings', `style ${theme.style}/${theme.accent} ${theme.density}, mode ${theme.mode}, gate shares ${prefs.gateShares ? 'on' : 'off'}`);
           return json({ ...theme, ...prefs });
         }
       }

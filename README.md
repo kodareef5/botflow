@@ -76,6 +76,24 @@ botflow remote add https://manager.example.workers.dev p-abc123
 BOTFLOW_TOKEN=bfk_… botflow push   # or pull
 ```
 
+## What it looks like
+
+The manager includes five complete visual worlds—Harbor, Phosphor, Field Notes,
+Mochi, and Block Party—with four tuned accents apiece, light and dark modes, and
+purpose-built compact or relaxed density. The workflow stays familiar while the
+character, color, type, shape, and rhythm change together.
+
+<p align="center">
+  <img src="docs/shots/board.png" alt="Botflow manager board in the Harbor visual world" width="100%">
+</p>
+<p align="center">
+  <img src="docs/shots/card.png" alt="Botflow card detail with cover art, metadata, tabs, and an attachment" width="49%">
+  <img src="docs/shots/themes.png" alt="Botflow settings showing five visual worlds, accents, density, and color mode" width="49%">
+</p>
+<p align="center">
+  <img src="docs/shots/phosphor.png" alt="Botflow manager board in the dark compact Phosphor visual world" width="100%">
+</p>
+
 ## Layout
 
 | Path | What |

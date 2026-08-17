@@ -187,10 +187,18 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     await call('/api/settings', { method: 'POST', token: admin, body: JSON.stringify({ gateShares: true }) });
     const openGate = (await call('/api/public/gate')).body as { shares: { token: string }[] };
     assert.ok(openGate.shares.some((s) => s.token === share), 'admin can opt in to the share directory');
-    await call('/api/settings', { method: 'POST', token: admin, body: JSON.stringify({ gateShares: false }) });
+    const themed = await call('/api/settings', {
+      method: 'POST', token: admin,
+      body: JSON.stringify({ style: 'fieldnotes', accent: 'redpencil', mode: 'dark', density: 'compact', gateShares: false }),
+    });
+    assert.equal(themed.body['density'], 'compact');
     const exported = (await call('/api/org/export', { token: admin })).body as Record<string, unknown>;
     assert.equal(exported['version'], 2);
     assert.ok(Array.isArray(exported['keys']) && (exported['keys'] as unknown[]).length === 1, 'keys exported');
+    await call('/api/settings', {
+      method: 'POST', token: admin,
+      body: JSON.stringify({ style: 'harbor', accent: 'pacific', mode: 'light', density: 'relaxed' }),
+    });
 
     await call(`/api/spaces/${space}`, { method: 'DELETE', token: admin });
     assert.equal((await call(`/api/public/${share}/board`)).status, 404, 'share died with the space');
@@ -214,6 +222,12 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     const doingLane = rBoard.lanes.find((l) => l.id === 'doing')!;
     assert.ok(doingLane.cards.some((c) => c.type === 'board' && c.child === restoredChild), 'project card lane preserved through restore');
     assert.equal(childCards[0]!.state, 'done', 'restored child rolls up');
+    const restoredSettings = await call('/api/settings', { token: admin });
+    assert.deepEqual(
+      { style: restoredSettings.body['style'], accent: restoredSettings.body['accent'], mode: restoredSettings.body['mode'], density: restoredSettings.body['density'] },
+      { style: 'fieldnotes', accent: 'redpencil', mode: 'dark', density: 'compact' },
+      'visual system and density survive a restore',
+    );
 
     // The restored key hash keeps the original agent token valid.
     const whoami = await call('/api/whoami', { token: key });

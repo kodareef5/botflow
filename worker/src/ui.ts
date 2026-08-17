@@ -10,22 +10,25 @@ import { STYLES } from './themes.ts';
 const CSS = `
 *{box-sizing:border-box;margin:0}
 :root{--page:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;
-  --grid:#e1e0d9;--baseline:#c3c2b7;--ring:rgba(11,11,11,.10);--acc:#2a78d6;--acc-ink:#fff;
+  --surface2:#f1f1ed;--grid:#e1e0d9;--baseline:#c3c2b7;--ring:rgba(11,11,11,.10);--acc:#2a78d6;--acc-ink:#fff;
   --st-wishlist:#c3c2b7;--st-todo:#898781;--st-blocked:#d03b3b;--st-doing:#2a78d6;--st-done:#0ca30c;--st-archive:#e1e0d9;
   --rc:10px;--rk:6px;--bw:1px;--bs:solid;--shadow:0 1px 3px rgba(0,0,0,.06);
-  --font:system-ui,-apple-system,"Segoe UI",sans-serif}
+  --font:system-ui,-apple-system,"Segoe UI",sans-serif;--display:var(--font);
+  --base-size:14px;--line-height:1.45;--header-pad:12px 18px;--side-w:280px;--side-pad:14px;
+  --pane-head-pad:12px 18px;--view-pad:14px 18px;--col-w:258px;--col-gap:12px;--col-pad:9px;
+  --card-gap:7px;--card-pad:7px 10px 8px;--control-pad:4px 11px;--field-pad:6px 9px;--art-h:92px}
 #burger{display:none}
-body{background:var(--page);color:var(--ink);font:14px/1.45 var(--font);height:100vh;display:flex;flex-direction:column}
-button{font:inherit;color:var(--ink);background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:4px 11px;cursor:pointer}
+body{background-color:var(--page);color:var(--ink);font:var(--base-size)/var(--line-height) var(--font);height:100vh;display:flex;flex-direction:column}
+button{font:inherit;color:var(--ink);background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:var(--control-pad);cursor:pointer}
 button:hover{border-color:var(--baseline)}
 button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
 button.primary{background:var(--acc);color:var(--acc-ink);border-color:transparent}
 button.ghost{border-color:transparent;background:none;color:var(--muted)}
 button.ghost:hover{color:var(--ink)}
-input,textarea{font:inherit;color:var(--ink);background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:6px 9px}
+input,textarea{font:inherit;color:var(--ink);background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:var(--field-pad)}
 svg.ic{width:13px;height:13px;vertical-align:-2px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-header.top{display:flex;align-items:center;gap:18px;padding:12px 18px;border-bottom:var(--bw) var(--bs) var(--grid);flex:none;background:var(--page)}
-header.top h1{font-size:16px}
+header.top{display:flex;align-items:center;gap:18px;padding:var(--header-pad);border-bottom:var(--bw) var(--bs) var(--grid);flex:none;background:var(--surface)}
+header.top h1{font:700 16px/1.1 var(--display)}
 header.top .sub{color:var(--muted);font-size:12px;font-weight:400}
 .meter{display:flex;align-items:center;gap:8px}
 .meter .track{width:130px;height:8px;border-radius:4px;background:var(--grid);overflow:hidden}
@@ -38,12 +41,12 @@ header.top .sub{color:var(--muted);font-size:12px;font-weight:400}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;border:1px solid var(--ring)}
 .spacer{margin-left:auto}
 .app{display:flex;flex:1;min-height:0}
-aside{width:280px;flex:none;border-right:var(--bw) var(--bs) var(--grid);overflow-y:auto;padding:14px;display:flex;flex-direction:column}
+aside{width:var(--side-w);flex:none;border-right:var(--bw) var(--bs) var(--grid);overflow-y:auto;padding:var(--side-pad);display:flex;flex-direction:column}
 aside h2{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:14px 0 6px;display:flex;align-items:center}
 aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
 .row{display:flex;align-items:center;gap:7px;padding:5px 7px;border-radius:var(--rk);cursor:pointer;font-size:13px}
-.row:hover{background:var(--surface)}
-.row.sel{background:var(--surface);outline:var(--bw) var(--bs) var(--grid)}
+.row:hover{background:var(--surface2)}
+.row.sel{background:var(--surface2);outline:var(--bw) var(--bs) var(--grid)}
 .row .statechip{margin-left:auto}
 .row .pct{color:var(--muted);font-size:11px}
 .row .add{visibility:hidden;font-size:11px;padding:0 6px}
@@ -58,22 +61,22 @@ aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
 .statechip.s-done{background:var(--st-done)}
 .statechip.s-archive{background:var(--st-archive);color:var(--ink)}
 .content{flex:1;min-width:0;display:flex;flex-direction:column}
-.phead{display:flex;align-items:center;gap:16px;padding:12px 18px;border-bottom:var(--bw) var(--bs) var(--grid);flex-wrap:wrap}
-.phead h2{font-size:15px}
+.phead{display:flex;align-items:center;gap:16px;padding:var(--pane-head-pad);border-bottom:var(--bw) var(--bs) var(--grid);flex-wrap:wrap;background:color-mix(in srgb,var(--surface) 86%,transparent)}
+.phead h2{font:700 15px/1.15 var(--display)}
 .tabs{display:flex;gap:2px;margin-left:auto}
 .tabs button.on{background:var(--acc);color:var(--acc-ink);border-color:transparent}
-.view{flex:1;overflow:auto;padding:14px 18px}
-.cols{display:flex;gap:12px;align-items:flex-start}
-.col{background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);min-width:258px;width:258px;flex:none;padding:9px;box-shadow:var(--shadow)}
-.col h3{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink2);padding:2px 4px 7px;display:flex;gap:6px}
+.view{flex:1;overflow:auto;padding:var(--view-pad)}
+.cols{display:flex;gap:var(--col-gap);align-items:flex-start}
+.col{background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);min-width:var(--col-w);width:var(--col-w);flex:none;padding:var(--col-pad);box-shadow:var(--shadow)}
+.col h3{font:700 11px/1.25 var(--display);text-transform:uppercase;letter-spacing:.04em;color:var(--ink2);padding:2px 4px 7px;display:flex;gap:6px}
 .col h3 .n{color:var(--muted);font-weight:400}
 .col h3 .wipbad{color:var(--st-blocked)}
 .sub-h{font-size:11px;color:var(--muted);padding:5px 4px 2px;border-top:1px dashed var(--grid);margin-top:5px}
-.card{border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);margin:7px 0;background:var(--page);cursor:pointer;overflow:hidden}
+.card{border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);margin:var(--card-gap) 0;background:var(--surface);cursor:pointer;overflow:hidden;transition:transform .14s ease,box-shadow .14s ease,border-color .14s ease}
 .card:hover{border-color:var(--baseline)}
 .card.blocked{border-left:3px solid var(--st-blocked)}
-.card .art{width:100%;height:92px;object-fit:cover;display:block;border-bottom:var(--bw) var(--bs) var(--grid)}
-.card .inner{padding:7px 10px 8px}
+.card .art{width:100%;height:var(--art-h);object-fit:cover;display:block;border-bottom:var(--bw) var(--bs) var(--grid)}
+.card .inner{padding:var(--card-pad)}
 .card .cid{font:11px ui-monospace,Menlo,monospace;color:var(--muted)}
 .card .t{font-weight:550;margin:1px 0 5px}
 .badges{display:flex;flex-wrap:wrap;gap:5px;font-size:11px;color:var(--ink2);align-items:center}
@@ -97,7 +100,7 @@ table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink2)}
 .warn{color:#c47317;font-size:12px}
 .tokenbox{font:12px ui-monospace,Menlo,monospace;background:var(--page);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:10px;word-break:break-all;margin:10px 0}
 .gate{max-width:430px;margin:10vh auto;background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);padding:26px;box-shadow:var(--shadow)}
-.gate h2{margin-bottom:8px}
+.gate h2{margin-bottom:8px;font-family:var(--display)}
 .gate p{color:var(--ink2);font-size:13px;margin:6px 0 14px}
 .gate form{display:flex;gap:8px}
 .gate input{flex:1}
@@ -112,7 +115,7 @@ table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink2)}
 .pubfoot a{color:var(--muted);text-decoration:underline;text-underline-offset:2px}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:5vh 16px;z-index:20;overflow-y:auto}
 .modal{background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);box-shadow:var(--shadow);width:100%;max-width:400px;padding:20px}
-.modal h3{margin-bottom:12px;font-size:15px}
+.modal h3{margin-bottom:12px;font:700 15px/1.2 var(--display)}
 .modal .field{margin-bottom:10px}
 .modal .field label{display:block;font-size:12px;color:var(--ink2);margin-bottom:3px}
 .modal .field input{width:100%}
@@ -122,7 +125,7 @@ table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink2)}
 .cardmodal .inner{padding:18px 22px 22px}
 .cardmodal .close{float:right;font-size:16px;padding:2px 9px}
 .cardmodal .cid{font:12px ui-monospace,Menlo,monospace;color:var(--muted)}
-.cardmodal h2{font-size:18px;margin:2px 0 8px}
+.cardmodal h2{font:700 18px/1.25 var(--display);margin:2px 0 8px}
 .cardmodal .metaline{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:12px}
 .cardmodal .tabbar{display:flex;gap:2px;border-bottom:var(--bw) var(--bs) var(--grid);margin:0 -22px;padding:0 22px}
 .cardmodal .tabbar button{border:none;background:none;border-radius:0;padding:8px 12px;color:var(--muted);border-bottom:2px solid transparent}
@@ -168,18 +171,118 @@ table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink2)}
 .actlist .a{display:flex;gap:10px;padding:5px 0;border-bottom:1px dashed var(--grid)}
 .actlist .when{font:11px ui-monospace,Menlo,monospace;color:var(--muted);white-space:nowrap;padding-top:2px}
 .actlist .who{font-weight:600}
-.settings .stiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin:10px 0 18px}
-.stile{border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);padding:10px;cursor:pointer;background:var(--surface)}
-.stile.on{outline:2px solid var(--acc)}
-.stile .prev{height:52px;border-radius:6px;margin-bottom:8px;display:flex;gap:3px;padding:7px;align-items:flex-end}
-.stile .prev i{flex:1;border-radius:3px}
-.stile b{font-size:13px}
-.stile .blurb{font-size:11px;color:var(--muted)}
+
+/* Harbor — translucent, calm, and dimensional. */
+html[data-style="harbor"] body{background-image:
+  radial-gradient(circle at 5% 0%,color-mix(in srgb,var(--acc) 16%,transparent) 0,transparent 30%),
+  radial-gradient(circle at 95% 4%,color-mix(in srgb,var(--surface2) 82%,transparent) 0,transparent 28%);background-attachment:fixed}
+html[data-style="harbor"] header.top,html[data-style="harbor"] aside,html[data-style="harbor"] .phead{background:color-mix(in srgb,var(--surface) 86%,transparent);backdrop-filter:blur(16px)}
+html[data-style="harbor"] .col{background:color-mix(in srgb,var(--surface) 82%,transparent);border-color:color-mix(in srgb,var(--grid) 72%,transparent)}
+html[data-style="harbor"] .card{border-color:color-mix(in srgb,var(--grid) 76%,transparent);box-shadow:inset 0 3px 0 color-mix(in srgb,var(--acc) 38%,transparent),0 3px 12px color-mix(in srgb,var(--ink) 7%,transparent)}
+html[data-style="harbor"] .card:hover{transform:translateY(-2px);box-shadow:inset 0 3px 0 var(--acc),0 8px 20px color-mix(in srgb,var(--ink) 12%,transparent)}
+html[data-style="harbor"] .row.sel{outline:none;box-shadow:inset 3px 0 0 var(--acc)}
+
+/* Phosphor — a working terminal, including grid, prompts, and signal glow. */
+html[data-style="phosphor"] body{background-image:
+  linear-gradient(color-mix(in srgb,var(--acc) 7%,transparent) 1px,transparent 1px),
+  linear-gradient(90deg,color-mix(in srgb,var(--acc) 7%,transparent) 1px,transparent 1px);background-size:24px 24px;background-attachment:fixed}
+html[data-style="phosphor"] header.top,html[data-style="phosphor"] aside,html[data-style="phosphor"] .phead{background:var(--surface)}
+html[data-style="phosphor"] header.top h1::before{content:">_ ";color:var(--acc)}
+html[data-style="phosphor"] aside h2::before,html[data-style="phosphor"] .col h3::before{content:"//";color:var(--acc)}
+html[data-style="phosphor"] .phead h2,html[data-style="phosphor"] header.top h1{letter-spacing:.04em;text-transform:uppercase}
+html[data-style="phosphor"] .col{background:color-mix(in srgb,var(--surface) 94%,transparent)}
+html[data-style="phosphor"] .card{background:var(--page);border-left:2px solid var(--acc)}
+html[data-style="phosphor"] .card:hover{background:var(--surface2);box-shadow:inset 0 0 0 1px var(--acc)}
+html[data-style="phosphor"] button.primary{box-shadow:0 0 16px color-mix(in srgb,var(--acc) 38%,transparent)}
+html[data-style="phosphor"] .statechip,html[data-style="phosphor"] .badges span,html[data-style="phosphor"] .meter .track,html[data-style="phosphor"] .strip{border-radius:0}
+html[data-style="phosphor"] .card .t{font-weight:600;letter-spacing:-.02em}
+
+/* Field Notes — an editorial notebook, not a beige software theme. */
+html[data-style="fieldnotes"] body{background-image:repeating-linear-gradient(to bottom,transparent 0,transparent 31px,color-mix(in srgb,var(--baseline) 22%,transparent) 32px);background-attachment:local}
+html[data-style="fieldnotes"] header.top,html[data-style="fieldnotes"] aside,html[data-style="fieldnotes"] .phead{background:color-mix(in srgb,var(--surface) 92%,transparent)}
+html[data-style="fieldnotes"] header.top h1{font-style:italic;letter-spacing:-.025em}
+html[data-style="fieldnotes"] button,html[data-style="fieldnotes"] input,html[data-style="fieldnotes"] textarea,html[data-style="fieldnotes"] .statechip,html[data-style="fieldnotes"] .badges,html[data-style="fieldnotes"] aside h2,html[data-style="fieldnotes"] .col h3{font-family:ui-monospace,"SF Mono",Menlo,monospace}
+html[data-style="fieldnotes"] .col{border-top:3px double var(--ink)}
+html[data-style="fieldnotes"] .card:not(.blocked){border-left:3px double var(--acc)}
+html[data-style="fieldnotes"] .card{box-shadow:1px 2px 0 color-mix(in srgb,var(--ink) 18%,transparent)}
+html[data-style="fieldnotes"] .col .card:nth-child(3n+2){transform:rotate(.18deg)}
+html[data-style="fieldnotes"] .card:hover{transform:translateY(-1px) rotate(0);box-shadow:2px 4px 0 color-mix(in srgb,var(--ink) 20%,transparent)}
+html[data-style="fieldnotes"] .col h3{border-bottom:1px solid var(--baseline)}
+
+/* Mochi — soft bento trays, candy light, and generous rounded objects. */
+html[data-style="mochi"] body{background-image:
+  radial-gradient(circle at 8% 2%,color-mix(in srgb,var(--acc) 17%,transparent) 0,transparent 25%),
+  radial-gradient(circle at 86% 12%,color-mix(in srgb,var(--surface2) 88%,transparent) 0,transparent 30%);background-attachment:fixed}
+html[data-style="mochi"] header.top,html[data-style="mochi"] aside,html[data-style="mochi"] .phead{background:color-mix(in srgb,var(--surface) 88%,transparent);backdrop-filter:blur(14px)}
+html[data-style="mochi"] .col{border-color:transparent;background:linear-gradient(180deg,color-mix(in srgb,var(--surface2) 68%,var(--surface)),var(--surface))}
+html[data-style="mochi"] .card{border-color:color-mix(in srgb,var(--grid) 45%,transparent);box-shadow:inset 0 5px 0 color-mix(in srgb,var(--acc) 54%,transparent),0 5px 16px color-mix(in srgb,var(--ink) 8%,transparent)}
+html[data-style="mochi"] .card:hover{transform:translateY(-2px) scale(1.006);box-shadow:inset 0 5px 0 var(--acc),0 10px 24px color-mix(in srgb,var(--ink) 12%,transparent)}
+html[data-style="mochi"] button{font-weight:600}
+html[data-style="mochi"] .row.sel{outline:none;box-shadow:inset 4px 0 0 var(--acc)}
+html[data-style="mochi"] .statechip{border:2px solid color-mix(in srgb,var(--surface) 78%,transparent);padding-block:0}
+
+/* Block Party — poster ink, offset registration, and hard physical edges. */
+html[data-style="blockparty"] body{background-image:radial-gradient(color-mix(in srgb,var(--grid) 18%,transparent) .9px,transparent .9px);background-size:16px 16px;background-attachment:fixed}
+html[data-style="blockparty"] header.top{border-top:8px solid var(--acc);border-bottom:2px solid var(--grid)}
+html[data-style="blockparty"] aside{background:var(--surface);border-right:2px solid var(--grid)}
+html[data-style="blockparty"] .phead{background:var(--surface);border-bottom:2px solid var(--grid)}
+html[data-style="blockparty"] header.top h1,html[data-style="blockparty"] .phead h2,html[data-style="blockparty"] aside h2,html[data-style="blockparty"] .col h3{text-transform:uppercase;letter-spacing:.025em}
+html[data-style="blockparty"] .phead h2{background:var(--acc);color:var(--acc-ink);border:2px solid var(--grid);padding:3px 7px;box-shadow:3px 3px 0 var(--grid)}
+html[data-style="blockparty"] .col{box-shadow:var(--shadow)}
+html[data-style="blockparty"] .card{margin-right:5px;box-shadow:3px 3px 0 var(--grid)}
+html[data-style="blockparty"] .card:hover{transform:translate(-2px,-2px);box-shadow:5px 5px 0 var(--grid)}
+html[data-style="blockparty"] button.primary{border-color:var(--grid);box-shadow:3px 3px 0 var(--grid)}
+html[data-style="blockparty"] button.primary:hover{transform:translate(-1px,-1px);box-shadow:4px 4px 0 var(--grid)}
+html[data-style="blockparty"] .statechip{border:1px solid var(--grid);font-weight:800;text-transform:uppercase}
+html[data-style="blockparty"] .meter .track,html[data-style="blockparty"] .strip{border-radius:0;border:1px solid var(--grid)}
+
+.settings{max-width:1180px}
+.setting-title{font:700 12px/1.2 var(--display);text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+.setting-note{color:var(--muted);font-size:12px;margin-top:3px}
+.settings .stiles{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;margin:12px 0 24px}
+.stile{display:block;width:100%;min-width:0;border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);padding:10px;cursor:pointer;background:var(--surface);text-align:left;box-shadow:none;transition:transform .14s ease,border-color .14s ease}
+.stile:hover{border-color:var(--acc);transform:translateY(-2px)}
+.stile.on{outline:2px solid var(--acc);outline-offset:2px}
+.stile .prev{--pv-page:#eee;--pv-surface:#fff;--pv-surface2:#ddd;--pv-grid:#bbb;--pv-ink:#222;--pv-acc:#2680e8;height:82px;border:1px solid var(--pv-grid);border-radius:8px;margin-bottom:9px;overflow:hidden;background:var(--pv-page);color:var(--pv-ink);position:relative}
+.prev .pvbar{height:18px;border-bottom:1px solid var(--pv-grid);background:var(--pv-surface);display:flex;align-items:center;gap:4px;padding:0 6px}
+.prev .pvbar i{width:6px;height:6px;border-radius:50%;background:var(--pv-acc)}
+.prev .pvbar span{width:28px;height:4px;background:var(--pv-ink);opacity:.75}
+.prev .pvbar b{width:13px;height:4px;background:var(--pv-grid);margin-left:auto}
+.prev .pvbody{height:63px;display:grid;grid-template-columns:28px 1fr}
+.prev .pvside{background:var(--pv-surface2);border-right:1px solid var(--pv-grid);padding:7px 5px;display:flex;flex-direction:column;gap:5px}
+.prev .pvside i{display:block;height:3px;background:var(--pv-ink);opacity:.35}
+.prev .pvside i:nth-child(2){background:var(--pv-acc);opacity:1}
+.prev .pvdeck{padding:7px;display:flex;gap:6px;align-items:flex-start}
+.prev .pvcard{height:43px;flex:1;min-width:0;background:var(--pv-surface);border:1px solid var(--pv-grid);border-radius:5px;position:relative;box-shadow:0 2px 5px color-mix(in srgb,var(--pv-ink) 10%,transparent)}
+.prev .pvcard::before,.prev .pvcard::after{content:"";position:absolute;left:5px;right:5px;height:3px;background:var(--pv-ink);opacity:.48}
+.prev .pvcard::before{top:9px}.prev .pvcard::after{top:17px;right:10px;opacity:.2}
+.prev.pv-harbor{background-image:radial-gradient(circle at 8% 0,color-mix(in srgb,var(--pv-acc) 24%,transparent),transparent 42%)}
+.prev.pv-harbor .pvcard{border-color:transparent;border-radius:8px;box-shadow:inset 0 3px 0 color-mix(in srgb,var(--pv-acc) 48%,transparent),0 4px 8px color-mix(in srgb,var(--pv-ink) 12%,transparent)}
+.prev.pv-phosphor{border-radius:0;background-image:linear-gradient(color-mix(in srgb,var(--pv-acc) 12%,transparent) 1px,transparent 1px),linear-gradient(90deg,color-mix(in srgb,var(--pv-acc) 12%,transparent) 1px,transparent 1px);background-size:12px 12px}
+.prev.pv-phosphor .pvcard{border-radius:0;border-left:2px solid var(--pv-acc);box-shadow:none}
+.prev.pv-phosphor .pvbar i,.prev.pv-phosphor .pvside i{border-radius:0}
+.prev.pv-fieldnotes{border-radius:2px;background-image:repeating-linear-gradient(to bottom,transparent 0,transparent 11px,color-mix(in srgb,var(--pv-grid) 55%,transparent) 12px)}
+.prev.pv-fieldnotes .pvcard{border-radius:1px;border-left:3px double var(--pv-acc);box-shadow:1px 2px 0 color-mix(in srgb,var(--pv-ink) 22%,transparent)}
+.prev.pv-fieldnotes .pvcard:nth-child(2){transform:rotate(.8deg)}
+.prev.pv-mochi{border-radius:12px;background-image:radial-gradient(circle at 88% 10%,color-mix(in srgb,var(--pv-acc) 24%,transparent),transparent 42%)}
+.prev.pv-mochi .pvcard{border-color:transparent;border-radius:11px;box-shadow:inset 0 4px 0 color-mix(in srgb,var(--pv-acc) 55%,transparent),0 5px 9px color-mix(in srgb,var(--pv-ink) 12%,transparent)}
+.prev.pv-blockparty{border:2px solid var(--pv-grid);border-radius:0;background-image:radial-gradient(color-mix(in srgb,var(--pv-grid) 25%,transparent) .7px,transparent .7px);background-size:8px 8px}
+.prev.pv-blockparty .pvbar{border-bottom-width:2px;border-top:5px solid var(--pv-acc);height:20px}
+.prev.pv-blockparty .pvbody{height:60px}
+.prev.pv-blockparty .pvcard{border:2px solid var(--pv-grid);border-radius:0;box-shadow:3px 3px 0 var(--pv-grid)}
+.stile b{font:700 13px/1.2 var(--display)}
+.stile .blurb{font-size:11px;color:var(--muted);margin-top:3px}
 .accents{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 16px}
-.accpill{display:inline-flex;align-items:center;gap:6px;border:var(--bw) var(--bs) var(--grid);border-radius:999px;padding:3px 11px;cursor:pointer;font-size:12px;background:var(--surface)}
-.accpill.on{outline:2px solid var(--acc)}
+.accpill{display:inline-flex;align-items:center;gap:6px;border:var(--bw) var(--bs) var(--grid);border-radius:999px;padding:4px 11px;cursor:pointer;font-size:12px;background:var(--surface);box-shadow:none}
+.accpill.on{outline:2px solid var(--acc);outline-offset:1px;background:var(--surface2)}
 .accpill .sw{width:12px;height:12px;border-radius:50%}
-.modesel{display:flex;gap:8px;margin:8px 0 18px}
+.setting-pair{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:24px;max-width:760px;margin:5px 0 20px}
+.setting-group{min-width:0}
+.segsel{display:flex;gap:7px;margin-top:9px;flex-wrap:wrap}
+.segsel button{min-width:88px;text-align:left}
+.segsel button span{display:block;font-weight:650;text-transform:capitalize}
+.segsel button small{display:block;font-size:10px;color:var(--muted);font-weight:400;margin-top:1px}
+.segsel button.primary small{color:color-mix(in srgb,var(--acc-ink) 74%,transparent)}
 .accpill input[type=color]{width:18px;height:18px;padding:0;border:none;background:none;cursor:pointer}
 button.danger{background:var(--st-blocked);color:#fff;border-color:transparent}
 .mrow{display:flex;align-items:center;gap:9px;padding:5px 8px;border-radius:var(--rk);font-size:13px}
@@ -203,7 +306,10 @@ button.danger{background:var(--st-blocked);color:#fff;border-color:transparent}
   .modal{max-width:100%}
   .cardmodal{max-width:100%;border-radius:0;min-height:100vh}
   .settings .stiles{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+  .setting-pair{grid-template-columns:1fr;gap:18px}
 }
+@media (min-width:761px) and (max-width:1300px){.settings .stiles{grid-template-columns:repeat(auto-fit,minmax(185px,1fr))}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}
 `;
 
 const JS = `
@@ -222,33 +328,42 @@ let TOKEN=localStorage.getItem('bf_token')||'';
 const PUB=window.__PUB__||null;
 let RO=!!PUB;
 const cardApi=cid=>PUB?'/api/public/'+PUB+'/cards/'+cid:'/api/projects/'+SEL+'/cards/'+cid;
-let THEME={style:'reef',accent:'reef',mode:'system'};
+let THEME={style:'harbor',accent:'pacific',mode:'system',density:'relaxed',custom:null};
 let ORG=null,SEL=null,VIEW='board',BOARD=null,timer=null,MODAL=null;
 const mq=matchMedia('(prefers-color-scheme: dark)');
 mq.addEventListener('change',()=>applyTheme(THEME));
-function yiqInk(hex){
-  const n=parseInt(hex.slice(1),16);
-  const y=((n>>16&255)*299+(n>>8&255)*587+(n&255)*114)/1000;
-  return y>=140?'#141414':'#ffffff';
+function contrastInk(hex){
+  const channel=n=>{const c=n/255;return c<=.04045?c/12.92:Math.pow((c+.055)/1.055,2.4)};
+  const n=parseInt(hex.slice(1),16),l=.2126*channel(n>>16&255)+.7152*channel(n>>8&255)+.0722*channel(n&255);
+  return 1.05/(l+.05)>=(l+.05)/.05?'#ffffff':'#141414';
 }
 function applyTheme(t){
-  THEME=t;
   const st=THEMES.find(s=>s.id===t.style)||THEMES[0];
-  const mode=t.mode==='system'?(mq.matches?'dark':'light'):t.mode;
-  const p=st[mode];
-  let a;
-  if(t.accent==='custom'&&t.custom)a={acc:t.custom,accInk:yiqInk(t.custom)};
-  else{const acc=st.accents.find(x=>x.id===t.accent)||st.accents[0];a=acc[mode]}
+  const density=t.density==='compact'?'compact':'relaxed';
+  const modeChoice=t.mode==='light'||t.mode==='dark'?t.mode:'system';
+  const mode=modeChoice==='system'?(mq.matches?'dark':'light'):modeChoice;
+  const p=st[mode],d=st.densities[density];
+  let a,accent;
+  if(t.accent==='custom'&&t.custom){accent='custom';a={acc:t.custom,accInk:contrastInk(t.custom)}}
+  else{const found=st.accents.find(x=>x.id===t.accent)||st.accents[0];accent=found.id;a=found[mode]}
+  THEME={style:st.id,accent,mode:modeChoice,density,custom:t.custom||null};
   const R=document.documentElement.style;
   const set=(k,v)=>R.setProperty(k,v);
-  set('--page',p.page);set('--surface',p.surface);set('--ink',p.ink);set('--ink2',p.ink2);
+  set('--page',p.page);set('--surface',p.surface);set('--surface2',p.surface2);set('--ink',p.ink);set('--ink2',p.ink2);
   set('--muted',p.muted);set('--grid',p.grid);set('--baseline',p.baseline);set('--ring',p.ring);
   set('--st-wishlist',p.stWishlist);set('--st-todo',p.stTodo);set('--st-blocked',p.stBlocked);
   set('--st-doing',p.stDoing);set('--st-done',p.stDone);set('--st-archive',p.stArchive);
   set('--acc',a.acc);set('--acc-ink',a.accInk);
   set('--rc',st.radiusCard);set('--rk',st.radiusCtl);set('--bw',st.borderW);set('--bs',st.borderStyle||'solid');
-  set('--shadow',mode==='dark'?st.shadowDark:st.shadowLight);set('--font',st.font);
+  set('--shadow',mode==='dark'?st.shadowDark:st.shadowLight);set('--font',st.font);set('--display',st.displayFont);
+  set('--base-size',d.baseSize);set('--line-height',d.lineHeight);set('--header-pad',d.headerPad);
+  set('--side-w',d.sideWidth);set('--side-pad',d.sidePad);set('--pane-head-pad',d.paneHeadPad);set('--view-pad',d.viewPad);
+  set('--col-w',d.columnWidth);set('--col-gap',d.columnGap);set('--col-pad',d.columnPad);set('--card-gap',d.cardGap);
+  set('--card-pad',d.cardPad);set('--control-pad',d.controlPad);set('--field-pad',d.fieldPad);set('--art-h',d.artHeight);
+  document.documentElement.dataset.style=st.id;
+  document.documentElement.dataset.density=density;
   document.documentElement.style.colorScheme=mode;
+  const meta=document.querySelector('meta[name="theme-color"]');if(meta)meta.setAttribute('content',p.page);
 }
 async function api(path,opts){
   const res=await fetch(path,{...opts,headers:{'content-type':'application/json',...(TOKEN?{authorization:'Bearer '+TOKEN}:{}),...(opts&&opts.headers||{})}});
@@ -637,24 +752,31 @@ async function refreshSharing(){
 }
 function stylePreview(st){
   const mode=THEME.mode==='system'?(mq.matches?'dark':'light'):THEME.mode;
-  const p=st[mode],a=(st.accents[0])[mode];
-  return '<div class="prev" style="background:'+p.page+';border:1px solid '+p.grid+'">'
-    +'<i style="background:'+a.acc+';height:70%"></i><i style="background:'+p.stDoing+';height:45%"></i>'
-    +'<i style="background:'+p.stDone+';height:88%"></i><i style="background:'+p.grid+';height:30%"></i></div>';
+  const p=st[mode];
+  let a=st.accents[0][mode];
+  if(st.id===THEME.style){
+    if(THEME.accent==='custom'&&THEME.custom)a={acc:THEME.custom,accInk:contrastInk(THEME.custom)};
+    else{const chosen=st.accents.find(x=>x.id===THEME.accent);if(chosen)a=chosen[mode]}
+  }
+  return '<div class="prev pv-'+st.id+'" aria-hidden="true" style="--pv-page:'+p.page+';--pv-surface:'+p.surface+';--pv-surface2:'+p.surface2+';--pv-grid:'+p.grid+';--pv-ink:'+p.ink+';--pv-acc:'+a.acc+'">'
+    +'<div class="pvbar"><i></i><span></span><b></b></div><div class="pvbody"><div class="pvside"><i></i><i></i><i></i></div>'
+    +'<div class="pvdeck"><i class="pvcard"></i><i class="pvcard"></i><i class="pvcard"></i></div></div></div>';
 }
 function renderSettings(main){
   const st=THEMES.find(s=>s.id===THEME.style)||THEMES[0];
   main.innerHTML='<div class="phead"><h2>settings</h2></div><div class="view settings">'
-    +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">style</h4>'
-    +'<div class="stiles">'+THEMES.map(s=>'<div class="stile '+(s.id===THEME.style?'on':'')+'" data-style="'+s.id+'">'+stylePreview(s)+'<b>'+esc(s.name)+'</b><div class="blurb">'+esc(s.blurb)+'</div></div>').join('')+'</div>'
-    +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">accent</h4>'
+    +'<h4 class="setting-title">visual world</h4><p class="setting-note">Five complete directions. Pick the character first, then tune its color and rhythm.</p>'
+    +'<div class="stiles">'+THEMES.map(s=>'<button type="button" class="stile '+(s.id===THEME.style?'on':'')+'" data-style="'+s.id+'" aria-pressed="'+(s.id===THEME.style)+'">'+stylePreview(s)+'<b>'+esc(s.name)+'</b><div class="blurb">'+esc(s.blurb)+'</div></button>').join('')+'</div>'
+    +'<h4 class="setting-title">accent</h4><p class="setting-note">Each set is tuned for this world in both light and dark mode.</p>'
     +'<div class="accents">'+st.accents.map(a=>{const mode=THEME.mode==='system'?(mq.matches?'dark':'light'):THEME.mode;
-      return '<span class="accpill '+(a.id===THEME.accent?'on':'')+'" data-accent="'+a.id+'"><span class="sw" style="background:'+a[mode].acc+'"></span>'+esc(a.name)+'</span>'}).join('')
-    +'<label class="accpill '+(THEME.accent==='custom'?'on':'')+'" id="custpill"><input type="color" id="custcol" value="'+(THEME.custom||'#7d5bc6')+'">pick your own</label>'
+      return '<button type="button" class="accpill '+(a.id===THEME.accent?'on':'')+'" data-accent="'+a.id+'" aria-pressed="'+(a.id===THEME.accent)+'"><span class="sw" style="background:'+a[mode].acc+'"></span>'+esc(a.name)+'</button>'}).join('')
+    +'<label class="accpill '+(THEME.accent==='custom'?'on':'')+'" id="custpill"><input type="color" id="custcol" value="'+(THEME.custom||'#7354c4')+'">pick your own</label>'
     +'</div>'
-    +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">mode</h4>'
-    +'<div class="modesel">'+['system','light','dark'].map(mo=>'<button data-mode="'+mo+'" class="'+(mo===THEME.mode?'primary':'')+'">'+mo+'</button>').join('')+'</div>'
-    +'<p style="color:var(--muted);font-size:12px">Saved for the whole company. Every operator and share page paints with it.</p>'
+    +'<div class="setting-pair"><div class="setting-group"><h4 class="setting-title">density</h4><p class="setting-note">A designed version of this world, not browser zoom.</p>'
+    +'<div class="segsel">'+[['compact','more cards'],['relaxed','more breathing room']].map(x=>'<button type="button" data-density="'+x[0]+'" class="'+(x[0]===THEME.density?'primary':'')+'"><span>'+x[0]+'</span><small>'+x[1]+'</small></button>').join('')+'</div></div>'
+    +'<div class="setting-group"><h4 class="setting-title">mode</h4><p class="setting-note">System follows each viewer’s device.</p>'
+    +'<div class="segsel">'+[['system','follow device'],['light','daylight'],['dark','lights out']].map(x=>'<button type="button" data-mode="'+x[0]+'" class="'+(x[0]===THEME.mode?'primary':'')+'"><span>'+x[0]+'</span><small>'+x[1]+'</small></button>').join('')+'</div></div></div>'
+    +'<p class="setting-note">Saved company-wide. Operators and public share pages use the same visual system and density.</p>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">login page</h4>'
     +'<label style="font-size:13px;display:flex;gap:8px;align-items:center"><input type="checkbox" id="gs"> list public board links on the login page</label>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">company data</h4>'
@@ -705,7 +827,8 @@ function renderSettings(main){
   $('#demoload').onclick=async()=>{
     const b=$('#demoload');b.disabled=true;b.textContent='loading demo…';
     try{await api('/api/demo',{method:'POST'});await start()}catch(err){$('#serr').textContent=err.message;b.disabled=false;b.textContent='load the Scoops Empire demo'}};
-  $('#custcol').oninput=e=>save({...THEME,accent:'custom',custom:e.target.value});
+  $('#custcol').oninput=e=>applyTheme({...THEME,accent:'custom',custom:e.target.value});
+  $('#custcol').onchange=e=>save({...THEME,accent:'custom',custom:e.target.value});
   main.querySelector('.settings').onclick=async e=>{
     const dp=e.target.closest('[data-delproj]');
     if(dp){const n=dp.dataset.name,c=Number(dp.dataset.count);
@@ -722,12 +845,14 @@ function renderSettings(main){
     const tile=e.target.closest('[data-style]');
     const pill=e.target.closest('[data-accent]');
     const mode=e.target.closest('[data-mode]');
-    if(!tile&&!pill&&!mode)return;
+    const density=e.target.closest('[data-density]');
+    if(!tile&&!pill&&!mode&&!density)return;
     const next={...THEME};
     if(tile){next.style=tile.dataset.style;const ns=THEMES.find(s=>s.id===next.style);
       if(next.accent!=='custom'&&!ns.accents.some(a=>a.id===next.accent))next.accent=ns.accents[0].id}
     if(pill)next.accent=pill.dataset.accent;
     if(mode)next.mode=mode.dataset.mode;
+    if(density)next.density=density.dataset.density;
     save(next);
   };
 }
@@ -741,6 +866,7 @@ export function uiHtml(pub: string | null): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#edf5f5">
 <title>botflow manager</title>
 <style>${CSS}</style>
 </head>
