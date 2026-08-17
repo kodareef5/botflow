@@ -551,6 +551,16 @@ export default {
         return json({ deleted: { project: pid, projects: removed.ids.length }, cleanupFailures });
       }
       if (req.method === 'GET' && (rest === '' || rest === '/board')) return json(await stub.board());
+      if (req.method === 'GET' && rest === '/config') return json(await stub.boardConfig());
+      if (req.method === 'PUT' && rest === '/config') {
+        // Board shape is workflow policy: admins reshape it, agents work it.
+        const denied = requireAdmin();
+        if (denied) return denied;
+        const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+        const res = await stub.editBoardConfig(body, actorOf(body ?? {}));
+        if (!('error' in res)) await registry.audit('admin', 'board-edit', `reshaped board of ${pid}`);
+        return 'error' in res ? json(res, 400) : json(res);
+      }
       if (req.method === 'GET' && rest === '/export') return json(await stub.exportDocs());
       if (req.method === 'PUT' && rest === '/import') {
         const body = (await req.json()) as { config?: string; cards?: BoardDocument[]; actor?: string };

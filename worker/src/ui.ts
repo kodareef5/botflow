@@ -119,7 +119,20 @@ table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink2)}
 .modal h3{margin-bottom:12px;font:700 15px/1.2 var(--display)}
 .modal .field{margin-bottom:10px}
 .modal .field label{display:block;font-size:12px;color:var(--ink2);margin-bottom:3px}
-.modal .field input{width:100%}
+.modal .field input,.modal .field textarea{width:100%;margin-top:3px}
+.modal .field textarea{resize:vertical;font:12.5px/1.5 ui-monospace,Menlo,monospace}
+.editor{max-width:680px}
+.lanerow{display:flex;gap:6px;align-items:center;margin:5px 0;flex-wrap:wrap}
+.lanerow input,.lanerow select{padding:3px 7px;font-size:12.5px}
+.lanerow .lid{width:110px}
+.lanerow .lsub{flex:1;min-width:120px}
+.lanerow .lwip{width:52px}
+.lanerow.dead{opacity:.55}
+.lanerow.dead .lid{text-decoration:line-through}
+.lanerow .mig{display:inline-flex;gap:5px;align-items:center;font-size:11.5px;color:var(--st-blocked)}
+.editor h4{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:14px 0 6px}
+.editor .rollups{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px}
+.editor .rollups label{display:flex;flex-direction:column;gap:3px;color:var(--ink2)}
 .modal .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
 .cardmodal{max-width:780px;padding:0;overflow:hidden}
 .cardmodal .banner{width:100%;height:170px;object-fit:cover;display:block}
@@ -423,13 +436,17 @@ function overlay(html,cls,label){
 }
 function formModal(title,fields,submitLabel,onSubmit){
   const m=overlay('<h3>'+esc(title)+'</h3><form>'+fields.map(f=>
-    '<div class="field"><label>'+esc(f.label)+'<input name="'+f.name+'" placeholder="'+esc(f.placeholder||'')+'" '+(f.required?'required':'')+'></label></div>').join('')
+    '<div class="field"><label>'+esc(f.label)
+    +(f.type==='textarea'
+      ?'<textarea name="'+f.name+'" rows="'+(f.rows||6)+'" placeholder="'+esc(f.placeholder||'')+'" '+(f.required?'required':'')+'>'+esc(f.value||'')+'</textarea>'
+      :'<input name="'+f.name+'" value="'+esc(f.value||'')+'" placeholder="'+esc(f.placeholder||'')+'" '+(f.required?'required':'')+'>')
+    +'</label></div>').join('')
     +'<div class="err" role="alert"></div><div class="actions"><button type="button" class="ghost" data-x>cancel</button><button class="primary">'+esc(submitLabel)+'</button></div></form>',null,title);
   $('form',m).onsubmit=async e=>{e.preventDefault();
     const data={};for(const f of fields)data[f.name]=$('[name="'+f.name+'"]',m).value.trim();
     try{await onSubmit(data);closeOverlay()}catch(err){$('.err',m).textContent=err.message}};
   $('[data-x]',m).onclick=closeOverlay;
-  const first=$('input',m);if(first)first.focus();
+  const first=$('input,textarea',m);if(first)first.focus();
 }
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeOverlay()});
 function confirmModal(title,message,confirmLabel,onConfirm){
@@ -546,10 +563,12 @@ function renderMain(){
   const p=SEL?findAny(SEL):null;
   if(!p){main.innerHTML='<div class="view"><div class="empty">Create a space and a project to begin. Agents connect with scoped keys via the REST API or <code>botflow push</code>.</div></div>';return}
   main.innerHTML='<div class="phead"><h2>'+esc(p.name)+'</h2><span class="pct" id="pinfo"></span>'
+    +'<button id="editboard" class="ghost" title="edit lanes, substates, wip, rollup">✎ edit board</button>'
     +'<div class="tabs" role="tablist">'+['board','activity','keys','sharing'].map(t=>
       '<button data-tab="'+t+'" role="tab" aria-selected="'+(VIEW===t)+'" class="'+(VIEW===t?'on':'')+'">'+t+'</button>').join('')+'</div></div>'
     +'<div class="view" id="view">loading…</div>';
   main.querySelector('.tabs').onclick=e=>{const b=e.target.closest('[data-tab]');if(b){VIEW=b.dataset.tab;renderMain()}};
+  $('#editboard').onclick=boardEditor;
   if(VIEW==='board')refreshBoard();else if(VIEW==='activity')refreshActivity();else if(VIEW==='sharing')refreshSharing();else refreshKeys();
 }
 function badge(ic,txt,cls){return '<span class="'+(cls||'')+'">'+ic+(txt!==undefined?' '+txt:'')+'</span>'}
@@ -669,6 +688,79 @@ async function refreshBoard(quiet){
   v.onclick=boardClicks;
   v.onkeydown=boardKeys;
 }
+// ---- the board editor: lanes, canonical mapping, rollup, migrations ----
+async function boardEditor(){
+  let cfg;try{cfg=await api('/api/projects/'+SEL+'/config')}catch(err){return}
+  const counts={};
+  if(BOARD)for(const l of BOARD.lanes)counts[l.id]=l.cards.length;
+  const CANON=['wishlist','todo','doing','blocked','done','archive'];
+  const laneRow=l=>'<div class="lanerow" data-lane>'
+    +'<input class="lid" value="'+esc(l.id)+'" placeholder="lane-id" aria-label="lane id">'
+    +'<select class="lcan" aria-label="canonical state">'+CANON.map(c=>'<option '+(c===l.canonical?'selected':'')+'>'+c+'</option>').join('')+'</select>'
+    +'<input class="lsub" value="'+esc((l.substates||[]).join(', '))+'" placeholder="substates (comma separated)" aria-label="substates">'
+    +'<select class="lord" aria-label="substate order"><option '+(l.order!=='strict'?'selected':'')+'>free</option><option '+(l.order==='strict'?'selected':'')+'>strict</option></select>'
+    +'<input class="lwip" type="number" min="1" value="'+(l.wip==null?'':l.wip)+'" placeholder="wip" aria-label="wip limit">'
+    +'<button type="button" class="ghost" data-rm aria-label="remove lane">✕</button>'
+    +'<span class="mig" hidden>→ move its cards to <select class="mtarget" aria-label="migration target"></select></span>'
+    +'</div>';
+  const m=overlay('<h3>Edit board</h3>'
+    +'<div class="field"><label>board name<input id="bname" value="'+esc(cfg.name)+'"></label></div>'
+    +'<h4>lanes</h4><p class="setting-note">Every lane projects onto one canonical state; lanes named after a canonical state map to themselves. Removing a lane migrates its cards, and each move is logged on the card.</p>'
+    +'<div id="lanes">'+cfg.lanes.map(laneRow).join('')+'</div>'
+    +'<button type="button" id="addlane">+ lane</button>'
+    +'<h4>rollup policy</h4><div class="rollups">'
+    +'<label>blocked when<select id="rbw"><option '+(cfg.rollup.blockedWhen==='any-blocked'?'selected':'')+'>any-blocked</option><option '+(cfg.rollup.blockedWhen==='never'?'selected':'')+'>never</option></select></label>'
+    +'<label>doing when<select id="rdw"><option '+(cfg.rollup.doingWhen==='any-started'?'selected':'')+'>any-started</option><option '+(cfg.rollup.doingWhen==='any-doing'?'selected':'')+'>any-doing</option></select></label>'
+    +'<label>else<select id="rel"><option '+(cfg.rollup.elseState==='todo'?'selected':'')+'>todo</option><option '+(cfg.rollup.elseState==='wishlist'?'selected':'')+'>wishlist</option></select></label>'
+    +'</div>'
+    +'<div class="err" role="alert"></div>'
+    +'<div class="actions"><button type="button" class="ghost" data-x>cancel</button><button type="button" class="primary" id="bsave">save board</button></div>','editor','Edit board');
+  const originalIds=cfg.lanes.map(l=>l.id);
+  const refreshMigTargets=()=>{
+    const liveIds=[...m.querySelectorAll('[data-lane]:not(.dead) .lid')].map(i=>i.value.trim()).filter(Boolean);
+    for(const row of m.querySelectorAll('[data-lane].dead')){
+      const sel=row.querySelector('.mtarget');
+      const cur=sel.value;
+      sel.innerHTML=liveIds.map(i=>'<option '+(i===cur?'selected':'')+'>'+esc(i)+'</option>').join('');
+    }
+  };
+  $('#addlane',m).onclick=()=>{$('#lanes',m).insertAdjacentHTML('beforeend',laneRow({id:'',canonical:'todo',substates:[],order:'free',wip:null}));$('#lanes',m).lastElementChild.querySelector('.lid').focus()};
+  $('#lanes',m).oninput=refreshMigTargets;
+  $('#lanes',m).onclick=e=>{
+    const rm=e.target.closest('[data-rm]');if(!rm)return;
+    const row=rm.closest('[data-lane]');
+    const id=row.querySelector('.lid').value.trim();
+    if(row.classList.contains('dead')){row.classList.remove('dead');row.querySelector('.mig').hidden=true;refreshMigTargets();return}
+    if(!originalIds.includes(id)){row.remove();refreshMigTargets();return}
+    row.classList.add('dead');
+    if((counts[id]||0)>0)row.querySelector('.mig').hidden=false;
+    refreshMigTargets();
+  };
+  $('#bsave',m).onclick=async()=>{
+    const lanes=[],migrations={};
+    for(const row of m.querySelectorAll('[data-lane]')){
+      const id=row.querySelector('.lid').value.trim();
+      if(row.classList.contains('dead')){
+        const t=row.querySelector('.mtarget').value;
+        if(!row.querySelector('.mig').hidden&&t)migrations[id]=t;
+        continue;
+      }
+      if(id==='')continue;
+      const wip=row.querySelector('.lwip').value.trim();
+      lanes.push({id,canonical:row.querySelector('.lcan').value,
+        substates:row.querySelector('.lsub').value.split(',').map(s=>s.trim()).filter(Boolean),
+        order:row.querySelector('.lord').value,wip:wip===''?null:Number(wip)});
+    }
+    try{
+      await api('/api/projects/'+SEL+'/config',{method:'PUT',body:JSON.stringify({
+        name:$('#bname',m).value,lanes,
+        rollup:{blockedWhen:$('#rbw',m).value,doingWhen:$('#rdw',m).value,elseState:$('#rel',m).value},migrations})});
+      closeOverlay();BOARD=null;refreshBoard();reloadOrg();
+    }catch(err){$('.err',m).textContent=err.message}
+  };
+  m.querySelector('[data-x]').onclick=closeOverlay;
+  refreshMigTargets();
+}
 // ---- public (shared link) mode: read-only, no org chrome ----
 async function publicStart(){
   try{applyTheme(await api('/api/theme'))}catch{}
@@ -715,6 +807,7 @@ function cardModalHtml(c,tab){
   if(c.priority)meta.push('<span class="badges"><span class="'+(c.priority==='p0'?'p0':'')+'">'+c.priority+'</span></span>');
   for(const l of c.labels||[])meta.push('<span class="badges"><span>#'+esc(l)+'</span></span>');
   if(c.blocked)meta.push('<span class="badges"><span class="blk">⛔ '+esc(c.blocked)+'</span></span>');
+  if(!RO)meta.push('<button class="ghost" data-editcard title="edit title, priority, labels, deps, assignee">✎ edit</button>');
   const tabs=[['card','card'],['chat','chat '+((p.comments||[]).length||'')],['activity','activity']];
   return (c.cover?'<img class="banner" src="'+esc(c.cover)+'" alt="">':'')
     +'<div class="inner"><button class="close ghost" data-x aria-label="close card">✕</button>'
@@ -729,10 +822,14 @@ function paneCard(c){
   if(c.type==='board'){
     out+='<h4>project board</h4><div class="subboard" style="max-width:340px"><button data-goto2="'+esc(c.child??'')+'" '+(c.child==null||RO?'disabled':'')+'>'+IC.open+' open board</button>'+statechip(c.state)+'</div>';
   }
-  out+='<h4>description</h4><div class="desc">'+(p.description?md(p.description):'<span class="empty">no description</span>')+'</div>';
+  out+='<h4>description'+(RO?'':' <span class="h-act"><button data-desc>'+(p.description?'edit':'write')+'</button></span>')+'</h4>'
+    +'<div class="desc">'+(p.description?md(p.description):'<span class="empty">no description</span>')+'</div>';
+  if((p.checklists||[]).length===0&&!RO){
+    out+='<h4>checklist <span class="h-act"><button data-additem="Checklist">+ task</button></span></h4><div class="empty">no tasks yet</div>';
+  }
   for(const cl of p.checklists||[]){
     const done=cl.items.filter(i=>i.checked).length;
-    out+='<div class="cl"><h4>'+esc(cl.section)+'</h4><div class="clhead"><span>'+done+'/'+cl.items.length+'</span><div class="clbar"><i style="width:'+Math.round(done/cl.items.length*100)+'%"></i></div></div>'
+    out+='<div class="cl"><h4>'+esc(cl.section)+(RO?'':' <span class="h-act"><button data-additem="'+esc(cl.section)+'">+ task</button></span>')+'</h4><div class="clhead"><span>'+done+'/'+cl.items.length+'</span><div class="clbar"><i style="width:'+Math.round(done/cl.items.length*100)+'%"></i></div></div>'
       +cl.items.map(i=>'<div class="item '+(i.checked?'done':'')+'" '+(RO?'':'data-check="'+i.index+'" data-on="'+i.checked+'" role="checkbox" aria-checked="'+i.checked+'" tabindex="0"')+' style="'+(RO?'cursor:default':'')+'"><span class="box">'+(i.checked?IC.tick:'')+'</span><span class="txt">'+esc(i.text)+'</span></div>').join('')
       +'</div>';
   }
@@ -783,6 +880,29 @@ function wireCardModal(m,c,tab){
     if(e.target.closest('[data-attach]')){
       formModal('Attach a link',[{name:'url',label:'url (images join the gallery)',required:true},{name:'label',label:'label (optional)'}],'attach',async d=>{
         await api('/api/projects/'+SEL+'/cards/'+c.id+'/attach',{method:'POST',body:JSON.stringify({url:d.url,label:d.label||undefined})});openCard(c.id,'card')});
+      return}
+    if(e.target.closest('[data-desc]')){
+      formModal('Edit description',[{name:'text',label:'description (markdown; empty clears)',type:'textarea',rows:9,value:(c.parsed&&c.parsed.description)||''}],'save',async d=>{
+        await api('/api/projects/'+SEL+'/cards/'+c.id+'/describe',{method:'POST',body:JSON.stringify({text:d.text})});openCard(c.id,'card')});
+      return}
+    const ai=e.target.closest('[data-additem]');
+    if(ai){
+      formModal('Add task',[{name:'text',label:'task',required:true}],'add task',async d=>{
+        await api('/api/projects/'+SEL+'/cards/'+c.id+'/checkadd',{method:'POST',body:JSON.stringify({text:d.text,section:ai.dataset.additem})});openCard(c.id,'card')});
+      return}
+    if(e.target.closest('[data-editcard]')){
+      formModal('Edit card',[
+        {name:'title',label:'title',required:true,value:c.title},
+        {name:'priority',label:'priority (p0 to p3, empty for none)',value:c.priority||''},
+        {name:'labels',label:'labels (comma separated)',value:(c.labels||[]).join(', ')},
+        {name:'deps',label:'deps (comma separated card ids)',value:(c.deps||[]).join(', ')},
+        {name:'assignee',label:'assignee (empty to clear)',value:c.assignee||''},
+      ],'save',async d=>{
+        await api('/api/projects/'+SEL+'/cards/'+c.id+'/edit',{method:'POST',body:JSON.stringify({
+          title:d.title,priority:d.priority||null,assignee:d.assignee||null,
+          labels:d.labels?d.labels.split(',').map(s=>s.trim()).filter(Boolean):[],
+          deps:d.deps?d.deps.split(',').map(s=>s.trim()).filter(Boolean):[]})});
+        openCard(c.id,'card');refreshBoard(true)});
     }
   });
   m.addEventListener('keydown',async e=>{

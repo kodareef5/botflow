@@ -39,6 +39,12 @@ test('cli: full card lifecycle', () => {
 
   ok(dir, 'card', 'claim', '001');
   ok(dir, 'log', '001', 'halfway there');
+  ok(dir, 'card', 'describe', '001', 'What', 'and', 'why.');
+  ok(dir, 'card', 'item', '001', 'part one');
+  ok(dir, 'card', 'item', '001', 'part two', '--section', 'QA');
+  const authored = JSON.parse(ok(dir, 'card', 'show', '001', '--json')) as { parsed: { description: string; checklists: { section: string }[] } };
+  assert.equal(authored.parsed.description, 'What and why.');
+  assert.deepEqual(authored.parsed.checklists.map((c) => c.section), ['Checklist', 'QA']);
   ok(dir, 'card', 'block', '001', '--reason', 'waiting on review');
   const shown = JSON.parse(ok(dir, 'card', 'show', '001', '--json')) as Record<string, unknown>;
   assert.equal(shown['state'], 'blocked');

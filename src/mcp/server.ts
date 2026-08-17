@@ -16,7 +16,9 @@ import {
   checkCard,
   claimCard,
   closeCard,
+  checklistAddCard,
   commentCard,
+  describeCard,
   editCard,
   moveCard,
   unblockCard,
@@ -208,6 +210,24 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       run: (args) => {
         const card = commentCard(root, String(args['id']), actorOf(args), String(args['message']));
         return { id: card.id, commented: true };
+      },
+    },
+    {
+      name: 'card_describe',
+      description: 'Replace the card’s Description section (empty text clears it).',
+      inputSchema: schema(['id'], { id: str, text: str, actor: str }),
+      run: (args) => {
+        const card = describeCard(root, String(args['id']), actorOf(args), String(args['text'] ?? ''));
+        return { id: card.id, described: true };
+      },
+    },
+    {
+      name: 'card_item',
+      description: 'Add an unchecked checklist task to the card (section defaults to "Checklist").',
+      inputSchema: schema(['id', 'text'], { id: str, text: str, section: str, actor: str }),
+      run: (args) => {
+        const card = checklistAddCard(root, String(args['id']), actorOf(args), String(args['text']), args['section'] === undefined ? undefined : String(args['section']));
+        return { id: card.id, added: true };
       },
     },
     {

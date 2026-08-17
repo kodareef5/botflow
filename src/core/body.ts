@@ -113,6 +113,40 @@ export function appendToSection(body: string, name: string, line: string): strin
   return body.slice(0, sectionStart) + rebuilt + body.slice(sectionEnd);
 }
 
+/** Replace the content of a `## <name>` section wholesale. A missing section
+ *  is created ("start" puts it before everything, the Description convention;
+ *  "before-log" tucks it ahead of `## Log` so the audit trail stays last).
+ *  Empty content removes the section, heading included. */
+export function setSection(body: string, name: string, content: string, position: 'start' | 'before-log' | 'end' = 'end'): string {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const headingRe = new RegExp(`(^|\\n)## ${escaped}[ \\t]*\\n`);
+  const clean = content.replace(/\r\n/g, '\n').trim();
+  const m = headingRe.exec(body);
+  if (!m) {
+    if (clean === '') return body;
+    const block = `## ${name}\n${clean}\n`;
+    const base = body.trim();
+    if (base === '') return block;
+    if (position === 'start') return `${block}\n${base}\n`;
+    if (position === 'before-log') {
+      const log = /(^|\n)## Log[ \t]*\n/.exec(body);
+      if (log) {
+        const at = log.index + log[1]!.length;
+        return body.slice(0, at) + block + '\n' + body.slice(at);
+      }
+    }
+    return `${base}\n\n${block}`;
+  }
+  const headingStart = m.index + m[1]!.length;
+  const sectionStart = m.index + m[0].length;
+  const nextHeading = body.indexOf('\n## ', sectionStart);
+  const sectionEnd = nextHeading === -1 ? body.length : nextHeading;
+  if (clean === '') {
+    return (body.slice(0, headingStart) + body.slice(sectionEnd)).replace(/\n{3,}/g, '\n\n').replace(/^\n+/, '');
+  }
+  return body.slice(0, sectionStart) + clean + '\n' + body.slice(sectionEnd);
+}
+
 /** Set the checked state of the Nth task item (global 0-based ordinal). */
 export function setChecklistItem(body: string, index: number, checked: boolean): string | null {
   const lines = body.replace(/\r\n/g, '\n').split('\n');

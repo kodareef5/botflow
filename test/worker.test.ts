@@ -158,6 +158,46 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.equal(dupId.status, 400);
     assert.deepEqual((await call(`/api/projects/${parent}/export`, { token: admin })).body, beforeDupId.body, 'rejected import is atomic');
 
+    // Board editor: admins reshape lanes/rollup with card migrations; agents
+    // cannot; invalid shapes are rejected whole.
+    const cfg0 = await call(`/api/projects/${parent}/config`, { token: admin });
+    assert.equal(cfg0.status, 200);
+    assert.ok((cfg0.body['lanes'] as unknown[]).length >= 6, 'default lanes visible');
+    const reshape = {
+      name: 'parent reshaped',
+      lanes: [
+        { id: 'todo' },
+        { id: 'doing', substates: ['design', 'review'], order: 'strict' },
+        { id: 'needs-qa', canonical: 'doing', wip: 2 },
+        { id: 'done' },
+      ],
+      rollup: { blockedWhen: 'never', doingWhen: 'any-doing', elseState: 'todo' },
+      migrations: { wishlist: 'todo' },
+    };
+    assert.equal((await call(`/api/projects/${parent}/config`, { method: 'PUT', token: key, body: JSON.stringify(reshape) })).status, 403, 'agents cannot reshape boards');
+    assert.equal((await call(`/api/projects/${parent}/config`, { method: 'PUT', token: admin, body: JSON.stringify({ name: 'x', lanes: [{ id: 'weird' }] }) })).status, 400, 'custom lane without canonical rejected');
+    const put = await call(`/api/projects/${parent}/config`, { method: 'PUT', token: admin, body: JSON.stringify(reshape) });
+    assert.equal(put.status, 200, JSON.stringify(put.body));
+    const cfg1 = await call(`/api/projects/${parent}/config`, { token: admin });
+    assert.deepEqual((cfg1.body['lanes'] as { id: string }[]).map((l) => l.id), ['todo', 'doing', 'needs-qa', 'done']);
+    assert.equal((cfg1.body['rollup'] as { doingWhen: string }).doingWhen, 'any-doing');
+    const migrated = await call(`/api/projects/${parent}/cards/001`, { token: admin });
+    assert.equal(migrated.body['position'], 'doing.design', 'doing card entered the new substate machine');
+    assert.match(String(migrated.body['body']), /migrated doing → doing\.design \(board edit\)/, 'migration logged on the card');
+    const boardShape = (await call(`/api/projects/${parent}/board`, { token: admin })).body as { lanes: { id: string }[]; findings: unknown[] };
+    assert.deepEqual(boardShape.lanes.map((l) => l.id), ['todo', 'doing', 'needs-qa', 'done']);
+    assert.equal(boardShape.findings.filter((f) => (f as { severity: string }).severity === 'error').length, 0, 'reshaped board lints clean');
+
+    // Card authoring: description + checklist tasks through the API.
+    await call(`/api/projects/${parent}/cards/002/describe`, { method: 'POST', token: key, body: JSON.stringify({ text: 'Written by an agent.' }) });
+    await call(`/api/projects/${parent}/cards/002/checkadd`, { method: 'POST', token: key, body: JSON.stringify({ text: 'verify the thing' }) });
+    await call(`/api/projects/${parent}/cards/002/checkadd`, { method: 'POST', token: key, body: JSON.stringify({ text: 'ship it', section: 'Launch' }) });
+    const authored = await call(`/api/projects/${parent}/cards/002`, { token: admin });
+    const authoredParsed = authored.body['parsed'] as { description: string | null; checklists: { section: string }[] };
+    assert.equal(authoredParsed.description, 'Written by an agent.');
+    assert.deepEqual(authoredParsed.checklists.map((cl) => cl.section), ['Checklist', 'Launch']);
+    assert.deepEqual(authored.body['checklist'], { done: 0, total: 2 });
+
     // Org imports are fully validated before they create registry state.
     const badOrg = await call('/api/org/import', {
       method: 'PUT', token: admin,

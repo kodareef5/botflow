@@ -19,9 +19,11 @@ import {
   opAttach,
   opBlock,
   opCheck,
+  opChecklistAdd,
   opClaim,
   opClose,
   opComment,
+  opDescribe,
   opDetach,
   opEdit,
   opLog,
@@ -206,6 +208,22 @@ export function commentCard(root: string, id: string, actor: string, text: strin
 export function checkCard(root: string, id: string, actor: string, index: number, checked: boolean): Card {
   return mutateCard(root, (board) => {
     const card = opCheck(getCard(board, id), actor, index, checked);
+    writeCard(root, card);
+    return card;
+  });
+}
+
+export function describeCard(root: string, id: string, actor: string, text: string): Card {
+  return mutateCard(root, (board) => {
+    const card = opDescribe(getCard(board, id), actor, text);
+    writeCard(root, card);
+    return card;
+  });
+}
+
+export function checklistAddCard(root: string, id: string, actor: string, text: string, section?: string): Card {
+  return mutateCard(root, (board) => {
+    const card = opChecklistAdd(getCard(board, id), actor, text, section);
     writeCard(root, card);
     return card;
   });

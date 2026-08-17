@@ -1,8 +1,34 @@
-// board.yaml → BoardConfig (SPEC §4), collecting findings instead of throwing.
+// board.yaml ⇄ BoardConfig (SPEC §4): parse collects findings instead of
+// throwing; emit produces spec-clean yaml (defaults omitted) for tools that
+// edit board shape, like the hosted board editor.
 
 import type { YamlValue } from './yaml.ts';
 import type { BoardConfig, Finding, Lane, RollupPolicy, Canonical } from './model.ts';
 import { SLUG_RE, defaultLanes, defaultRollup, finding, isCanonical } from './model.ts';
+import { emitScalar } from './emit.ts';
+
+/** Serialize a BoardConfig back to board.yaml text. Defaults are omitted so
+ *  the file stays as small as a hand-written one; parse(emit(c)) === c. */
+export function emitBoardYaml(config: Pick<BoardConfig, 'name' | 'ids' | 'lanes' | 'rollup'>): string {
+  const lines = ['botflow: 0', `name: ${emitScalar(config.name)}`];
+  if (config.ids === 'hash') lines.push('ids: hash');
+  lines.push('lanes:');
+  for (const lane of config.lanes) {
+    lines.push(`  - id: ${lane.id}`);
+    if (lane.name !== lane.id) lines.push(`    name: ${emitScalar(lane.name)}`);
+    if (!isCanonical(lane.id)) lines.push(`    canonical: ${lane.canonical}`);
+    if (lane.substates.length > 0) lines.push(`    substates: [${lane.substates.join(', ')}]`);
+    if (lane.order === 'strict') lines.push('    order: strict');
+    if (lane.wip !== null) lines.push(`    wip: ${lane.wip}`);
+  }
+  const d = defaultRollup();
+  const rollup: string[] = [];
+  if (config.rollup.blockedWhen !== d.blockedWhen) rollup.push(`  blocked_when: ${config.rollup.blockedWhen}`);
+  if (config.rollup.doingWhen !== d.doingWhen) rollup.push(`  doing_when: ${config.rollup.doingWhen}`);
+  if (config.rollup.elseState !== d.elseState) rollup.push(`  else: ${config.rollup.elseState}`);
+  if (rollup.length > 0) lines.push('rollup:', ...rollup);
+  return lines.join('\n') + '\n';
+}
 
 const REF = 'board.yaml';
 

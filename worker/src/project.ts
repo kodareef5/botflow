@@ -13,7 +13,9 @@ import { analyzeSingle, type ExternalChild } from '../../src/core/analyze.ts';
 import { boardFromDocuments, validateBoardDocuments, type BoardDocument } from '../../src/core/docs.ts';
 import { boardJson, cardDetailJson, cardJson } from '../../src/core/json.ts';
 import type { BoardAnalysis } from '../../src/core/analyze.ts';
-import type { BoardNode, Card, LoadedBoard } from '../../src/core/model.ts';
+import type { BoardNode, Canonical, Card, Lane, LoadedBoard } from '../../src/core/model.ts';
+import { SLUG_RE, defaultRollup, isCanonical } from '../../src/core/model.ts';
+import { emitBoardYaml } from '../../src/core/config.ts';
 import {
   ClaimConflict,
   UsageError,
@@ -23,9 +25,11 @@ import {
   opAttach,
   opBlock,
   opCheck,
+  opChecklistAdd,
   opClaim,
   opClose,
   opComment,
+  opDescribe,
   opDetach,
   opEdit,
   opLog,
@@ -35,7 +39,7 @@ import {
   type EditPatch,
 } from '../../src/core/ops.ts';
 import { newHashId, nextSeqId, slugify } from '../../src/core/ids.ts';
-import { serializeCard } from '../../src/core/write.ts';
+import { logMutation, serializeCard } from '../../src/core/write.ts';
 
 export interface AuditEvent {
   seq: number;
@@ -236,6 +240,117 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     return cardDetailJson(found, node, ba);
   }
 
+  /** Structured board.yaml view for the editor UI. */
+  boardConfig(): Record<string, unknown> {
+    const c = this.loadBoardDocs().config;
+    return {
+      name: c.name,
+      ids: c.ids,
+      lanes: c.lanes.map((l) => ({ id: l.id, name: l.name, canonical: l.canonical, substates: l.substates, order: l.order, wip: l.wip })),
+      rollup: { blockedWhen: c.rollup.blockedWhen, doneWhen: c.rollup.doneWhen, doingWhen: c.rollup.doingWhen, elseState: c.rollup.elseState },
+    };
+  }
+
+  /** Reshape the board: lanes (canonical mapping required), rollup policy,
+   *  name. Cards stranded by a removed lane or substate migrate per the
+   *  caller's plan (or to a same-canonical lane), each move logged on the
+   *  card. Validates everything, then commits all-or-nothing. */
+  editBoardConfig(payload: unknown, actor: string): ActionResult {
+    if (payload === null || typeof payload !== 'object') return { error: 'malformed config' };
+    const p = payload as { name?: unknown; lanes?: unknown; rollup?: unknown; migrations?: unknown };
+    const name = typeof p.name === 'string' && p.name.trim() !== '' ? p.name.trim().replace(/[\r\n]+/g, ' ') : null;
+    if (name === null) return { error: 'board name required' };
+    if (!Array.isArray(p.lanes) || p.lanes.length === 0) return { error: 'at least one lane required' };
+
+    const lanes: Lane[] = [];
+    const seen = new Set<string>();
+    for (const raw of p.lanes) {
+      if (raw === null || typeof raw !== 'object') return { error: 'each lane must be an object' };
+      const l = raw as Record<string, unknown>;
+      const id = typeof l['id'] === 'string' ? l['id'].trim() : '';
+      if (!SLUG_RE.test(id)) return { error: `lane id must be a lowercase slug, got "${id}"` };
+      if (seen.has(id)) return { error: `duplicate lane id "${id}"` };
+      seen.add(id);
+      let canonical: Canonical;
+      if (isCanonical(id)) canonical = id;
+      else if (typeof l['canonical'] === 'string' && isCanonical(l['canonical'])) canonical = l['canonical'];
+      else return { error: `lane "${id}" needs a canonical state (wishlist, todo, doing, blocked, done, archive)` };
+      const substates: string[] = [];
+      if (l['substates'] !== undefined && l['substates'] !== null) {
+        if (!Array.isArray(l['substates'])) return { error: `lane "${id}": substates must be a list` };
+        for (const s of l['substates']) {
+          if (typeof s !== 'string' || !SLUG_RE.test(s)) return { error: `lane "${id}": substates must be lowercase slugs` };
+          if (!substates.includes(s)) substates.push(s);
+        }
+      }
+      const order = l['order'] === 'strict' ? 'strict' : 'free';
+      let wip: number | null = null;
+      if (l['wip'] !== undefined && l['wip'] !== null && l['wip'] !== '') {
+        const n = Number(l['wip']);
+        if (!Number.isInteger(n) || n <= 0) return { error: `lane "${id}": wip must be a positive integer` };
+        wip = n;
+      }
+      lanes.push({ id, name: typeof l['name'] === 'string' && l['name'].trim() !== '' ? l['name'].trim() : id, canonical, substates, order, wip });
+    }
+
+    const rollup = defaultRollup();
+    if (p.rollup !== undefined && p.rollup !== null) {
+      if (typeof p.rollup !== 'object') return { error: 'rollup must be an object' };
+      const r = p.rollup as Record<string, unknown>;
+      if (r['blockedWhen'] !== undefined) {
+        if (r['blockedWhen'] !== 'any-blocked' && r['blockedWhen'] !== 'never') return { error: 'rollup.blockedWhen must be any-blocked or never' };
+        rollup.blockedWhen = r['blockedWhen'];
+      }
+      if (r['doingWhen'] !== undefined) {
+        if (r['doingWhen'] !== 'any-started' && r['doingWhen'] !== 'any-doing') return { error: 'rollup.doingWhen must be any-started or any-doing' };
+        rollup.doingWhen = r['doingWhen'];
+      }
+      if (r['elseState'] !== undefined) {
+        if (r['elseState'] !== 'todo' && r['elseState'] !== 'wishlist') return { error: 'rollup.elseState must be todo or wishlist' };
+        rollup.elseState = r['elseState'];
+      }
+    }
+
+    const migrations = new Map<string, string>();
+    if (p.migrations !== undefined && p.migrations !== null) {
+      if (typeof p.migrations !== 'object' || Array.isArray(p.migrations)) return { error: 'migrations must be an object of oldLane: newLane' };
+      for (const [from, to] of Object.entries(p.migrations as Record<string, unknown>)) {
+        if (typeof to !== 'string' || !seen.has(to)) return { error: `migration target for lane "${from}" must be one of the new lanes` };
+        migrations.set(from, to);
+      }
+    }
+
+    const board = this.loadBoardDocs();
+    const laneById = new Map(lanes.map((l) => [l.id, l]));
+    const oldLaneById = new Map(board.config.lanes.map((l) => [l.id, l]));
+    const fallbackFor = (oldLaneId: string): Lane => {
+      const oldCanonical = oldLaneById.get(oldLaneId)?.canonical ?? 'todo';
+      return laneById.get(migrations.get(oldLaneId) ?? '') ?? lanes.find((l) => l.canonical === oldCanonical) ?? lanes.find((l) => l.canonical === 'todo') ?? lanes[0]!;
+    };
+    const moved: Card[] = [];
+    for (const card of board.cards) {
+      const lane = laneById.get(card.laneId) ?? fallbackFor(card.laneId);
+      let substate = card.substate;
+      if (lane.substates.length === 0) substate = null;
+      else if (substate === null || !lane.substates.includes(substate)) substate = lane.substates[0]!;
+      if (lane.id === card.laneId && substate === card.substate) continue;
+      const from = card.substate ? `${card.laneId}.${card.substate}` : card.laneId;
+      card.laneId = lane.id;
+      card.substate = substate;
+      const to = substate ? `${lane.id}.${substate}` : lane.id;
+      logMutation(card, actor, `migrated ${from} → ${to} (board edit)`);
+      moved.push(card);
+    }
+
+    const configYaml = emitBoardYaml({ name, ids: board.config.ids, lanes, rollup });
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec("INSERT INTO meta(key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", configYaml);
+      for (const card of moved) this.persistCard(card);
+      this.event(actor, 'board-edit', null, `lanes: ${lanes.map((l) => l.id).join(', ')}${moved.length > 0 ? `; migrated ${moved.length} card(s)` : ''}`);
+    });
+    return { ok: true, migrated: moved.length };
+  }
+
   exportDocs(): { config: string | null; cards: BoardDocument[] } {
     return {
       config: this.configText(),
@@ -403,6 +518,20 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           this.persistCard(card);
           this.event(actor, 'log', id, String(args['message'] ?? ''));
           return { id, logged: true };
+        }
+        case 'describe': {
+          const text = String(args['text'] ?? '');
+          opDescribe(card, actor, text);
+          this.persistCard(card);
+          this.event(actor, 'describe', id, text.slice(0, 160));
+          return { id, described: true };
+        }
+        case 'checkadd': {
+          const section = typeof args['section'] === 'string' && args['section'].trim() !== '' ? (args['section'] as string) : undefined;
+          opChecklistAdd(card, actor, String(args['text'] ?? ''), section);
+          this.persistCard(card);
+          this.event(actor, 'checkadd', id, String(args['text'] ?? '').slice(0, 160));
+          return { id, added: true };
         }
         default:
           return { error: `unknown action "${kind}"` };

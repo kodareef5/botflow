@@ -226,6 +226,7 @@ Expected files record, per board: lint findings (rule ids + card ids), per-card 
 - Only bump `updated` on meaningful change.
 - `prime`: every conforming CLI SHOULD offer a command that prints the board's shape, rules, ready work, and the tool's own usage, so an agent can be taught with one line in AGENTS.md.
 - Derived stores (indexes, caches) MUST be rebuildable from files alone and MUST NOT be committed.
+- **Board reshaping.** A tool that edits `board.yaml` over live cards MUST leave the board conformant: cards stranded by a removed lane or substate migrate to a surviving lane (same canonical state unless the operator chose a target), and every migration appends a Log line on the moved card.
 - **Snapshot sync contract.** When a file-truth board syncs with a hosted copy, the repo documents are truth and sync is whole-board snapshot, last write wins. The hosted side is that snapshot **plus a manager overlay**: hosted-native children (project-reference cards the repo snapshot does not carry) survive a push rather than being severed. Both directions MUST validate the entire snapshot before persisting any of it (fatal findings: `yaml-error`, `frontmatter-missing`, `schema`, `dup-id`; unsafe or duplicate paths), and a pull that would remove local files SHOULD refuse over uncommitted changes without an explicit force.
 
 ## 13. Future (non-normative)

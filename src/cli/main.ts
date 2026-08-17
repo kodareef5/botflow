@@ -24,7 +24,9 @@ import {
   checkCard,
   claimCard,
   closeCard,
+  checklistAddCard,
   commentCard,
+  describeCard,
   detachCard,
   editCard,
   initBoard,
@@ -77,6 +79,8 @@ usage: botflow <command> [args]
            [--assignee name|none] [--deps 1,2] [--board-path <dir>]
            [--cover <url>|none|auto]
   card comment <id> <text…>             append to the Comments section
+  card describe <id> <text…>            set the Description (empty clears)
+  card item <id> <text…> [--section s]  add an unchecked checklist task
   card check <id> <n> [--off]           check/uncheck checklist item n (1-based)
   card attach <id> <url> [--label l]    add a link/image attachment
   card detach <id> <n>                  remove attachment n (1-based)
@@ -436,6 +440,22 @@ function runCard(argv: string[]): number {
       if (!id || words.length === 0) throw new UsageError('usage: botflow card comment <id> <text…>');
       const card = commentCard(getRoot(values), id, getActor(values), words.join(' '));
       values['json'] ? emitJson({ id: card.id, commented: true }) : out(`✓ ${card.id} commented`);
+      return 0;
+    }
+    case 'describe': {
+      const { values, positionals } = parse(rest, COMMON);
+      const [id, ...words] = positionals;
+      if (!id) throw new UsageError('usage: botflow card describe <id> <text…>  (empty text clears)');
+      const card = describeCard(getRoot(values), id, getActor(values), words.join(' '));
+      values['json'] ? emitJson({ id: card.id, described: true }) : out(`✓ ${card.id} description ${words.length ? 'set' : 'cleared'}`);
+      return 0;
+    }
+    case 'item': {
+      const { values, positionals } = parse(rest, { ...COMMON, section: { type: 'string' } });
+      const [id, ...words] = positionals;
+      if (!id || words.length === 0) throw new UsageError('usage: botflow card item <id> <text…> [--section name]');
+      const card = checklistAddCard(getRoot(values), id, getActor(values), words.join(' '), values['section'] as string | undefined);
+      values['json'] ? emitJson({ id: card.id, added: true }) : out(`✓ ${card.id} task added`);
       return 0;
     }
     case 'check': {

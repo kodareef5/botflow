@@ -3,7 +3,7 @@
 // closes, blocks, and edits through these, so the rules exist exactly once.
 
 import type { BoardConfig, Card, Lane, LoadedBoard } from './model.ts';
-import { addAttachmentLine, appendToSection, parseBody, removeAttachmentLine, setChecklistItem } from './body.ts';
+import { addAttachmentLine, appendToSection, parseBody, removeAttachmentLine, setChecklistItem, setSection } from './body.ts';
 import { emitScalar } from './emit.ts';
 import { newHashId, nextSeqId, slugify } from './ids.ts';
 import { logMutation, nowDate, nowDateTime } from './write.ts';
@@ -339,6 +339,29 @@ export function opCheck(card: Card, actor: string, index: number, checked: boole
   if (next === null) throw new UsageError(`no checklist item ${index}`);
   card.body = next;
   logMutation(card, actor, `${checked ? 'checked' : 'unchecked'} "${item.text}"`);
+  return card;
+}
+
+/** Replace the card's `## Description` (empty text clears it). */
+export function opDescribe(card: Card, actor: string, text: string): Card {
+  card.body = setSection(card.body, 'Description', text, 'start');
+  card.updated = nowDate();
+  logMutation(card, actor, text.trim() === '' ? 'cleared description' : 'edited description');
+  return card;
+}
+
+/** Append an unchecked task line to a checklist section (created before the
+ *  Log if missing, so the audit trail stays last). */
+export function opChecklistAdd(card: Card, actor: string, text: string, section = 'Checklist'): Card {
+  const clean = text.trim().replace(/\s+/g, ' ');
+  if (clean === '') throw new UsageError('checklist item text required');
+  const escaped = section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!new RegExp(`(^|\\n)## ${escaped}[ \\t]*\\n`).test(card.body)) {
+    card.body = setSection(card.body, section, `- [ ] ${clean}`, 'before-log');
+  } else {
+    card.body = appendToSection(card.body, section, `- [ ] ${clean}`);
+  }
+  logMutation(card, actor, `added task "${clean}"`);
   return card;
 }
 
