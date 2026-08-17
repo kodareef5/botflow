@@ -1,6 +1,26 @@
 # botflow
 
-**Git-native kanban for AI agents**: a file format your repo carries, a CLI agents drive, a board humans read, and an optional self-hosted manager for the whole company.
+**A workflow protocol your repo can carry.** Different agents, different workflows, one composable state model: every board, however specialized its lanes, projects onto six canonical states, so anything above it can aggregate it without knowing its shape.
+
+```text
+   security audit                 software project
+   ──────────────                 ────────────────
+   candidates                     backlog
+   → reproduce                    → design
+   → validate                     → implement
+   → disclose                     → review
+   → paid                         → ship
+        │                              │
+        ▼ projects onto               ▼ projects onto
+   wishlist · todo · doing · blocked · done · archive
+        │                              │
+        └───────────────┬──────────────┘
+                        ▼
+                portfolio board
+     rolls both up, blind to either one's shape
+```
+
+In practice that means **git-native kanban for AI agents**: a file format your repo carries, a CLI agents drive, a board humans read, and an optional self-hosted manager for the whole company.
 
 ## The idea
 
