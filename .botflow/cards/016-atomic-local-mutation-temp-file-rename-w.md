@@ -1,8 +1,9 @@
 ---
 id: 016
 title: "Atomic local mutation: temp-file+rename writes, board lockfile, seq id race fix"
-lane: todo
+lane: done
 labels: [engine, concurrency]
+assignee: claude
 priority: p0
 created: 2026-08-17
 updated: 2026-08-17
@@ -12,3 +13,6 @@ From ChatGPT review. Local mutations are load, mutate in memory, writeFileSync: 
 
 ## Log
 - 2026-08-17 21:27 claude: created in todo
+- 2026-08-17 21:59 claude: claimed, moved todo → doing
+- 2026-08-17 22:02 claude: board.lock with dead-owner reaping + stale-mtime fallback, Atomics.wait sync sleep, temp+rename writes, all 12 mutators load inside the lock (seq ids race-free), SPEC 12 concurrency bullet, 6 process-level race tests
+- 2026-08-17 22:02 claude: closed: two processes on one tree can no longer interleave or double-mint ids
