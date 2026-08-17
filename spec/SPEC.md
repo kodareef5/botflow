@@ -153,7 +153,7 @@ The board-card's frontmatter `lane` remains authoritative for its **position** (
 
 **Progress.** `progress(B) = weight_done / weight_total` over countable cards, where a task card has weight 1 (1 if `done`, else 0 toward done) and a board-card has weight 1 scaled by `progress(K)` (a child 3⁄4 done contributes 0.75). A childless (countable=0) board-card contributes 1 if its effective state is `done`, else 0. `progress` of a board with no countable cards is `null`.
 
-**Recursion** is depth-first. Implementations MUST detect reference cycles: on a cycle, every board-card in the cycle falls back to `canonical(c)` (rule 1) and lint reports error `board-cycle`. Aggregate ("rollup") views may render the tree to any depth; canonical distributions are the only cross-level interface.
+**Recursion** is depth-first. Implementations MUST detect reference cycles and MUST NOT loop: the reference that closes a cycle resolves to nothing, so its board-card falls back to `canonical(c)` (rule 1) and lint reports error `board-cycle`; references upstream of the broken edge roll up over it normally. Aggregate ("rollup") views may render the tree to any depth; canonical distributions are the only cross-level interface.
 
 ## 8. Card ids & merge semantics
 

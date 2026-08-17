@@ -22,19 +22,43 @@ export function emitScalar(v: string | number | boolean | null): string {
   return '"' + v.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\t/g, '\\t') + '"';
 }
 
-/** Emit a mapping as subset-YAML lines. Lists must contain scalars only. */
+type Scalar = string | number | boolean | null;
+
+function isScalar(v: unknown): v is Scalar {
+  return v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
+}
+
+/** Emit a mapping as subset-YAML lines. Handles nested maps, scalar lists
+ *  (flow form), and lists of maps (block form), so preserved unknown keys
+ *  of any parseable shape round-trip instead of crashing. */
 export function emitMap(obj: Record<string, unknown>, indent = 0): string {
   const pad = ' '.repeat(indent);
   const lines: string[] = [];
   for (const [key, value] of Object.entries(obj)) {
     if (value === undefined) continue;
     if (Array.isArray(value)) {
-      lines.push(`${pad}${key}: [${value.map((v) => emitScalar(v as string | number | boolean | null)).join(', ')}]`);
+      if (value.every(isScalar)) {
+        lines.push(`${pad}${key}: [${value.map(emitScalar).join(', ')}]`);
+      } else {
+        lines.push(`${pad}${key}:`);
+        for (const item of value) {
+          if (isScalar(item)) {
+            lines.push(`${pad}  - ${emitScalar(item)}`);
+          } else if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
+            // `- first: v` with continuation keys two deeper (the parser's shape).
+            const innerLines = emitMap(item as Record<string, unknown>, indent + 4).split('\n');
+            lines.push(`${pad}  - ${innerLines[0]!.trimStart()}`);
+            for (const rest of innerLines.slice(1)) lines.push(rest);
+          } else {
+            lines.push(`${pad}  - ${emitScalar(JSON.stringify(item))}`);
+          }
+        }
+      }
     } else if (value !== null && typeof value === 'object') {
       lines.push(`${pad}${key}:`);
       lines.push(emitMap(value as Record<string, unknown>, indent + 2));
     } else {
-      lines.push(`${pad}${key}: ${emitScalar(value as string | number | boolean | null)}`);
+      lines.push(`${pad}${key}: ${emitScalar(value as Scalar)}`);
     }
   }
   return lines.join('\n');

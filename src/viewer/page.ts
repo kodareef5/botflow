@@ -237,6 +237,9 @@ if(DATA)render();
 if(LIVE){if(!DATA)poll().then(()=>render());setInterval(poll,2000)}
 `;
 
+const escHtml = (s: string): string =>
+  s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+
 export function viewerHtml(data: ViewerData | null, opts: { live: boolean; title?: string }): string {
   const payload = data === null ? 'null' : JSON.stringify(data).replace(/</g, '\\u003c');
   return `<!doctype html>
@@ -244,7 +247,7 @@ export function viewerHtml(data: ViewerData | null, opts: { live: boolean; title
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${opts.title ?? 'botflow'}</title>
+<title>${escHtml(opts.title ?? 'botflow')}</title>
 <style>${CSS}</style>
 </head>
 <body>

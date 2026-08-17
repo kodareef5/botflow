@@ -47,8 +47,11 @@ export interface AuditEvent {
 
 export type ActionResult = Record<string, unknown> | { error: string };
 
+import type { RegistryDO } from './registry.ts';
+
 interface ProjectEnv {
   PROJECT: DurableObjectNamespace<ProjectDO>;
+  REGISTRY: DurableObjectNamespace<RegistryDO>;
 }
 
 const PROJECT_REF = 'project:';
@@ -101,10 +104,14 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     this.sql.exec('INSERT INTO events(ts, actor, action, card_id, detail) VALUES (?, ?, ?, ?, ?)', new Date().toISOString(), actor, action, cardId, detail);
   }
 
-  /** Resolve project-card children by asking sibling DOs; cycle-safe. */
+  /** Resolve project-card children by asking sibling DOs. Cycle-safe, and
+   *  scope-enforcing: a board may only roll up projects nested beneath it in
+   *  the registry, so a smuggled `project:` ref cannot leak an unrelated
+   *  project's distribution. */
   private async resolveChildren(board: LoadedBoard, visited: string[]): Promise<Map<string, ExternalChild | null>> {
     const children = new Map<string, ExternalChild | null>();
     const chain = [...visited, this.selfId()];
+    const registry = this.env.REGISTRY.get(this.env.REGISTRY.idFromName('main'));
     await Promise.all(
       board.cards
         .filter((c) => c.type === 'board')
@@ -115,8 +122,8 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
             return;
           }
           const pid = ref.slice(PROJECT_REF.length);
-          if (chain.includes(pid)) {
-            children.set(card.id, null); // cycle → card falls back to its lane
+          if (chain.includes(pid) || !(await registry.isWithin(pid, this.selfId()))) {
+            children.set(card.id, null); // cycle or out-of-scope → lane fallback
             return;
           }
           const stub = this.env.PROJECT.get(this.env.PROJECT.idFromName(pid));
@@ -164,14 +171,31 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     return { distribution: ba.distribution, progress: ba.progress };
   }
 
-  /** Compact state for org-tree aggregation. */
+  /** Compact state for org-tree aggregation. The task* fields exclude
+   *  project-ref cards entirely: in tree sums those children are counted by
+   *  their own summaries, so including their rolled-up card here would count
+   *  the same work twice. */
   async summary(): Promise<Record<string, unknown>> {
     const { board, ba } = await this.analyzed();
+    const taskDistribution = { wishlist: 0, todo: 0, doing: 0, blocked: 0, done: 0, archive: 0 } as Record<string, number>;
+    let taskUnits = 0;
+    let taskDoneWeight = 0;
+    for (const card of board.cards) {
+      if (card.type === 'board' && (card.boardPath ?? '').startsWith(PROJECT_REF)) continue;
+      const state = ba.canonical.get(card.id)!;
+      taskDistribution[state]!++;
+      if (state === 'archive') continue;
+      taskUnits++;
+      if (state === 'done') taskDoneWeight++;
+    }
     return {
       name: board.config.name,
       cards: board.cards.length,
       distribution: ba.distribution,
       progress: ba.progress,
+      taskDistribution,
+      taskUnits,
+      taskDoneWeight,
       errors: [...board.findings, ...ba.findings].filter((f) => f.severity === 'error').length,
     };
   }
@@ -217,17 +241,25 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
    *  manager-native project cards (`board: project:…`) the snapshot doesn't
    *  carry, so a repo push can't sever hosted sub-projects. */
   importDocs(config: string, cards: BoardDocument[], actor: string): Record<string, unknown> {
+    const seenPaths = new Set<string>();
+    for (const doc of cards) {
+      if (typeof doc.path !== 'string' || typeof doc.text !== 'string') return { error: 'malformed card document' };
+      if (seenPaths.has(doc.path)) return { error: `duplicate card path in import: ${doc.path}` };
+      seenPaths.add(doc.path);
+    }
     const current = this.loadBoardDocs();
     const parsed = boardFromDocuments(config, cards, 'import');
-    const incomingById = new Map(parsed.cards.map((c) => [c.id, c]));
-    // Preserve manager-native project cards the snapshot doesn't itself carry;
-    // when a file card claims their id, re-id the preserved card instead of
-    // letting the push sever a hosted sub-project.
-    const preserved = current.cards.filter((c) => {
-      if (c.type !== 'board' || !(c.boardPath ?? '').startsWith(PROJECT_REF)) return false;
-      const incoming = incomingById.get(c.id);
-      return !(incoming && incoming.type === 'board' && incoming.boardPath === c.boardPath);
-    });
+    // Preserve manager-native project cards whose referenced project the
+    // snapshot doesn't itself carry (matched by ref, not card id: a snapshot
+    // representing the same child under any id already covers it). When a
+    // file card claims a preserved card's id, re-id it instead of letting the
+    // push sever a hosted sub-project.
+    const incomingRefs = new Set(
+      parsed.cards.filter((c) => c.type === 'board' && c.boardPath !== null).map((c) => c.boardPath as string),
+    );
+    const preserved = current.cards.filter(
+      (c) => c.type === 'board' && (c.boardPath ?? '').startsWith(PROJECT_REF) && !incomingRefs.has(c.boardPath as string),
+    );
     const takenIds = new Set(parsed.cards.map((c) => c.id));
     const reIds: string[] = [];
     for (const card of preserved) {

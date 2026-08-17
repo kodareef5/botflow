@@ -21,6 +21,9 @@ export { ProjectDO, RegistryDO };
 export interface Env {
   REGISTRY: DurableObjectNamespace<RegistryDO>;
   PROJECT: DurableObjectNamespace<ProjectDO>;
+  /** Optional: when set (wrangler secret/var), /api/setup requires it, which
+   *  closes the fresh-deployment claim race. */
+  SETUP_KEY?: string;
 }
 
 const json = (value: unknown, status = 200): Response =>
@@ -31,6 +34,9 @@ interface ProjectSummary {
   cards: number;
   distribution: Distribution;
   progress: number | null;
+  taskDistribution: Distribution;
+  taskUnits: number;
+  taskDoneWeight: number;
   errors: number;
 }
 
@@ -63,10 +69,12 @@ function aggregateNode(
   let doneWeight = 0;
   const own = summaries.get(node.id);
   if (own) {
-    addDist(dist, own.distribution);
-    const ownUnits = distributionTotal(own.distribution) - own.distribution.archive;
-    units += ownUnits;
-    doneWeight += (own.progress ?? 0) * ownUnits;
+    // task* fields exclude project-ref cards: nested projects are added as
+    // their own summaries below, so counting their rolled-up cards here would
+    // double-count the same work.
+    addDist(dist, own.taskDistribution);
+    units += own.taskUnits;
+    doneWeight += own.taskDoneWeight;
   }
   for (const child of node.children) {
     const c = aggregateNode(child, summaries);
@@ -126,7 +134,10 @@ export default {
         return json(await registry.getTheme());
       }
       if (req.method === 'POST' && url.pathname === '/api/setup') {
-        const body = (await req.json()) as { name?: string };
+        const body = (await req.json()) as { name?: string; setupKey?: string };
+        if (typeof env.SETUP_KEY === 'string' && env.SETUP_KEY !== '' && body.setupKey !== env.SETUP_KEY) {
+          return json({ error: 'this deployment requires a setup key' }, 403);
+        }
         const res = await registry.setup(typeof body.name === 'string' && body.name !== '' ? body.name : 'company');
         return 'error' in res ? json(res, 409) : json(res);
       }
@@ -148,11 +159,13 @@ export default {
           projectName: await registry.projectName(identity.projectId),
         });
       }
+      // Agent identity is the key's label, always: request bodies cannot forge
+      // the audit trail. Only the admin may act under a chosen name.
       const actorOf = (body: Record<string, unknown>): string =>
-        typeof body['actor'] === 'string' && body['actor'] !== ''
-          ? (body['actor'] as string)
-          : identity.kind === 'agent'
-            ? identity.label
+        identity.kind === 'agent'
+          ? identity.label
+          : typeof body['actor'] === 'string' && body['actor'] !== ''
+            ? (body['actor'] as string)
             : 'admin';
 
       // ---- org ----
@@ -205,6 +218,7 @@ export default {
           const body = (await req.json()) as Record<string, unknown>;
           const theme = await registry.setTheme(body as never);
           const prefs = 'gateShares' in body ? await registry.setPrefs(body) : await registry.getPrefs();
+          await registry.audit('admin', 'settings', `style ${theme.style}/${theme.accent} mode ${theme.mode}, gate shares ${prefs.gateShares ? 'on' : 'off'}`);
           return json({ ...theme, ...prefs });
         }
       }
@@ -213,15 +227,21 @@ export default {
         if (denied) return denied;
         const tree = await registry.tree();
         const exportNode = async (n: ProjectNode): Promise<Record<string, unknown>> => ({
+          id: n.id,
           name: n.name,
           board: await project(n.id).exportDocs(),
           children: await Promise.all(n.children.map(exportNode)),
         });
+        await registry.audit('admin', 'export', 'company export downloaded');
         return json({
-          version: 1,
+          version: 2,
           name: tree.name,
           theme: await registry.getTheme(),
           prefs: await registry.getPrefs(),
+          keys: await registry.exportKeys(),
+          shares: (await registry.listAllShares()).map((s) => ({
+            token: s.token, projectId: s.projectId, label: s.label, created: s.created, revoked: s.revoked,
+          })),
           spaces: await Promise.all(
             tree.spaces.map(async (s) => ({ name: s.name, projects: await Promise.all(s.projects.map(exportNode)) })),
           ),
@@ -230,32 +250,76 @@ export default {
       if ((url.pathname === '/api/org/import' && req.method === 'PUT') || (url.pathname === '/api/demo' && req.method === 'POST')) {
         const denied = requireAdmin();
         if (denied) return denied;
-        const payload = url.pathname === '/api/demo' ? DEMO : ((await req.json()) as OrgImport);
+        const isDemo = url.pathname === '/api/demo';
+        const payload = isDemo ? DEMO : ((await req.json()) as OrgImport);
         if (!payload || !Array.isArray(payload.spaces)) return json({ error: 'spaces required' }, 400);
         const actor = 'admin';
+        const idMap = new Map<string, string>(); // exported id → restored id
         let projects = 0;
-        const importProject = async (spaceId: string, parentId: string | null, node: ProjectImport): Promise<void> => {
+
+        // Pass 1: recreate the tree so every exported id has a new id.
+        interface CreatedNode { node: ProjectImport; id: string; parentId: string | null; children: CreatedNode[] }
+        const createTree = async (spaceId: string, parentId: string | null, node: ProjectImport): Promise<CreatedNode> => {
           const created = await registry.createProject(parentId === null ? spaceId : null, parentId, node.name);
           if ('error' in created) throw new Error(created.error);
           projects++;
+          if (typeof node.id === 'string') idMap.set(node.id, created.id);
           await project(created.id).ensureInit(node.name);
-          if (node.board) await project(created.id).importDocs(node.board.config, node.board.cards, actor);
-          if (parentId !== null) {
-            await project(parentId).addCard(
-              { title: node.name, type: 'board', boardPath: `project:${created.id}`, lane: node.lane },
-              actor,
-            );
+          const children: CreatedNode[] = [];
+          for (const child of node.children ?? []) children.push(await createTree(spaceId, created.id, child));
+          return { node, id: created.id, parentId, children };
+        };
+        // Pass 2: import boards with project: refs rewritten to the new ids,
+        // then add project cards only for children the board doesn't carry.
+        const fillTree = async (created: CreatedNode): Promise<void> => {
+          let boardText = '';
+          if (created.node.board) {
+            const rewrite = (text: string): string => {
+              let out = text;
+              for (const [oldId, newId] of idMap) out = out.split(`project:${oldId}`).join(`project:${newId}`);
+              return out;
+            };
+            const docs = created.node.board.cards.map((d) => ({ path: d.path, text: rewrite(d.text) }));
+            const res = (await project(created.id).importDocs(created.node.board.config, docs, actor)) as { error?: unknown };
+            if (res.error) throw new Error(String(res.error));
+            boardText = docs.map((d) => d.text).join('\n');
           }
-          for (const child of node.children ?? []) await importProject(spaceId, created.id, child);
+          for (const child of created.children) {
+            if (!boardText.includes(`project:${child.id}`)) {
+              await project(created.id).addCard(
+                { title: child.node.name, type: 'board', boardPath: `project:${child.id}`, lane: child.node.lane },
+                actor,
+              );
+            }
+            await fillTree(child);
+          }
         };
         try {
           for (const space of payload.spaces) {
             const s = await registry.createSpace(space.name);
-            for (const p of space.projects) await importProject(s.id, null, p);
+            const roots: CreatedNode[] = [];
+            for (const p of space.projects) roots.push(await createTree(s.id, null, p));
+            for (const r of roots) await fillTree(r);
+          }
+          // Restore-grade metadata (v2 exports): name, theme, prefs, key
+          // hashes (original tokens stay valid), and share links.
+          if (!isDemo) {
+            if (typeof payload.name === 'string') await registry.setOrgName(payload.name);
+            if (payload.theme) await registry.setTheme(payload.theme);
+            if (payload.prefs) await registry.setPrefs(payload.prefs);
+            for (const k of payload.keys ?? []) {
+              const pid = idMap.get(k.projectId);
+              if (pid) await registry.restoreKey(k.hash, pid, k.label, k.created, k.revoked);
+            }
+            for (const s of payload.shares ?? []) {
+              const pid = idMap.get(s.projectId);
+              if (pid) await registry.restoreShare(s.token, pid, s.label, s.created, s.revoked);
+            }
           }
         } catch (err) {
           return json({ error: (err as Error).message }, 400);
         }
+        await registry.audit('admin', isDemo ? 'demo' : 'import', `${payload.spaces.length} space(s), ${projects} project(s)`);
         return json({ imported: { spaces: payload.spaces.length, projects } });
       }
       if (req.method === 'POST' && url.pathname === '/api/spaces') {
@@ -263,7 +327,9 @@ export default {
         if (denied) return denied;
         const body = (await req.json()) as { name?: string };
         if (!body.name) return json({ error: 'name required' }, 400);
-        return json(await registry.createSpace(body.name));
+        const created = await registry.createSpace(body.name);
+        await registry.audit('admin', 'create-space', `"${body.name}" (${created.id})`);
+        return json(created);
       }
       if (req.method === 'POST' && url.pathname === '/api/projects') {
         const body = (await req.json()) as { space?: string; parent?: string; name?: string; lane?: string };
@@ -278,6 +344,7 @@ export default {
         }
         const res = await registry.createProject(body.space ?? null, body.parent ?? null, body.name);
         if ('error' in res) return json(res, 400);
+        await registry.audit(actorOf(body as Record<string, unknown>), 'create-project', `"${body.name}" (${res.id})${body.parent ? ` under ${body.parent}` : ''}`);
         await project(res.id).ensureInit(body.name);
         // Projects can be cards: the sub-project appears as a project card in
         // the parent's board: one nesting mechanism, same as the file spec.
@@ -293,34 +360,45 @@ export default {
       if (req.method === 'POST' && keyRevoke) {
         const denied = requireAdmin();
         if (denied) return denied;
-        return json(await registry.revokeKey(keyRevoke[1]!));
+        const res = await registry.revokeKey(keyRevoke[1]!);
+        await registry.audit('admin', 'revoke-key', keyRevoke[1]!);
+        return json(res);
       }
       const shareRevoke = /^\/api\/shares\/([^/]+)\/revoke$/.exec(url.pathname);
       if (req.method === 'POST' && shareRevoke) {
         const denied = requireAdmin();
         if (denied) return denied;
-        return json(await registry.revokeShare(shareRevoke[1]!));
+        const res = await registry.revokeShare(shareRevoke[1]!);
+        await registry.audit('admin', 'revoke-share', shareRevoke[1]!);
+        return json(res);
       }
       const shareDelete = /^\/api\/shares\/([^/]+)$/.exec(url.pathname);
       if (req.method === 'DELETE' && shareDelete) {
         const denied = requireAdmin();
         if (denied) return denied;
-        return json(await registry.deleteShare(shareDelete[1]!));
+        const res = await registry.deleteShare(shareDelete[1]!);
+        await registry.audit('admin', 'delete-share', shareDelete[1]!);
+        return json(res);
       }
       if (req.method === 'GET' && url.pathname === '/api/org/shares') {
         const denied = requireAdmin();
         if (denied) return denied;
         return json(await registry.listAllShares());
       }
-      // Hard deletion: wipe DO storage, drop registry rows (projects, keys,
-      // shares), and remove the project card from the parent board. The
-      // company export is the parachute; there is no undo.
+      // Hard deletion. Ordering matters for failure modes: registry rows go
+      // first (one synchronous DO transaction, cutting auth and the tree at
+      // once), then the parent's project card, then best-effort DO wipes:
+      // leftover DO storage is unreachable garbage, never an orphaned live
+      // project. Every deletion lands in the org audit log; the company
+      // export is the parachute.
       const deleteProjectCascade = async (pid: string): Promise<number> => {
         const ids = await registry.subtreeIds(pid);
         const parent = await registry.parentOf(pid);
-        await Promise.all(ids.map((id) => project(id).destroy()));
+        const name = await registry.projectName(pid);
         await registry.deleteProjects(ids);
+        await registry.audit('admin', 'delete-project', `"${name ?? pid}" (${ids.length} project(s): ${ids.join(', ')})`);
         if (parent !== null) await project(parent).removeCardsByRef(`project:${pid}`, 'admin');
+        await Promise.allSettled(ids.map((id) => project(id).destroy()));
         return ids.length;
       };
       const spaceDelete = /^\/api\/spaces\/([^/]+)$/.exec(url.pathname);
@@ -329,10 +407,17 @@ export default {
         if (denied) return denied;
         const sid = spaceDelete[1]!;
         const ids = await registry.projectIdsInSpace(sid);
-        await Promise.all(ids.map((id) => project(id).destroy()));
         await registry.deleteProjects(ids);
         await registry.deleteSpace(sid);
+        await registry.audit('admin', 'delete-space', `${sid} (${ids.length} project(s))`);
+        await Promise.allSettled(ids.map((id) => project(id).destroy()));
         return json({ deleted: { space: sid, projects: ids.length } });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/org/activity') {
+        const denied = requireAdmin();
+        if (denied) return denied;
+        const limit = Math.min(500, Number(url.searchParams.get('limit') ?? 100) || 100);
+        return json(await registry.listAudit(limit));
       }
 
       // ---- project routes ----
@@ -358,7 +443,8 @@ export default {
       if (req.method === 'PUT' && rest === '/import') {
         const body = (await req.json()) as { config?: string; cards?: BoardDocument[]; actor?: string };
         if (typeof body.config !== 'string' || !Array.isArray(body.cards)) return json({ error: 'config and cards required' }, 400);
-        return json(await stub.importDocs(body.config, body.cards, actorOf(body as Record<string, unknown>)));
+        const res = await stub.importDocs(body.config, body.cards, actorOf(body as Record<string, unknown>));
+        return 'error' in res ? json(res, 400) : json(res);
       }
       if (req.method === 'GET' && rest === '/events') {
         const limit = Math.min(500, Number(url.searchParams.get('limit') ?? 100) || 100);
@@ -371,6 +457,7 @@ export default {
         if (req.method === 'POST') {
           const body = (await req.json()) as { label?: string };
           const res = await registry.createShare(pid, body.label ?? 'public link');
+          if (!('error' in res)) await registry.audit('admin', 'create-share', `"${body.label ?? 'public link'}" for ${pid}`);
           return 'error' in res ? json(res, 400) : json(res);
         }
       }
@@ -385,11 +472,20 @@ export default {
         const body = (await req.json()) as { label?: string };
         if (!body.label) return json({ error: 'label required' }, 400);
         const res = await registry.createKey(pid, body.label);
+        if (!('error' in res)) await registry.audit('admin', 'create-key', `"${body.label}" for ${pid}`);
         return 'error' in res ? json(res, 400) : json(res);
       }
       if (req.method === 'POST' && rest === '/cards') {
         const body = (await req.json()) as Record<string, unknown>;
         if (typeof body['title'] !== 'string' || body['title'] === '') return json({ error: 'title required' }, 400);
+        // project: refs must point at projects nested beneath this board; the
+        // DO enforces this at resolution time too, this is the friendly error.
+        if (typeof body['board'] === 'string' && body['board'].startsWith('project:')) {
+          const ref = (body['board'] as string).slice('project:'.length);
+          if ((await registry.projectName(ref)) === null || !(await registry.isWithin(ref, pid))) {
+            return json({ error: 'a project card may only reference a project nested beneath this board' }, 400);
+          }
+        }
         const res = await stub.addCard(
           {
             title: body['title'] as string,

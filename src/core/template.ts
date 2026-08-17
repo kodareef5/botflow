@@ -8,6 +8,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, write
 import { join, resolve } from 'node:path';
 
 import { UsageError } from './mutate.ts';
+import { emitScalar } from './emit.ts';
 import { resolveBoardRoot } from './load.ts';
 
 export interface InstantiateResult {
@@ -66,7 +67,8 @@ export function instantiate(spec: string, destDir: string, name?: string): Insta
   else if (name !== undefined) {
     const configPath = join(boardRoot, 'board.yaml');
     const text = readFileSync(configPath, 'utf8');
-    writeFileSync(configPath, text.replace(/^name: .*$/m, `name: ${name}`));
+    const safe = emitScalar(name.replace(/[\r\n]+/g, ' ').trim() || 'board');
+    writeFileSync(configPath, text.replace(/^name: .*$/m, `name: ${safe}`));
   }
 
   return { dest, boardRoot, warnings };

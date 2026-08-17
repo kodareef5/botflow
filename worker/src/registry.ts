@@ -46,6 +46,14 @@ function shortId(): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** Names and labels: single line, trimmed, bounded. Board configs embed them
+ *  via emitScalar too, but bad input should die at the door. */
+function cleanName(s: unknown, fallback: string): string {
+  if (typeof s !== 'string') return fallback;
+  const cleaned = s.replace(/[\r\n\t]+/g, ' ').trim().slice(0, 120);
+  return cleaned === '' ? fallback : cleaned;
+}
+
 export class RegistryDO extends DurableObject {
   private readonly sql: SqlStorage;
 
@@ -59,7 +67,21 @@ export class RegistryDO extends DurableObject {
       CREATE TABLE IF NOT EXISTS keys(id TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, label TEXT NOT NULL, created TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS shares(id TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, label TEXT NOT NULL, created TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL);
     `);
+  }
+
+  // ---- org audit log: every org-level action, append-only ----
+
+  audit(actor: string, action: string, detail: string): { ok: boolean } {
+    this.sql.exec('INSERT INTO audit(ts, actor, action, detail) VALUES (?, ?, ?, ?)', new Date().toISOString(), actor, action, detail.slice(0, 500));
+    return { ok: true };
+  }
+
+  listAudit(limit: number): { seq: number; ts: string; actor: string; action: string; detail: string }[] {
+    return this.sql
+      .exec('SELECT seq, ts, actor, action, detail FROM audit ORDER BY seq DESC LIMIT ?', limit)
+      .toArray() as unknown as { seq: number; ts: string; actor: string; action: string; detail: string }[];
   }
 
   // ---- prefs (small org-wide switches) ----
@@ -90,7 +112,7 @@ export class RegistryDO extends DurableObject {
     if (this.projectName(projectId) === null) return { error: `no project ${projectId}` };
     const token = randomToken('bfs').slice(4); // bare hex; the url is the capability
     const id = `sh-${shortId()}`;
-    this.sql.exec('INSERT INTO shares(id, token, project_id, label, created) VALUES (?, ?, ?, ?, ?)', id, token, projectId, label, new Date().toISOString());
+    this.sql.exec('INSERT INTO shares(id, token, project_id, label, created) VALUES (?, ?, ?, ?, ?)', id, token, projectId, cleanName(label, 'public link'), new Date().toISOString());
     return { id, token };
   }
 
@@ -182,6 +204,38 @@ export class RegistryDO extends DurableObject {
     return { ok: true };
   }
 
+  // ---- restore-grade export metadata ----
+
+  setOrgName(name: string): { ok: boolean } {
+    this.sql.exec('UPDATE org SET name = ? WHERE id = 1', cleanName(name, 'company'));
+    return { ok: true };
+  }
+
+  /** Key hashes (not tokens) for company export; restoring them keeps the
+   *  original bearer tokens valid. */
+  exportKeys(): { hash: string; projectId: string; label: string; created: string; revoked: boolean }[] {
+    return this.sql
+      .exec('SELECT hash, project_id, label, created, revoked FROM keys ORDER BY created')
+      .toArray()
+      .map((r) => ({ hash: r['hash'] as string, projectId: r['project_id'] as string, label: r['label'] as string, created: r['created'] as string, revoked: r['revoked'] === 1 }));
+  }
+
+  restoreKey(hash: string, projectId: string, label: string, created: string, revoked: boolean): { ok: boolean } {
+    this.sql.exec(
+      'INSERT OR IGNORE INTO keys(id, hash, project_id, label, created, revoked) VALUES (?, ?, ?, ?, ?, ?)',
+      `k-${shortId()}`, hash, projectId, cleanName(label, 'agent'), created, revoked ? 1 : 0,
+    );
+    return { ok: true };
+  }
+
+  restoreShare(token: string, projectId: string, label: string, created: string, revoked: boolean): { ok: boolean } {
+    this.sql.exec(
+      'INSERT OR IGNORE INTO shares(id, token, project_id, label, created, revoked) VALUES (?, ?, ?, ?, ?, ?)',
+      `sh-${shortId()}`, token, projectId, cleanName(label, 'public link'), created, revoked ? 1 : 0,
+    );
+    return { ok: true };
+  }
+
   resolveShare(token: string): { projectId: string; name: string } | null {
     const row = this.sql
       .exec('SELECT s.project_id AS pid, p.name AS name FROM shares s JOIN projects p ON p.id = s.project_id WHERE s.token = ? AND s.revoked = 0', token)
@@ -228,7 +282,8 @@ export class RegistryDO extends DurableObject {
   async setup(name: string): Promise<{ token: string } | { error: string }> {
     if (this.initialized()) return { error: 'already initialized' };
     const token = randomToken('bfa');
-    this.sql.exec('INSERT INTO org(id, name, admin_hash, created) VALUES (1, ?, ?, ?)', name, await sha256hex(token), new Date().toISOString());
+    this.sql.exec('INSERT INTO org(id, name, admin_hash, created) VALUES (1, ?, ?, ?)', cleanName(name, 'company'), await sha256hex(token), new Date().toISOString());
+    this.audit('system', 'setup', 'company initialized');
     return { token };
   }
 
@@ -265,7 +320,7 @@ export class RegistryDO extends DurableObject {
 
   createSpace(name: string): { id: string } {
     const id = `s-${shortId()}`;
-    this.sql.exec('INSERT INTO spaces(id, name, created) VALUES (?, ?, ?)', id, name, new Date().toISOString());
+    this.sql.exec('INSERT INTO spaces(id, name, created) VALUES (?, ?, ?)', id, cleanName(name, 'space'), new Date().toISOString());
     return { id };
   }
 
@@ -280,7 +335,7 @@ export class RegistryDO extends DurableObject {
     if (spaceId === null) return { error: 'space or parent required' };
     if (this.sql.exec('SELECT 1 FROM spaces WHERE id = ?', spaceId).toArray().length === 0) return { error: `no space ${spaceId}` };
     const id = `p-${shortId()}`;
-    this.sql.exec('INSERT INTO projects(id, space_id, parent_id, name, created) VALUES (?, ?, ?, ?, ?)', id, spaceId, parentId, name, new Date().toISOString());
+    this.sql.exec('INSERT INTO projects(id, space_id, parent_id, name, created) VALUES (?, ?, ?, ?, ?)', id, spaceId, parentId, cleanName(name, 'project'), new Date().toISOString());
     return { id };
   }
 
@@ -293,7 +348,7 @@ export class RegistryDO extends DurableObject {
     if (this.projectName(projectId) === null) return { error: `no project ${projectId}` };
     const token = randomToken('bfk');
     const id = `k-${shortId()}`;
-    this.sql.exec('INSERT INTO keys(id, hash, project_id, label, created) VALUES (?, ?, ?, ?, ?)', id, await sha256hex(token), projectId, label, new Date().toISOString());
+    this.sql.exec('INSERT INTO keys(id, hash, project_id, label, created) VALUES (?, ?, ?, ?, ?)', id, await sha256hex(token), projectId, cleanName(label, 'agent'), new Date().toISOString());
     return { id, token };
   }
 

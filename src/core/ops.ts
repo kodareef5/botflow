@@ -4,6 +4,7 @@
 
 import type { BoardConfig, Card, Lane, LoadedBoard } from './model.ts';
 import { addAttachmentLine, appendToSection, parseBody, removeAttachmentLine, setChecklistItem } from './body.ts';
+import { emitScalar } from './emit.ts';
 import { newHashId, nextSeqId, slugify } from './ids.ts';
 import { logMutation, nowDate, nowDateTime } from './write.ts';
 
@@ -11,8 +12,10 @@ import { logMutation, nowDate, nowDateTime } from './write.ts';
 export class UsageError extends Error {}
 
 export function defaultBoardYaml(name: string): string {
+  // emitScalar quotes anything that could escape the value position, so a
+  // hostile name cannot inject extra yaml keys.
   return `botflow: 0
-name: ${name}
+name: ${emitScalar(name.replace(/[\r\n]+/g, ' ').trim() || 'board')}
 
 # Six canonical lanes by default. Specialty lanes take \`canonical: <state>\`;
 # lanes can carry \`substates: [design, implement, review]\`, \`order: strict\`,

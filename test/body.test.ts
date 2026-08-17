@@ -63,6 +63,29 @@ test('attachments add and remove without touching neighbors', () => {
   assert.equal(removeAttachmentLine(BODY, 9), null);
 });
 
+test('emit round-trips unknown keys of any parseable shape', async () => {
+  const { emitMap } = await import('../src/core/emit.ts');
+  const { parseYaml } = await import('../src/core/yaml.ts');
+  const value = {
+    id: '001',
+    title: 'x',
+    lane: 'todo',
+    meta: [{ kind: 'link', n: 2 }, { kind: 'note' }, 'plain'],
+    tags: ['a', 'b'],
+  };
+  const text = emitMap(value);
+  assert.deepEqual(parseYaml(text), value);
+});
+
+test('board names cannot inject yaml keys', async () => {
+  const { defaultBoardYaml } = await import('../src/core/ops.ts');
+  const { parseYaml } = await import('../src/core/yaml.ts');
+  const hostile = 'sneaky\nids: hash';
+  const parsed = parseYaml(defaultBoardYaml(hostile)) as { name: string; ids?: string };
+  assert.equal(parsed.ids, undefined, 'no smuggled ids key');
+  assert.equal(parsed.name, 'sneaky ids: hash');
+});
+
 test('appendToSection creates and appends', () => {
   const fresh = appendToSection('', 'Comments', '- 2026-08-16 15:00 admin: hello');
   assert.equal(fresh, '## Comments\n- 2026-08-16 15:00 admin: hello\n');

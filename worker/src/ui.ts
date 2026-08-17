@@ -312,9 +312,11 @@ function gate(kind,extra){
   const g=$('#gate');
   if(kind==='setup'){
     g.innerHTML='<h2>Set up botflow manager</h2><p>Name your company to initialize this deployment. You will get the admin token exactly once.</p>'
-      +'<form id="f"><input id="name" placeholder="company name" required><button class="primary">Initialize</button></form><div class="err" id="err"></div>';
+      +'<form id="f" style="flex-direction:column"><input id="name" placeholder="company name" required style="margin-bottom:8px">'
+      +'<input id="skey" placeholder="setup key (only if this deployment configured one)" style="margin-bottom:8px">'
+      +'<button class="primary">Initialize</button></form><div class="err" id="err"></div>';
     $('#f').onsubmit=async e=>{e.preventDefault();
-      try{const r=await api('/api/setup',{method:'POST',body:JSON.stringify({name:$('#name').value})});
+      try{const r=await api('/api/setup',{method:'POST',body:JSON.stringify({name:$('#name').value,setupKey:$('#skey').value||undefined})});
         g.innerHTML='<h2>Admin token</h2><p class="warn">Copy it now. It is never shown again.</p><div class="tokenbox">'+esc(r.token)+'</div>'
           +'<button class="primary" id="go">I saved it, continue</button>';
         $('#go').onclick=()=>{TOKEN=r.token;localStorage.setItem('bf_token',TOKEN);start()};
@@ -663,7 +665,15 @@ function renderSettings(main){
     +'<div id="mtree" style="max-width:560px"></div>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">manage: share links</h4>'
     +'<div id="mshares" style="max-width:720px">loading…</div>'
+    +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">company activity</h4>'
+    +'<div id="maudit" style="max-width:720px">loading…</div>'
     +'<div class="err" id="serr"></div></div>';
+  api('/api/org/activity?limit=50').then(list=>{
+    const el=$('#maudit');if(!el)return;
+    el.innerHTML=list.length?'<table class="list"><tr><th>when</th><th>actor</th><th>action</th><th>detail</th></tr>'
+      +list.map(a=>'<tr><td class="mono">'+esc((a.ts||'').replace('T',' ').slice(0,16))+'</td><td>'+esc(a.actor)+'</td><td>'+esc(a.action)+'</td><td>'+esc(a.detail)+'</td></tr>').join('')+'</table>'
+      :'<div class="empty">no org activity yet</div>';
+  }).catch(()=>{});
   const countTree=n=>1+n.children.reduce((a,c)=>a+countTree(c),0);
   const mrowProj=n=>'<div class="mrow">'+esc(n.name)+'<span class="who">'+esc(n.id)+'</span>'
     +'<button data-delproj="'+esc(n.id)+'" data-name="'+esc(n.name)+'" data-count="'+countTree(n)+'">delete</button></div>'

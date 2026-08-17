@@ -13,6 +13,8 @@ export interface BoardImport {
 
 export interface ProjectImport {
   name: string;
+  /** Exported project id; import maps it to the new id and rewrites refs. */
+  id?: string;
   board?: BoardImport;
   children?: ProjectImport[];
   /** Lane for this project's card in its parent board (children only). */
@@ -25,8 +27,12 @@ export interface SpaceImport {
 }
 
 export interface OrgImport {
-  version: 1;
+  version: 1 | 2;
   name?: string;
+  theme?: Record<string, unknown>;
+  prefs?: Record<string, unknown>;
+  keys?: { hash: string; projectId: string; label: string; created: string; revoked: boolean }[];
+  shares?: { token: string; projectId: string; label: string; created: string; revoked: boolean }[];
   spaces: SpaceImport[];
 }
 
