@@ -74,6 +74,7 @@ aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
 .sub-h{font-size:11px;color:var(--muted);padding:5px 4px 2px;border-top:1px dashed var(--grid);margin-top:5px}
 .card{border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);margin:var(--card-gap) 0;background:var(--surface);cursor:pointer;overflow:hidden;transition:transform .14s ease,box-shadow .14s ease,border-color .14s ease}
 .card:hover{border-color:var(--baseline)}
+.card:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
 .card.blocked{border-left:3px solid var(--st-blocked)}
 .card .art{width:100%;height:var(--art-h);object-fit:cover;display:block;border-bottom:var(--bw) var(--bs) var(--grid)}
 .card .inner{padding:var(--card-pad)}
@@ -392,19 +393,38 @@ function md(src){
   flush();if(fence)out.push('</pre>');return out.join('\\n');
 }
 // ---- generic modal + forms (replaces prompt()) ----
-function closeOverlay(){const o=$('.overlay');if(o)o.remove();MODAL=null}
-function overlay(html,cls){
+// Dialogs are real dialogs: role + aria-modal, focus moves in on open and is
+// trapped (Tab cycles, Escape closes), and it returns to the opener on close.
+function closeOverlay(){
+  const o=$('.overlay');
+  if(o){const back=o._restoreFocus;o.remove();if(back&&back.focus&&document.contains(back))back.focus()}
+  MODAL=null;
+}
+function overlay(html,cls,label){
   closeOverlay();
+  const opener=document.activeElement;
   const o=document.createElement('div');o.className='overlay';
-  o.innerHTML='<div class="modal '+(cls||'')+'" role="dialog" aria-modal="true">'+html+'</div>';
+  o.innerHTML='<div class="modal '+(cls||'')+'" role="dialog" aria-modal="true" tabindex="-1"'+(label?' aria-label="'+esc(label)+'"':'')+'>'+html+'</div>';
   o.addEventListener('mousedown',e=>{if(e.target===o)closeOverlay()});
+  o.addEventListener('keydown',e=>{
+    if(e.key!=='Tab')return;
+    const f=[...o.querySelectorAll('button,[href],input,textarea,select,[tabindex]:not([tabindex="-1"])')]
+      .filter(x=>!x.disabled&&x.offsetParent!==null);
+    if(!f.length)return;
+    const first=f[0],last=f[f.length-1];
+    if(e.shiftKey&&document.activeElement===first){last.focus();e.preventDefault()}
+    else if(!e.shiftKey&&(document.activeElement===last||!o.contains(document.activeElement))){first.focus();e.preventDefault()}
+  });
+  o._restoreFocus=opener&&opener!==document.body?opener:null;
   document.body.appendChild(o);
-  return o.firstElementChild;
+  const m=o.firstElementChild;
+  m.focus();
+  return m;
 }
 function formModal(title,fields,submitLabel,onSubmit){
   const m=overlay('<h3>'+esc(title)+'</h3><form>'+fields.map(f=>
-    '<div class="field"><label>'+esc(f.label)+'</label><input name="'+f.name+'" placeholder="'+esc(f.placeholder||'')+'" '+(f.required?'required':'')+'></div>').join('')
-    +'<div class="err"></div><div class="actions"><button type="button" class="ghost" data-x>cancel</button><button class="primary">'+esc(submitLabel)+'</button></div></form>');
+    '<div class="field"><label>'+esc(f.label)+'<input name="'+f.name+'" placeholder="'+esc(f.placeholder||'')+'" '+(f.required?'required':'')+'></label></div>').join('')
+    +'<div class="err" role="alert"></div><div class="actions"><button type="button" class="ghost" data-x>cancel</button><button class="primary">'+esc(submitLabel)+'</button></div></form>',null,title);
   $('form',m).onsubmit=async e=>{e.preventDefault();
     const data={};for(const f of fields)data[f.name]=$('[name="'+f.name+'"]',m).value.trim();
     try{await onSubmit(data);closeOverlay()}catch(err){$('.err',m).textContent=err.message}};
@@ -414,7 +434,7 @@ function formModal(title,fields,submitLabel,onSubmit){
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeOverlay()});
 function confirmModal(title,message,confirmLabel,onConfirm){
   const m=overlay('<h3>'+esc(title)+'</h3><p style="font-size:13px;color:var(--ink2);line-height:1.55">'+message+'</p>'
-    +'<div class="err"></div><div class="actions"><button type="button" class="ghost" data-x>cancel</button><button class="danger" data-go>'+esc(confirmLabel)+'</button></div>');
+    +'<div class="err" role="alert"></div><div class="actions"><button type="button" class="ghost" data-x>cancel</button><button class="danger" data-go>'+esc(confirmLabel)+'</button></div>',null,title);
   $('[data-x]',m).onclick=closeOverlay;
   $('[data-go]',m).onclick=async()=>{
     const b=$('[data-go]',m);b.disabled=true;b.textContent='working…';
@@ -487,7 +507,7 @@ function layout(){
 }
 function projRow(n){
   const a=n.aggregate;
-  return '<div class="row '+(n.id===SEL?'sel':'')+'" data-proj="'+n.id+'">'
+  return '<div class="row '+(n.id===SEL?'sel':'')+'" data-proj="'+n.id+'" tabindex="0" role="button" aria-label="'+esc(n.name)+'">'
     +esc(n.name)+'<button class="add" data-addsub="'+n.id+'" title="add sub-project">+</button>'
     +'<span class="pct">'+pct(a.progress)+'</span>'+statechip(a.state)+'</div>'
     +(n.children.length?'<div class="kids">'+n.children.map(projRow).join('')+'</div>':'');
@@ -499,7 +519,7 @@ function renderSide(){
     +(s.projects.length?s.projects.map(projRow).join(''):'<div class="empty">no projects</div>')
     +'</div>').join('')
     +'<h2>company <button id="addspace">+ space</button></h2>'
-    +'<div class="sidefoot"><div class="row '+(SEL==='::settings'?'sel':'')+'" id="setrow">'+IC.gear+' settings</div></div>';
+    +'<div class="sidefoot"><div class="row '+(SEL==='::settings'?'sel':'')+'" id="setrow" tabindex="0" role="button">'+IC.gear+' settings</div></div>';
   $('#side').onclick=async e=>{
     if(e.target.closest('#setrow')){SEL='::settings';renderSide();renderMain();return}
     const add=e.target.closest('[data-addproj]');
@@ -512,6 +532,11 @@ function renderSide(){
     const row=e.target.closest('[data-proj]');
     if(row){SEL=row.dataset.proj;VIEW='board';BOARD=null;renderSide();renderMain();$('#side').classList.remove('open')}
   };
+  $('#side').onkeydown=e=>{
+    if(e.key!=='Enter'&&e.key!==' ')return;
+    const row=e.target.closest('[data-proj],#setrow');
+    if(row){e.preventDefault();row.click()}
+  };
   const sp=$('#addspace');if(sp)sp.onclick=()=>formModal('New space',[{name:'name',label:'space name',required:true}],'create',async d=>{
     await api('/api/spaces',{method:'POST',body:JSON.stringify({name:d.name})});await reloadOrg()});
 }
@@ -521,10 +546,8 @@ function renderMain(){
   const p=SEL?findAny(SEL):null;
   if(!p){main.innerHTML='<div class="view"><div class="empty">Create a space and a project to begin. Agents connect with scoped keys via the REST API or <code>botflow push</code>.</div></div>';return}
   main.innerHTML='<div class="phead"><h2>'+esc(p.name)+'</h2><span class="pct" id="pinfo"></span>'
-    +'<div class="tabs"><button data-tab="board" class="'+(VIEW==='board'?'on':'')+'">board</button>'
-    +'<button data-tab="activity" class="'+(VIEW==='activity'?'on':'')+'">activity</button>'
-    +'<button data-tab="keys" class="'+(VIEW==='keys'?'on':'')+'">keys</button>'
-    +'<button data-tab="sharing" class="'+(VIEW==='sharing'?'on':'')+'">sharing</button></div></div>'
+    +'<div class="tabs" role="tablist">'+['board','activity','keys','sharing'].map(t=>
+      '<button data-tab="'+t+'" role="tab" aria-selected="'+(VIEW===t)+'" class="'+(VIEW===t?'on':'')+'">'+t+'</button>').join('')+'</div></div>'
     +'<div class="view" id="view">loading…</div>';
   main.querySelector('.tabs').onclick=e=>{const b=e.target.closest('[data-tab]');if(b){VIEW=b.dataset.tab;renderMain()}};
   if(VIEW==='board')refreshBoard();else if(VIEW==='activity')refreshActivity();else if(VIEW==='sharing')refreshSharing();else refreshKeys();
@@ -543,7 +566,7 @@ function cardHtml(b,c){
   if((c.deps||[]).length)badges.push('<span>deps→'+c.deps.map(esc).join(',')+'</span>');
   if(ready.has(c.id))badges.push('<span class="ready bare">▶ ready</span>');
   const board=c.type==='board';
-  return '<div class="card '+(c.blocked?'blocked':'')+'" data-card="'+esc(c.id)+'">'
+  return '<div class="card '+(c.blocked?'blocked':'')+'" data-card="'+esc(c.id)+'" tabindex="0" role="button" aria-label="'+esc(c.id+' '+c.title)+'">'
     +(c.cover?'<img class="art" src="'+esc(c.cover)+'" alt="" loading="lazy">':'')
     +'<div class="inner"><div class="cid">'+esc(c.id)+'</div><div class="t">'+esc(c.title)+'</div>'
     +'<div class="badges">'+badges.join('')+'</div>'
@@ -573,15 +596,78 @@ function boardClicks(e){
   const el=e.target.closest('[data-card]');
   if(el)openCard(el.dataset.card);
 }
+// Keyboard nav: cards are tabbable; arrows walk the deck, Enter/Space opens.
+function boardKeys(e){
+  const cur=e.target.closest('[data-card]');if(!cur)return;
+  if(e.key==='Enter'||e.key===' '){e.preventDefault();openCard(cur.dataset.card);return}
+  const col=cur.closest('.col');if(!col)return;
+  const inCol=[...col.querySelectorAll('[data-card]')];
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+    const next=inCol[inCol.indexOf(cur)+(e.key==='ArrowDown'?1:-1)];
+    if(next){next.focus();e.preventDefault()}
+    return;
+  }
+  if(e.key==='ArrowLeft'||e.key==='ArrowRight'){
+    const cols=[...cur.closest('.cols').querySelectorAll('.col')];
+    let ci=cols.indexOf(col);
+    const idx=inCol.indexOf(cur);
+    for(ci+=e.key==='ArrowRight'?1:-1;ci>=0&&ci<cols.length;ci+=e.key==='ArrowRight'?1:-1){
+      const cards=cols[ci].querySelectorAll('[data-card]');
+      if(cards.length){cards[Math.min(idx,cards.length-1)].focus();e.preventDefault();return}
+    }
+  }
+}
+// Patch-don't-replace rendering: reconcile the live DOM against fresh HTML so
+// a background poll never resets scroll positions or steals focus. Nodes are
+// matched by key (data-card / id) or by position+tag, then updated in place.
+function nodeKey(n){return n.nodeType===1?(n.dataset&&n.dataset.card?'card:'+n.dataset.card:n.id?'#'+n.id:null):null}
+function morphChildren(live,next){
+  const want=[...next.childNodes];
+  const byKey=new Map();
+  for(const n of live.childNodes){const k=nodeKey(n);if(k)byKey.set(k,n)}
+  let i=0;
+  for(const nb of want){
+    const k=nodeKey(nb);
+    let match=k?byKey.get(k):null;
+    if(!match&&!k){
+      const cand=live.childNodes[i];
+      if(cand&&nodeKey(cand)===null&&cand.nodeType===nb.nodeType&&(cand.nodeType!==1||cand.tagName===nb.tagName))match=cand;
+    }
+    if(match){
+      if(live.childNodes[i]!==match)live.insertBefore(match,live.childNodes[i]||null);
+      if(match.nodeType===3){if(match.data!==nb.data)match.data=nb.data}
+      else if(match.outerHTML!==nb.outerHTML)morphNode(match,nb);
+    }else{
+      live.insertBefore(nb.cloneNode(true),live.childNodes[i]||null);
+    }
+    i++;
+  }
+  while(live.childNodes.length>want.length)live.removeChild(live.lastChild);
+}
+function morphNode(live,next){
+  for(const at of [...next.attributes])if(live.getAttribute(at.name)!==at.value)live.setAttribute(at.name,at.value);
+  for(const at of [...live.attributes])if(!next.hasAttribute(at.name))live.removeAttribute(at.name);
+  morphChildren(live,next);
+}
+function patchView(v,html){
+  if(!v.firstChild){v.innerHTML=html;return}
+  const tmp=document.createElement('div');tmp.innerHTML=html;
+  morphChildren(v,tmp);
+}
+function boardHtml(b){
+  const errs=(b.findings||[]).filter(f=>f.severity==='error').length;
+  return '<div id="bstats">'+chips(b.distribution)+(errs?'<div class="err">'+errs+' lint error(s)</div>':'')+'</div>'
+    +'<div id="bcols">'+colsHtml(b)+'</div>';
+}
 async function refreshBoard(quiet){
   let b;try{b=await api('/api/projects/'+SEL+'/board')}catch(err){if(!quiet)$('#view').innerHTML='<div class="err">'+esc(err.message)+'</div>';return}
   if(quiet&&JSON.stringify(b)===JSON.stringify(BOARD))return;
   BOARD=b;
   const pi=$('#pinfo');if(pi)pi.textContent=b.cards+' cards · '+pct(b.progress);
-  const errs=(b.findings||[]).filter(f=>f.severity==='error').length;
   const v=$('#view');if(!v)return;
-  v.innerHTML=chips(b.distribution)+(errs?'<div class="err">'+errs+' lint error(s)</div>':'')+colsHtml(b);
+  patchView(v,boardHtml(b));
   v.onclick=boardClicks;
+  v.onkeydown=boardKeys;
 }
 // ---- public (shared link) mode: read-only, no org chrome ----
 async function publicStart(){
@@ -599,22 +685,27 @@ async function publicStart(){
   },4000);
 }
 function renderPublic(b){
+  const fresh=!BOARD;
   BOARD=b;
   document.title=b.name+' · botflow';
-  document.body.innerHTML='<header class="top"><h1>'+esc(b.name)+' <span class="sub">shared board · read only</span></h1>'
-    +'<div class="meter"><div class="track"><div class="fill" style="width:'+Math.round((b.progress||0)*100)+'%"></div></div><b>'+pct(b.progress)+'</b></div>'
-    +'<span id="hstrip">'+strip(b.distribution)+'</span><span class="spacer"></span></header>'
-    +'<div class="view" id="view" style="flex:1;overflow:auto">'+chips(b.distribution)+colsHtml(b)+'</div>'
-    +'<div class="pubfoot">shared with botflow: git-native kanban for AI agents. <a href="/about">learn more</a></div>'
-    +'<div id="drawer"></div>';
-  $('#view').onclick=boardClicks;
+  if(fresh){
+    document.body.innerHTML='<header class="top"><h1>'+esc(b.name)+' <span class="sub">shared board · read only</span></h1>'
+      +'<div class="meter" id="hmeter"></div><span id="hstrip"></span><span class="spacer"></span></header>'
+      +'<div class="view" id="view" style="flex:1;overflow:auto"></div>'
+      +'<div class="pubfoot">shared with botflow: git-native kanban for AI agents. <a href="/about">learn more</a></div>';
+    $('#view').onclick=boardClicks;
+    $('#view').onkeydown=boardKeys;
+  }
+  $('#hmeter').innerHTML='<div class="track"><div class="fill" style="width:'+Math.round((b.progress||0)*100)+'%"></div></div><b>'+pct(b.progress)+'</b>';
+  $('#hstrip').innerHTML=strip(b.distribution);
+  patchView($('#view'),boardHtml(b));
 }
 // ---- the card modal ----
 async function openCard(cid,tab){
   let c;try{c=await api(cardApi(cid))}catch(err){return}
   MODAL=cid;
   const t=tab||'card';
-  const m=overlay(cardModalHtml(c,t),'cardmodal');
+  const m=overlay(cardModalHtml(c,t),'cardmodal',c.id+' '+c.title);
   wireCardModal(m,c,t);
 }
 function cardModalHtml(c,tab){
@@ -626,11 +717,11 @@ function cardModalHtml(c,tab){
   if(c.blocked)meta.push('<span class="badges"><span class="blk">⛔ '+esc(c.blocked)+'</span></span>');
   const tabs=[['card','card'],['chat','chat '+((p.comments||[]).length||'')],['activity','activity']];
   return (c.cover?'<img class="banner" src="'+esc(c.cover)+'" alt="">':'')
-    +'<div class="inner"><button class="close ghost" data-x>✕</button>'
+    +'<div class="inner"><button class="close ghost" data-x aria-label="close card">✕</button>'
     +'<div class="cid">'+esc(c.id)+'</div><h2>'+esc(c.title)+'</h2>'
     +'<div class="metaline">'+meta.join(' ')+'</div>'
-    +'<div class="tabbar">'+tabs.map(([id,lbl])=>'<button data-ctab="'+id+'" class="'+(id===tab?'on':'')+'">'+lbl+'</button>').join('')+'</div>'
-    +'<div class="pane">'+(tab==='card'?paneCard(c):tab==='chat'?paneChat(c):paneActivity(c))+'</div></div>';
+    +'<div class="tabbar" role="tablist">'+tabs.map(([id,lbl])=>'<button data-ctab="'+id+'" role="tab" aria-selected="'+(id===tab)+'" class="'+(id===tab?'on':'')+'">'+lbl+'</button>').join('')+'</div>'
+    +'<div class="pane" role="tabpanel">'+(tab==='card'?paneCard(c):tab==='chat'?paneChat(c):paneActivity(c))+'</div></div>';
 }
 function paneCard(c){
   const p=c.parsed||{};
@@ -642,7 +733,7 @@ function paneCard(c){
   for(const cl of p.checklists||[]){
     const done=cl.items.filter(i=>i.checked).length;
     out+='<div class="cl"><h4>'+esc(cl.section)+'</h4><div class="clhead"><span>'+done+'/'+cl.items.length+'</span><div class="clbar"><i style="width:'+Math.round(done/cl.items.length*100)+'%"></i></div></div>'
-      +cl.items.map(i=>'<div class="item '+(i.checked?'done':'')+'" '+(RO?'':'data-check="'+i.index+'" data-on="'+i.checked+'"')+' style="'+(RO?'cursor:default':'')+'"><span class="box">'+(i.checked?IC.tick:'')+'</span><span class="txt">'+esc(i.text)+'</span></div>').join('')
+      +cl.items.map(i=>'<div class="item '+(i.checked?'done':'')+'" '+(RO?'':'data-check="'+i.index+'" data-on="'+i.checked+'" role="checkbox" aria-checked="'+i.checked+'" tabindex="0"')+' style="'+(RO?'cursor:default':'')+'"><span class="box">'+(i.checked?IC.tick:'')+'</span><span class="txt">'+esc(i.text)+'</span></div>').join('')
       +'</div>';
   }
   const atts=p.attachments||[];
@@ -693,6 +784,13 @@ function wireCardModal(m,c,tab){
       formModal('Attach a link',[{name:'url',label:'url (images join the gallery)',required:true},{name:'label',label:'label (optional)'}],'attach',async d=>{
         await api('/api/projects/'+SEL+'/cards/'+c.id+'/attach',{method:'POST',body:JSON.stringify({url:d.url,label:d.label||undefined})});openCard(c.id,'card')});
     }
+  });
+  m.addEventListener('keydown',async e=>{
+    if(RO||(e.key!=='Enter'&&e.key!==' '))return;
+    const chk=e.target.closest('[data-check]');
+    if(chk){e.preventDefault();
+      await api('/api/projects/'+SEL+'/cards/'+c.id+'/check',{method:'POST',body:JSON.stringify({index:Number(chk.dataset.check),checked:chk.dataset.on!=='true'})});
+      openCard(c.id,'card')}
   });
   const composer=m.querySelector('.composer');
   if(composer)composer.onsubmit=async e=>{e.preventDefault();
