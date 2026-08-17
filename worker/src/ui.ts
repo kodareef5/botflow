@@ -132,6 +132,7 @@ table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink2)}
 .lanerow.dead{opacity:.55}
 .lanerow.dead .lid{text-decoration:line-through}
 .lanerow .mig{display:inline-flex;gap:5px;align-items:center;font-size:11.5px;color:var(--st-blocked)}
+.lanerow .mig[hidden]{display:none}
 .editor h4{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:14px 0 6px}
 .editor .rollups{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px}
 .editor .rollups label{display:flex;flex-direction:column;gap:3px;color:var(--ink2)}

@@ -116,6 +116,16 @@ footer h3{font-size:13px;margin-bottom:8px;color:var(--ink2)}
 #drawer .body pre{background:var(--page);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:10px;overflow-x:auto;font:12px ui-monospace,Menlo,monospace;margin:6px 0}
 .empty{color:var(--muted);font-size:12px;padding:6px 4px}
 
+@media (max-width: 760px){
+  header{padding:10px 12px;gap:10px 16px}
+  .meter .track{width:90px}
+  .dist{min-width:0}
+  main{padding:10px 12px 30px;scroll-snap-type:x mandatory}
+  .col{width:84vw;min-width:84vw;scroll-snap-align:start}
+  #drawer{width:100vw}
+  .themectl{order:9}
+}
+
 /* Per-world flair, ported compactly from the manager's sheet. */
 html[data-style=harbor] body{background-image:radial-gradient(circle at 5% 0%,color-mix(in srgb,var(--acc) 14%,transparent) 0,transparent 30%);background-attachment:fixed}
 html[data-style=harbor] .card{border-color:color-mix(in srgb,var(--grid) 76%,transparent);box-shadow:inset 0 3px 0 color-mix(in srgb,var(--acc) 38%,transparent)}
