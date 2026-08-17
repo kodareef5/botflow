@@ -42,3 +42,13 @@ test('viewer: static html embeds the full tree snapshot', () => {
   assert.ok(!html.includes('<script src'), 'no external scripts');
   assert.ok(!html.includes('https://'), 'fully self-contained');
 });
+
+test('viewer: shared theme layer ships and its scripts parse', () => {
+  const html = viewerHtml(null, { live: true });
+  for (const script of [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]!)) {
+    new Function(script); // eslint-disable-line no-new-func
+  }
+  for (const needle of ['__THEMES__', 'applyTheme', 'data-style=harbor', 'data-style=blockparty', 'id="tstyle"', '--st-doing']) {
+    assert.ok(html.includes(needle), `viewer page missing: ${needle}`);
+  }
+});
