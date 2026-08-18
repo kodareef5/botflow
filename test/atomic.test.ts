@@ -128,12 +128,29 @@ test('a lock held by a live process makes mutations fail fast and clean', () => 
   }
 });
 
-test('a stale-mtime lock with a live-looking pid is reaped after the threshold', () => {
+test('a LIVE owner is never age-reaped, however old the lock looks', () => {
   const dir = freshBoard();
   try {
     const lock = join(dir, '.botflow', 'board.lock');
-    // An unlikely-but-possibly-alive pid plus an ancient mtime: age wins.
-    writeFileSync(lock, `99999999 ${new Date().toISOString()}\n`);
+    // Our own (alive) pid with an ancient mtime: liveness must win over age,
+    // or a long legitimate hold gets its lock stolen mid-critical-section.
+    writeFileSync(lock, `${process.pid} ${new Date().toISOString()}\n`);
+    const old = (Date.now() - 60_000) / 1000;
+    utimesSync(lock, old, old);
+    const res = runSync(dir, 'thief', { BOTFLOW_LOCK_STALE_MS: '1000', BOTFLOW_LOCK_TIMEOUT_MS: '300' }, 'card', 'add', 'must not enter');
+    assert.notEqual(res.code, 0, 'mutation must wait, not steal');
+    assert.match(res.stderr, /locked/);
+    assert.deepEqual(readdirSync(join(dir, '.botflow', 'cards')), [], 'nothing written past a live lock');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a lock with unreadable pid content falls back to mtime aging', () => {
+  const dir = freshBoard();
+  try {
+    const lock = join(dir, '.botflow', 'board.lock');
+    writeFileSync(lock, 'not-a-pid at all\n');
     const old = (Date.now() - 60_000) / 1000;
     utimesSync(lock, old, old);
     const res = runSync(dir, 'reaper', { BOTFLOW_LOCK_STALE_MS: '5000' }, 'card', 'add', 'aged out');

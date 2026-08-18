@@ -108,6 +108,28 @@ test('unsatisfied and dangling deps are "deps" conflicts; done deps clear', () =
   assert.equal(res.card.laneId, 'doing');
 });
 
+test('board-cards never enter the ready queue, so ready and claim agree', async () => {
+  const { analyzeSingle } = await import('../src/core/analyze.ts');
+  const b = boardFromDocuments(
+    `botflow: 0
+name: containers
+lanes:
+  - id: todo
+  - id: doing
+  - id: done
+`,
+    [
+      card('001', { lane: 'todo' }),
+      { path: 'cards/002-sub.md', text: '---\nid: 002\ntitle: sub project\nlane: todo\ntype: board\nboard: ./sub\n---\n' },
+    ],
+  );
+  const analysis = analyzeSingle(b);
+  assert.deepEqual(analysis.ready, ['001'], 'only the task card is ready');
+  // Claiming the container explicitly is still judged by its own lane.
+  const res = opClaim(b, b.cards.find((c) => c.id === '002')!, 'a');
+  assert.equal(res.card.laneId, 'doing');
+});
+
 test('force overrides any conflict and the log says so', () => {
   const b = board([card('001', { lane: 'wishlist', assignee: 'agent-a' })]);
   const res = opClaim(b, b.cards[0]!, 'agent-b', true);

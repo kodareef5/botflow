@@ -78,7 +78,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
     },
     {
       name: 'ready',
-      description: 'Cards that are unblocked and ready to claim (effective state todo, deps satisfied).',
+      description: 'Task cards that are unblocked and ready to claim (effective state todo, deps satisfied). Project/board cards are containers and never appear.',
       inputSchema: schema([], {}),
       run: () => {
         const { tree, analysis } = view();

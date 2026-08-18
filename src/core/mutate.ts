@@ -55,19 +55,25 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** Remove a lock whose owner is gone (dead pid) or forgot it (stale mtime). */
+/** Remove a lock whose owner is provably gone. A live pid is NEVER age-reaped:
+ *  long legitimate holds (a big pull applying hundreds of cards) must not have
+ *  the lock stolen mid-flight. The mtime fallback exists only for locks whose
+ *  pid cannot be read or judged (garbage content, cross-host filesystems). */
 function reapStaleLock(lock: string): void {
   try {
     const pid = Number(readFileSync(lock, 'utf8').trim().split(/\s/)[0]);
-    let dead = false;
     if (Number.isInteger(pid) && pid > 0) {
       try {
         process.kill(pid, 0);
+        return; // owner is alive: the lock is real, wait for it
       } catch (err) {
-        dead = (err as NodeJS.ErrnoException).code === 'ESRCH';
+        // EPERM etc means the process exists but is not ours: still alive.
+        if ((err as NodeJS.ErrnoException).code !== 'ESRCH') return;
       }
+      unlinkSync(lock); // owner is dead: reap immediately
+      return;
     }
-    if (dead || Date.now() - statSync(lock).mtimeMs > lockStaleMs()) unlinkSync(lock);
+    if (Date.now() - statSync(lock).mtimeMs > lockStaleMs()) unlinkSync(lock);
   } catch {
     // Racing reapers or an owner that just released: the retry loop resolves it.
   }

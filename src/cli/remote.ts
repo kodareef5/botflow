@@ -5,9 +5,12 @@
 // The sync contract (SPEC §12): repo documents are truth; hosted state is a
 // snapshot of them plus a manager overlay (hosted-native project cards
 // survive a push). Push and pull are whole-board snapshots, last write wins,
-// and every import lands in the audit log. Pull validates the entire remote
-// snapshot before touching a single file and refuses to overwrite
-// uncommitted board changes unless forced.
+// and every import lands in the audit log. Push captures its snapshot under
+// the board lock (one local instant). Pull is a validated, crash-safe
+// snapshot apply: the whole remote snapshot validates before any write, the
+// dirty-tree gate and the apply run under the board lock, and every write is
+// temp+rename; the set is not atomic, so an interrupted pull leaves valid
+// files that a re-run converges.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -54,7 +57,9 @@ async function call(remote: RemoteConfig, token: string, path: string, init?: Re
 }
 
 export async function push(root: string, token: string, actor: string): Promise<{ imported: number; findings: number }> {
-  const { configText, cards } = readBoardDocuments(root);
+  // Capture the snapshot under the board lock so it represents one local
+  // instant, then release before any network I/O.
+  const { configText, cards } = withBoardLock(root, () => readBoardDocuments(root));
   if (configText === null) throw new UsageError('no board.yaml to push');
   const remote = loadRemote(root);
   return (await call(remote, token, '/import', {
@@ -63,10 +68,12 @@ export async function push(root: string, token: string, actor: string): Promise<
   })) as { imported: number; findings: number };
 }
 
-/** Board files with uncommitted git changes (tracked edits or untracked
- *  files). Outside a git repo, or without git, there is nothing to guard. */
+/** Files pull would replace or delete (board.yaml, cards/**) that git has
+ *  uncommitted changes for. Deliberately scoped: remote.yaml and other board
+ *  metadata are not pull's blast radius. Outside a git repo, or without git,
+ *  there is nothing to guard. */
 function dirtyBoardFiles(root: string): string[] {
-  const res = spawnSync('git', ['status', '--porcelain', '--', '.'], { cwd: root, encoding: 'utf8' });
+  const res = spawnSync('git', ['status', '--porcelain', '--', 'board.yaml', 'cards'], { cwd: root, encoding: 'utf8' });
   if (res.error || res.status !== 0) return [];
   return res.stdout
     .split('\n')
@@ -83,22 +90,24 @@ export async function pull(root: string, token: string, force = false): Promise<
   if ('error' in validation) throw new UsageError(`refusing pull, remote snapshot is invalid: ${validation.error}`);
   const docs = validation.docs;
 
-  // Gate 2: never destroy work git has not seen. Snapshot pull removes local
-  // cards missing remotely, so uncommitted changes need an explicit --force.
-  if (!force) {
-    const dirty = dirtyBoardFiles(root);
-    if (dirty.length > 0) {
-      const shown = dirty.slice(0, 5).map((f) => `  ${f}`).join('\n');
-      throw new UsageError(
-        `refusing pull: ${dirty.length} board file(s) have uncommitted changes:\n${shown}${dirty.length > 5 ? '\n  …' : ''}\ncommit or stash first, or re-run with --force`,
-      );
-    }
-  }
-
-  // Apply under the board lock: config, upserts, then snapshot deletions,
-  // each write crash-safe. Validation already passed, so nothing here can
-  // half-transform the checkout on bad data.
+  // Everything local happens under the board lock, INCLUDING the dirty-tree
+  // gate: checking before taking the lock would let another process create
+  // work in the gap that the apply then destroys. What follows is a
+  // validated, crash-safe snapshot apply: each write is temp+rename, but the
+  // set is not atomic; an interrupted pull leaves valid files that a re-run
+  // converges.
   return withBoardLock(root, () => {
+    // Gate 2: never destroy work git has not seen. Snapshot pull removes
+    // local cards missing remotely, so uncommitted changes need --force.
+    if (!force) {
+      const dirty = dirtyBoardFiles(root);
+      if (dirty.length > 0) {
+        const shown = dirty.slice(0, 5).map((f) => `  ${f}`).join('\n');
+        throw new UsageError(
+          `refusing pull: ${dirty.length} board file(s) have uncommitted changes:\n${shown}${dirty.length > 5 ? '\n  …' : ''}\ncommit or stash first, or re-run with --force`,
+        );
+      }
+    }
     atomicWrite(join(root, 'board.yaml'), data.config as string);
     let written = 0;
     for (const doc of docs) {

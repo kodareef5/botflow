@@ -105,13 +105,16 @@ button; files land in R2, cards record a normal markdown attachment line pointin
 files. Without the binding everything else works and uploads simply stay hidden.
 Note that the company export carries a manifest of uploaded keys but not the bytes:
 back the bucket up separately (`wrangler r2 object get`, rclone, or dashboard tools)
-before deleting anything whose files you want to keep.
+before deleting anything whose files you want to keep. Uploaded file URLs are permanent
+bearer capabilities (128-bit random keys): anyone holding a URL can fetch that file, and
+revoking a share link does not revoke file URLs that were already copied.
 
 The sync contract: your repo's documents are truth, and sync is a whole-board snapshot
 (last write wins). The hosted board is that snapshot plus a manager overlay: sub-projects
 created in the manager survive a push even though your repo never carried them. Both
-directions validate the entire snapshot before writing anything, and `pull` refuses to
-overwrite uncommitted board changes unless you pass `--force`.
+directions validate the entire snapshot before writing anything, every write is
+crash-safe, and `pull` refuses to overwrite uncommitted board changes unless you pass
+`--force`. An interrupted pull leaves only valid files; re-running it converges.
 
 ## What it looks like
 

@@ -130,9 +130,15 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     const conflict = lost.body['conflict'] as { reason: string; holder: string };
     assert.equal(conflict.reason, 'assigned');
     assert.equal(conflict.holder, 'alpha-agent');
+    const agentForce = await call(`/api/projects/${parent}/cards/${own}/claim`, { method: 'POST', token: key, body: JSON.stringify({ force: true }) });
+    assert.equal(agentForce.status, 403, 'force is an admin-only override');
+    const agentForceMove = await call(`/api/projects/${parent}/cards/${own}/move`, { method: 'POST', token: key, body: JSON.stringify({ to: 'done', force: true }) });
+    assert.equal(agentForceMove.status, 403, 'forced moves are admin-only too');
     const forcedClaim = await call(`/api/projects/${parent}/cards/${own}/claim`, { method: 'POST', token: admin, body: JSON.stringify({ force: true }) });
     assert.equal(forcedClaim.status, 200);
     assert.equal(forcedClaim.body['assignee'], 'admin', 'force takes the card');
+    const forceAudit = (await call('/api/org/activity?limit=10', { token: admin })).body as unknown as { action: string }[];
+    assert.ok(forceAudit.some((a) => a.action === 'force-override'), 'admin force use lands in the org audit log');
 
     // Scoping: a card referencing an unrelated project is rejected, and a
     // smuggled ref (via board import) leaks nothing at resolution time.
@@ -282,7 +288,7 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     });
     assert.equal(uploaded.status, 200, JSON.stringify(await uploaded.clone().json().catch(() => ({}))));
     const upUrl = ((await uploaded.json()) as { url: string }).url;
-    assert.match(upUrl, new RegExp(`^/files/${parent}/001/[a-f0-9]{16}-shot\\.png$`));
+    assert.match(upUrl, new RegExp(`^/files/${parent}/001/[a-f0-9]{32}-shot\\.png$`), '128-bit capability segment');
     const served = await fetch(U + upUrl);
     assert.equal(served.status, 200);
     assert.equal(served.headers.get('content-type'), 'image/png');

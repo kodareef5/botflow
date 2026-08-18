@@ -32,7 +32,9 @@ test('analyzeSingle rolls up injected children and leaves cycles alone', () => {
   // progress: task 1 + child 1/3 + unresolved todo 0 over 3 units
   assert.equal(Math.round(ba.progress! * 1000), Math.round((1 + 1 / 3) / 3 * 1000));
   assert.ok(ba.findings.some((f) => f.rule === 'rollup-drift' && f.ref === '002'));
-  assert.equal(ba.ready.length, 1); // 003 fell back to todo, no deps
+  // 003 fell back to todo, but board-cards are containers, never claimable
+  // work: the ready queue only ever holds task cards (SPEC §5).
+  assert.equal(ba.ready.length, 0);
 });
 
 test('analyzeSingle without children treats board-cards as unresolved, no drift noise', () => {

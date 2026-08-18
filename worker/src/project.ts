@@ -440,14 +440,14 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
         case 'move': {
           const res = opMove(board, card, String(args['to']), actor, args['force'] === true);
           this.persistCard(card);
-          this.event(actor, 'move', id, `${res.from} → ${res.to}`);
+          this.event(actor, 'move', id, `${res.from} → ${res.to}${args['force'] === true ? ' (forced)' : ''}`);
           return { id, from: res.from, to: res.to, warnings: res.warnings };
         }
         case 'claim': {
           const res = opClaim(board, card, actor, args['force'] === true);
           if (res.alreadyYours) return { id, at: res.to, assignee: card.assignee, alreadyYours: true };
           this.persistCard(card);
-          this.event(actor, 'claim', id, `${res.from} → ${res.to}`);
+          this.event(actor, 'claim', id, `${res.from} → ${res.to}${args['force'] === true ? ' (forced)' : ''}`);
           return { id, from: res.from, to: res.to, assignee: card.assignee, warnings: res.warnings };
         }
         case 'close': {

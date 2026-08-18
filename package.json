@@ -1,7 +1,7 @@
 {
   "name": "botflow",
   "version": "0.1.0",
-  "description": "Git-native kanban spec + engine for AI agents",
+  "description": "A workflow protocol your repo can carry: specialty agent workflows project onto six canonical states and compose recursively. Git-native kanban for AI agents.",
   "type": "module",
   "license": "MIT",
   "engines": {

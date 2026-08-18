@@ -739,7 +739,10 @@ export default {
           if (bytes.byteLength === 0) return json({ error: 'empty upload' }, 400);
           if (bytes.byteLength > MAX_UPLOAD) return json({ error: 'upload exceeds 10 MiB' }, 413);
           if ((await stub.card(cid)) === null) return json({ error: `no card ${cid}` }, 404);
-          const rand = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('');
+          // 128 bits of key entropy: the URL is a permanent bearer capability
+          // (it must render in <img> and on public pages), so make guessing
+          // absurd. Revoking a share never revokes a copied file URL.
+          const rand = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
           const key = `${pid}/${cid}/${rand}-${name}`;
           await env.ATTACHMENTS.put(key, bytes, { httpMetadata: { contentType: type } });
           const res = await stub.action('attach', cid, { url: `/files/${key}`, label: name }, actorOf({ actor: url.searchParams.get('actor') ?? '' }));
@@ -751,6 +754,15 @@ export default {
         }
         if (req.method === 'POST' && action !== undefined) {
           const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+          // force is an authorization capability, not an operation flag: it
+          // bypasses claim conflicts and strict-lane rules, so only the
+          // human operator gets it (SPEC §12). Its use is separately audited.
+          if (body['force'] === true) {
+            if (identity.kind !== 'admin') {
+              return json({ error: 'force is an admin override: agents coordinate, they do not push through' }, 403);
+            }
+            await registry.audit('admin', 'force-override', `${action} on ${pid}/${cid}`);
+          }
           // Detaching an uploaded file also drops the R2 object (best effort).
           // Only objects uploaded to THIS card qualify: an attachment line can
           // reference any URL, and detaching a reference to someone else's

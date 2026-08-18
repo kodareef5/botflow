@@ -108,3 +108,24 @@ test('pull: uncommitted board changes refuse without --force, apply with it', as
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('pull: the dirty guard covers only what pull replaces, not remote.yaml', async () => {
+  const { server, url } = await serveExport({ config: GOOD_CONFIG, cards: [GOOD_CARD] });
+  const { dir, root } = boardDir(url);
+  try {
+    const git = (...args: string[]) => {
+      const res = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: dir, encoding: 'utf8' });
+      assert.equal(res.status, 0, res.stderr);
+    };
+    git('init', '-q');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'baseline');
+    // Only remote.yaml is dirty: pull does not touch it, so no refusal.
+    writeFileSync(join(root, 'remote.yaml'), `url: ${url}\nproject: p-test\n# tweaked\n`);
+    const res = await pull(root, 'bfk_test');
+    assert.deepEqual(res, { written: 1, removed: 1 });
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

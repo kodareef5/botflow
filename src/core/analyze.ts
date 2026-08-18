@@ -14,7 +14,8 @@ export interface BoardAnalysis {
   /** Effective canonical state per card id (rollup-aware for board-cards). */
   canonical: Map<string, Canonical>;
   distribution: Distribution;
-  /** Card ids whose effective state is todo with all deps done/archive, sorted. */
+  /** Task-card ids whose effective state is todo with all deps done/archive,
+   *  sorted. Board-cards are containers, never claimable work, never listed. */
   ready: string[];
   /** Weighted done fraction over countable cards; null when nothing counts. */
   progress: number | null;
@@ -121,7 +122,9 @@ export function analyzeBoard(board: LoadedBoard, lookup: ChildLookup): BoardAnal
       const depState = canonical.get(dep)!;
       if (depState !== 'done' && depState !== 'archive') depsSatisfied = false;
     }
-    if (canonical.get(card.id) === 'todo' && depsSatisfied) ready.push(card.id);
+    // Only task cards are claimable work: a board-card is a container whose
+    // state is a rollup view, so it never sits in the work queue (SPEC §5).
+    if (card.type === 'task' && canonical.get(card.id) === 'todo' && depsSatisfied) ready.push(card.id);
   }
   ready.sort();
 
