@@ -101,6 +101,14 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     const childP = (await call('/api/projects', { method: 'POST', token: admin, body: JSON.stringify({ parent, name: 'child', lane: 'doing' }) })).body['id'] as string;
     const stranger = (await call('/api/projects', { method: 'POST', token: admin, body: JSON.stringify({ space, name: 'stranger' }) })).body['id'] as string;
 
+    // A sub-project whose parent card cannot be created must not survive as
+    // a registry orphan: the create compensates and fails whole.
+    const badLane = await call('/api/projects', { method: 'POST', token: admin, body: JSON.stringify({ parent, name: 'ghost', lane: 'no-such-lane' }) });
+    assert.equal(badLane.status, 400, 'invalid parent lane rejects the sub-project');
+    const orgTree0 = (await call('/api/org', { token: admin })).body as { spaces: { projects: { name: string; children: { name: string }[] }[] }[] };
+    const parentNode0 = orgTree0.spaces[0]!.projects.find((p) => p.name === 'parent')!;
+    assert.ok(!parentNode0.children.some((c) => c.name === 'ghost'), 'no orphan child in the org tree');
+
     // Agent key on parent; actor forgery must be impossible.
     const key = (await call(`/api/projects/${parent}/keys`, { method: 'POST', token: admin, body: JSON.stringify({ label: 'alpha-agent' }) })).body['token'] as string;
     const own = (await call(`/api/projects/${parent}/cards`, { method: 'POST', token: key, body: JSON.stringify({ title: 'Own task', actor: 'admin' }) })).body['id'] as string;
@@ -299,6 +307,14 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.equal((await fetch(U + evilUrl)).status, 404, 'detached upload is gone from storage');
     assert.equal((await call('/api/org', { token: admin })).body['uploads'], true, 'org advertises uploads');
 
+    // Detaching a REFERENCE to someone else's /files/ key must never delete
+    // their object: only same-card uploads are purged.
+    await call(`/api/projects/${stranger}/cards/001/attach`, { method: 'POST', token: admin, body: JSON.stringify({ url: upUrl, label: 'borrowed' }) });
+    const strangerCard = (await call(`/api/projects/${stranger}/cards/001`, { token: admin })).body as unknown as { parsed: { attachments: { index: number; url: string }[] } };
+    const borrowedIdx = strangerCard.parsed.attachments.find((a) => a.url === upUrl)!.index;
+    await call(`/api/projects/${stranger}/cards/001/detach`, { method: 'POST', token: admin, body: JSON.stringify({ index: borrowedIdx }) });
+    assert.equal((await fetch(U + upUrl)).status, 200, 'foreign object survives a cross-project detach');
+
     // Post-import the board holds 001 (own task) and 002 (sneak): scope to 001.
     const cardShare = (await call(`/api/projects/${parent}/shares`, { method: 'POST', token: admin, body: JSON.stringify({ label: 'one card', card: '001' }) })).body['token'] as string;
     assert.equal((await call(`/api/public/${cardShare}/cards/001`)).status, 200, 'the scoped card is visible');
@@ -318,6 +334,8 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     const exported = (await call('/api/org/export', { token: admin })).body as Record<string, unknown>;
     assert.equal(exported['version'], 2);
     assert.ok(Array.isArray(exported['keys']) && (exported['keys'] as unknown[]).length === 1, 'keys exported');
+    const manifest = exported['uploads'] as { key: string }[];
+    assert.ok(manifest.some((u) => upUrl === `/files/${u.key}`), 'export manifests uploaded objects');
     await call('/api/settings', {
       method: 'POST', token: admin,
       body: JSON.stringify({ style: 'harbor', accent: 'pacific', mode: 'light', density: 'relaxed' }),

@@ -103,6 +103,9 @@ Binary attachment uploads are opt-in: create an R2 bucket and bind it as `ATTACH
 button; files land in R2, cards record a normal markdown attachment line pointing at
 `/files/…`, images join the gallery and cover art, and deleting a project purges its
 files. Without the binding everything else works and uploads simply stay hidden.
+Note that the company export carries a manifest of uploaded keys but not the bytes:
+back the bucket up separately (`wrangler r2 object get`, rclone, or dashboard tools)
+before deleting anything whose files you want to keep.
 
 The sync contract: your repo's documents are truth, and sync is a whole-board snapshot
 (last write wins). The hosted board is that snapshot plus a manager overlay: sub-projects
@@ -136,7 +139,7 @@ character, color, type, shape, and rhythm change together.
 | `test/fixtures/` | Golden boards; the spec's conformance vectors |
 | `src/core/` | Engine: parse → model → lint → project → rollup, pure ops |
 | `src/cli/` | The `botflow` CLI (incl. push/pull sync) |
-| `src/mcp/` | MCP server (stdio JSON-RPC, 13 tools) |
+| `src/mcp/` | MCP server (stdio JSON-RPC, 18 tools) |
 | `src/viewer/` | Read-only local board UI (`botflow serve`, `board --html`) |
 | `worker/` | Cloudflare manager: registry DO + project DOs + operator UI |
 | `templates/basic/` | Workspace template ("kanban batteries") |

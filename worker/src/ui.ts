@@ -1077,7 +1077,7 @@ function renderSettings(main){
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">company data</h4>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button id="orgexp">download company export</button>'
     +'<button id="demoload">load the Scoops Empire demo</button></div>'
-    +'<p style="color:var(--muted);font-size:12px;margin-top:6px">The export is restore-grade JSON: every space, project, board, card, key hash, and share link. Store it like a credential. The demo adds a sample ice cream company as a new space.</p>'
+    +'<p style="color:var(--muted);font-size:12px;margin-top:6px">The export is restore-grade JSON: every space, project, board, card, key hash, and share link. Store it like a credential. Uploaded files are NOT inside it: they live in the R2 bucket (the export lists their keys), so back the bucket up separately before any deletion. The demo adds a sample ice cream company as a new space.</p>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">manage: spaces and projects</h4>'
     +'<div id="mtree" style="max-width:560px"></div>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">manage: share links</h4>'
@@ -1136,11 +1136,11 @@ function renderSettings(main){
     const dp=e.target.closest('[data-delproj]');
     if(dp){const n=dp.dataset.name,c=Number(dp.dataset.count);
       confirmModal('Delete project',"Permanently deletes '"+esc(n)+"'"+(c>1?' and its '+(c-1)+' nested project(s)':'')
-        +': boards, cards, keys, and share links. No undo. Download a company export first if unsure.',
+        +': boards, cards, keys, share links, and uploaded files. No undo, and uploads are not inside the JSON export: back the bucket up separately if they matter.',
         'delete forever',async()=>{await api('/api/projects/'+dp.dataset.delproj,{method:'DELETE'});await start()});return}
     const dsp=e.target.closest('[data-delspace]');
     if(dsp){const n=dsp.dataset.name,c=Number(dsp.dataset.count);
-      confirmModal('Delete space',"Permanently deletes the space '"+esc(n)+"' and all "+c+" project(s) inside it: boards, cards, keys, and share links. No undo. Download a company export first if unsure.",
+      confirmModal('Delete space',"Permanently deletes the space '"+esc(n)+"' and all "+c+" project(s) inside it: boards, cards, keys, share links, and uploaded files. No undo, and uploads are not inside the JSON export: back the bucket up separately if they matter.",
         'delete forever',async()=>{await api('/api/spaces/'+dsp.dataset.delspace,{method:'DELETE'});await start()});return}
     const dsh=e.target.closest('[data-delsh]');
     if(dsh){await api('/api/shares/'+dsh.dataset.delsh,{method:'DELETE'});renderSettings(main);return}

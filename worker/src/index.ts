@@ -39,6 +39,18 @@ export interface Env {
 const INLINE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'application/pdf', 'text/plain']);
 const MAX_UPLOAD = 10 * 1024 * 1024;
 
+/** Every uploaded object's key/size/type: the export's uploads manifest. */
+async function listUploadManifest(bucket: R2Bucket): Promise<{ key: string; size: number; contentType: string | null }[]> {
+  const out: { key: string; size: number; contentType: string | null }[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const batch = await bucket.list({ limit: 1000, ...(cursor ? { cursor } : {}) });
+    for (const o of batch.objects) out.push({ key: o.key, size: o.size, contentType: o.httpMetadata?.contentType ?? null });
+    if (!batch.truncated) return out;
+    cursor = batch.cursor;
+  }
+}
+
 const json = (value: unknown, status = 200): Response =>
   new Response(JSON.stringify(value, null, 2), { status, headers: { 'content-type': 'application/json' } });
 
@@ -385,6 +397,10 @@ export default {
             token: s.token, projectId: s.projectId, label: s.label, created: s.created, revoked: s.revoked,
             ...(s.cardId ? { cardId: s.cardId } : {}),
           })),
+          // Uploaded binaries stay in R2: the export carries a manifest of
+          // them, not the bytes. Back the bucket up separately; a restore
+          // into a bucket missing these keys has broken attachment links.
+          ...(env.ATTACHMENTS ? { uploads: await listUploadManifest(env.ATTACHMENTS) } : {}),
           spaces: await Promise.all(
             tree.spaces.map(async (s) => ({ name: s.name, projects: await Promise.all(s.projects.map(exportNode)) })),
           ),
@@ -521,11 +537,18 @@ export default {
         await project(res.id).ensureInit(body.name);
         // Projects can be cards: the sub-project appears as a project card in
         // the parent's board: one nesting mechanism, same as the file spec.
+        // If the parent card cannot be created (bad lane, say), the child
+        // registry entry must not survive as an orphan: compensate and fail.
         if (body.parent) {
-          await project(body.parent).addCard(
+          const cardRes = await project(body.parent).addCard(
             { title: body.name, type: 'board', boardPath: `project:${res.id}`, lane: body.lane },
             actorOf(body as Record<string, unknown>),
           );
+          if ('error' in cardRes) {
+            await registry.deleteProjectCascade(res.id, 'system');
+            await project(res.id).destroy().catch(() => {});
+            return json({ error: `parent board rejected the project card: ${cardRes.error}` }, 400);
+          }
         }
         return json(res);
       }
@@ -729,11 +752,14 @@ export default {
         if (req.method === 'POST' && action !== undefined) {
           const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
           // Detaching an uploaded file also drops the R2 object (best effort).
+          // Only objects uploaded to THIS card qualify: an attachment line can
+          // reference any URL, and detaching a reference to someone else's
+          // /files/ key must never delete their object.
           let uploadedUrl: string | null = null;
           if (action === 'detach' && env.ATTACHMENTS) {
             const detail = (await stub.card(cid)) as { parsed?: { attachments?: { index: number; url: string }[] } } | null;
             const att = detail?.parsed?.attachments?.find((a) => a.index === Number(body['index']));
-            if (att && att.url.startsWith('/files/')) uploadedUrl = att.url;
+            if (att && att.url.startsWith(`/files/${pid}/${cid}/`)) uploadedUrl = att.url;
           }
           const res = await stub.action(action, cid, body, actorOf(body));
           if ('error' in res) return json(res, 'conflict' in res ? 409 : 400);
