@@ -22,16 +22,22 @@ export interface ProjectImport {
 }
 
 export interface SpaceImport {
+  /** Present in exports; absent in the hand-written demo payload. */
+  id?: string;
   name: string;
   projects: ProjectImport[];
 }
 
 export interface OrgImport {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   name?: string;
   theme?: Record<string, unknown>;
   prefs?: Record<string, unknown>;
-  keys?: { hash: string; projectId: string; label: string; created: string; revoked: boolean }[];
+  members?: {
+    username: string; display: string; kind: string; role: string;
+    scopeKind: string; scopeId: string | null; passHash: string; disabled: boolean; created: string;
+  }[];
+  keys?: { hash: string; username: string; label: string; created: string; revoked: boolean }[];
   shares?: { token: string; projectId: string; label: string; created: string; revoked: boolean; cardId?: string | null }[];
   spaces: SpaceImport[];
 }

@@ -63,6 +63,10 @@ aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
 .content{flex:1;min-width:0;display:flex;flex-direction:column}
 .phead{display:flex;align-items:center;gap:16px;padding:var(--pane-head-pad);border-bottom:var(--bw) var(--bs) var(--grid);flex-wrap:wrap;background:color-mix(in srgb,var(--surface) 86%,transparent)}
 .phead h2{font:700 15px/1.15 var(--display)}
+.badges .by{opacity:.75;font-style:italic}
+.whoami{font-size:11.5px;color:var(--muted);margin-right:10px;white-space:nowrap}
+.whoami i{font-style:normal;text-transform:uppercase;letter-spacing:.05em;font-size:9.5px;opacity:.7;border:var(--bw) var(--bs) var(--grid);border-radius:999px;padding:1px 5px;margin-left:4px}
+.col h3 .add{margin-left:6px}
 .tabs{display:flex;gap:2px;margin-left:auto}
 .tabs button.on{background:var(--acc);color:var(--acc-ink);border-color:transparent}
 .view{flex:1;overflow:auto;padding:var(--view-pad)}
@@ -349,6 +353,12 @@ let RO=!!PUB;
 const cardApi=cid=>PUB?'/api/public/'+PUB+'/cards/'+cid:'/api/projects/'+SEL+'/cards/'+cid;
 let THEME={style:'harbor',accent:'pacific',mode:'system',density:'relaxed',custom:null};
 let ORG=null,SEL=null,VIEW='board',BOARD=null,timer=null,MODAL=null,UPLOADS=false;
+// Role gates, refreshed from /api/org on every boot. RO stays the read-only
+// flag for public share pages; these are about who is logged in.
+let ME=null,CAN_WRITE=false,IS_OWNER=false,DIR=new Map();
+// Usernames are what boards store; display names are what people read. One
+// lookup here is what makes renaming a member update every card at once.
+function who(u){if(!u)return '';const m=DIR.get(u);return m?m.display:u}
 const mq=matchMedia('(prefers-color-scheme: dark)');
 mq.addEventListener('change',()=>applyTheme(THEME));
 function contrastInk(hex){
@@ -444,7 +454,7 @@ function formModal(title,fields,submitLabel,onSubmit){
     '<div class="field"><label>'+esc(f.label)
     +(f.type==='textarea'
       ?'<textarea name="'+f.name+'" rows="'+(f.rows||6)+'" placeholder="'+esc(f.placeholder||'')+'" '+(f.required?'required':'')+'>'+esc(f.value||'')+'</textarea>'
-      :'<input name="'+f.name+'" value="'+esc(f.value||'')+'" placeholder="'+esc(f.placeholder||'')+'" '+(f.required?'required':'')+'>')
+      :'<input name="'+f.name+'"'+(f.type==='password'?' type="password" autocomplete="new-password"':'')+' value="'+esc(f.value||'')+'" placeholder="'+esc(f.placeholder||'')+'" '+(f.required?'required':'')+'>')
     +'</label></div>').join('')
     +'<div class="err" role="alert"></div><div class="actions"><button type="button" class="ghost" data-x>cancel</button><button class="primary">'+esc(submitLabel)+'</button></div></form>',null,title);
   $('form',m).onsubmit=async e=>{e.preventDefault();
@@ -467,35 +477,43 @@ function confirmModal(title,message,confirmLabel,onConfirm){
 function gate(kind,extra){
   document.body.innerHTML='<div class="gate" id="gate"></div>';
   const g=$('#gate');
+  // Setup, recovery and login all end the same way: a live session, stored
+  // where api() already looks for it. No token to copy down any more.
+  const enter=r=>{TOKEN=r.token;localStorage.setItem('bf_token',TOKEN);start()};
   if(kind==='setup'){
-    g.innerHTML='<h2>Set up botflow manager</h2><p>Name your company to initialize this deployment. Public deployments require the <code>SETUP_KEY</code> Worker secret; loopback development does not. You will get the admin token exactly once.</p>'
+    g.innerHTML='<h2>Set up botflow manager</h2><p>Name your company and create the owner account. Public deployments require the <code>SETUP_KEY</code> Worker secret; loopback development does not.</p>'
       +'<form id="f" style="flex-direction:column"><input id="name" placeholder="company name" required style="margin-bottom:8px">'
+      +'<input id="user" placeholder="owner username (a-z, 0-9, - and _)" autocomplete="username" required style="margin-bottom:8px">'
+      +'<input id="pw" type="password" placeholder="password (8+ characters)" autocomplete="new-password" required style="margin-bottom:8px">'
       +'<input id="skey" placeholder="setup key" autocomplete="off" style="margin-bottom:8px">'
       +'<button class="primary">Initialize</button></form><div class="err" id="err"></div>';
     $('#f').onsubmit=async e=>{e.preventDefault();
-      try{const r=await api('/api/setup',{method:'POST',body:JSON.stringify({name:$('#name').value,setupKey:$('#skey').value||undefined})});
-        g.innerHTML='<h2>Admin token</h2><p class="warn">Copy it now. It is never shown again.</p><div class="tokenbox">'+esc(r.token)+'</div>'
-          +'<button class="primary" id="go">I saved it, continue</button>';
-        $('#go').onclick=()=>{TOKEN=r.token;localStorage.setItem('bf_token',TOKEN);start()};
+      try{enter(await api('/api/setup',{method:'POST',body:JSON.stringify({
+        name:$('#name').value,username:$('#user').value.trim(),password:$('#pw').value,setupKey:$('#skey').value||undefined})}));
       }catch(err){$('#err').textContent=err.message}};
   }else if(kind==='recover'){
-    g.innerHTML='<h2>Recover admin access</h2><p>The <code>SETUP_KEY</code> Worker secret mints a fresh admin token; the lost one dies and the audit log records the recovery. Loopback development needs no key.</p>'
-      +'<form id="f"><input id="rkey" placeholder="setup key" autocomplete="off"><button class="primary">recover →</button></form>'
+    g.innerHTML='<h2>Recover owner access</h2><p>The <code>SETUP_KEY</code> Worker secret resets an owner password, or installs an owner if every one is gone. Every live session ends and the audit log records it. Loopback development needs no key.</p>'
+      +'<form id="f" style="flex-direction:column"><input id="ruser" placeholder="owner username" autocomplete="username" required style="margin-bottom:8px">'
+      +'<input id="rpw" type="password" placeholder="new password (8+ characters)" autocomplete="new-password" required style="margin-bottom:8px">'
+      +'<input id="rkey" placeholder="setup key" autocomplete="off" style="margin-bottom:8px">'
+      +'<button class="primary">recover →</button></form>'
       +'<div class="err" id="err"></div>'
       +'<div style="margin-top:10px"><a href="#" id="backlogin" style="font-size:11.5px;color:var(--muted)">back to login</a></div>';
     $('#f').onsubmit=async e=>{e.preventDefault();
-      try{const r=await api('/api/recover',{method:'POST',body:JSON.stringify({setupKey:$('#rkey').value||undefined})});
-        g.innerHTML='<h2>New admin token</h2><p class="warn">Copy it now. It is never shown again.</p><div class="tokenbox">'+esc(r.token)+'</div>'
-          +'<button class="primary" id="go">I saved it, continue</button>';
-        $('#go').onclick=()=>{TOKEN=r.token;localStorage.setItem('bf_token',TOKEN);start()};
+      try{enter(await api('/api/recover',{method:'POST',body:JSON.stringify({
+        username:$('#ruser').value.trim(),password:$('#rpw').value,setupKey:$('#rkey').value||undefined})}));
       }catch(err){$('#err').textContent=err.message}};
     $('#backlogin').onclick=e=>{e.preventDefault();gate('token')};
   }else{
     g.innerHTML='<h2>botflow manager</h2>'+(extra?'<p class="err">'+esc(extra)+'</p>':'')
-      +'<form id="f"><input id="tok" placeholder="bfa_admin token" autocomplete="off" required><button class="primary">admin login →</button></form>'
+      +'<form id="f" style="flex-direction:column"><input id="user" placeholder="username" autocomplete="username" required style="margin-bottom:8px">'
+      +'<input id="pw" type="password" placeholder="password" autocomplete="current-password" required style="margin-bottom:8px">'
+      +'<button class="primary">log in →</button></form><div class="err" id="err"></div>'
       +'<div id="gateshares"></div>'
-      +'<div style="margin-top:10px"><a href="#" id="lost" style="font-size:11.5px;color:var(--muted)">lost your token?</a></div>';
-    $('#f').onsubmit=e=>{e.preventDefault();TOKEN=$('#tok').value.trim();localStorage.setItem('bf_token',TOKEN);start()};
+      +'<div style="margin-top:10px"><a href="#" id="lost" style="font-size:11.5px;color:var(--muted)">lost access?</a></div>';
+    $('#f').onsubmit=async e=>{e.preventDefault();
+      try{enter(await api('/api/login',{method:'POST',body:JSON.stringify({username:$('#user').value.trim(),password:$('#pw').value})}));
+      }catch(err){$('#err').textContent=err.message}};
     $('#lost').onclick=e=>{e.preventDefault();gate('recover')};
     api('/api/public/gate').then(r=>{
       if(r.shares&&r.shares.length)$('#gateshares').outerHTML='<div class="gateshares"><span class="lbl">live boards</span>'
@@ -514,7 +532,7 @@ async function start(){
     return gate('token',err.message);
   }
   if(org.uninitialized)return gate('setup');
-  ORG=org;UPLOADS=org.uploads===true;
+  adoptOrg(org);
   if(SEL&&SEL!=='::settings'&&!findAny(SEL))SEL=null;
   if(!SEL){const first=firstProject(ORG);SEL=first?first.id:null}
   layout();
@@ -523,7 +541,18 @@ function firstProject(org){for(const s of org.spaces)if(s.projects.length)return
 function findProject(id,nodes){for(const n of nodes||[]){if(n.id===id)return n;const d=findProject(id,n.children);if(d)return d}return null}
 function findAny(id){for(const s of ORG.spaces){const p=findProject(id,s.projects);if(p)return p}return null}
 function spaceOf(pid){for(const s of ORG.spaces)if(findProject(pid,s.projects))return s.id;return null}
-async function reloadOrg(){ORG=await api('/api/org');renderSide();renderHeader()}
+// Everything derived from /api/org, in one place: the tree, who I am, what I
+// may do, and the username -> display name table. reloadOrg has to refresh all
+// of it, or a rename (or a role change) sits stale until the page is reloaded.
+function adoptOrg(org){
+  ORG=org;UPLOADS=org.uploads===true;
+  ME=org.me||null;
+  CAN_WRITE=!!ME&&ME.role!=='read';
+  IS_OWNER=!!ME&&ME.role==='owner';
+  RO=!!PUB||!CAN_WRITE;
+  DIR=new Map((org.directory||[]).map(m=>[m.username,m]));
+}
+async function reloadOrg(){adoptOrg(await api('/api/org'));renderSide();renderHeader();if(VIEW==='board'&&BOARD){BOARD=null;refreshBoard()}}
 function renderHeader(){
   const agg=ORG.aggregate;
   $('#hmeter').innerHTML='<div class="track"><div class="fill" style="width:'+Math.round((agg.progress||0)*100)+'%"></div></div><b>'+pct(agg.progress)+'</b>';
@@ -533,9 +562,12 @@ function layout(){
   document.body.innerHTML=
     '<header class="top"><button id="burger" class="ghost" aria-label="menu">☰</button><h1>'+esc(ORG.name)+' <span class="sub">botflow manager</span></h1>'
     +'<div class="meter" id="hmeter" title="structural progress: every card is one unit; a sub-board fills its unit by its own fraction"></div><span id="hstrip"></span>'
-    +'<span class="spacer"></span><button id="setbtn" class="ghost" title="settings">'+IC.gear+' settings</button><button id="logout" class="ghost">log out</button></header>'
+    +'<span class="spacer"></span>'+(ME?'<span class="whoami" title="'+esc(ME.username+' · '+ME.role+' on '+ME.scope.kind)+'">'+esc(ME.display)+' <i>'+esc(ME.role)+'</i></span>':'')
+    +'<button id="setbtn" class="ghost" title="settings">'+IC.gear+' settings</button><button id="logout" class="ghost">log out</button></header>'
     +'<div class="app"><aside id="side"></aside><section class="content" id="main"></section></div>';
-  $('#logout').onclick=()=>{localStorage.removeItem('bf_token');TOKEN='';gate('token')};
+  $('#logout').onclick=async()=>{
+    try{await api('/api/logout',{method:'POST'})}catch{}
+    localStorage.removeItem('bf_token');TOKEN='';gate('token')};
   $('#setbtn').onclick=()=>{SEL='::settings';renderSide();renderMain()};
   $('#burger').onclick=()=>$('#side').classList.toggle('open');
   renderHeader();renderSide();renderMain();
@@ -544,17 +576,17 @@ function layout(){
 function projRow(n){
   const a=n.aggregate;
   return '<div class="row '+(n.id===SEL?'sel':'')+'" data-proj="'+n.id+'" tabindex="0" role="button" aria-label="'+esc(n.name)+'">'
-    +esc(n.name)+'<button class="add" data-addsub="'+n.id+'" title="add sub-project">+</button>'
+    +esc(n.name)+(CAN_WRITE?'<button class="add" data-addsub="'+n.id+'" title="add sub-project">+</button>':'')
     +'<span class="pct">'+pct(a.progress)+'</span>'+statechip(a.state)+'</div>'
     +(n.children.length?'<div class="kids">'+n.children.map(projRow).join('')+'</div>':'');
 }
 function renderSide(){
   $('#side').innerHTML=ORG.spaces.map(s=>
     '<div class="space"><h2>'+esc(s.name)+' <span class="pct" style="margin-left:6px">'+pct(s.aggregate.progress)+'</span>'
-    +'<button data-addproj="'+s.id+'">+ project</button></h2>'
+    +(IS_OWNER?'<button data-addproj="'+s.id+'">+ project</button>':'')+'</h2>'
     +(s.projects.length?s.projects.map(projRow).join(''):'<div class="empty">no projects</div>')
     +'</div>').join('')
-    +'<h2>company <button id="addspace">+ space</button></h2>'
+    +(IS_OWNER?'<h2>company <button id="addspace">+ space</button></h2>':'')
     +'<div class="sidefoot"><div class="row '+(SEL==='::settings'?'sel':'')+'" id="setrow" tabindex="0" role="button">'+IC.gear+' settings</div></div>';
   $('#side').onclick=async e=>{
     if(e.target.closest('#setrow')){SEL='::settings';renderSide();renderMain();return}
@@ -580,15 +612,43 @@ function renderMain(){
   const main=$('#main');
   if(SEL==='::settings')return renderSettings(main);
   const p=SEL?findAny(SEL):null;
-  if(!p){main.innerHTML='<div class="view"><div class="empty">Create a space and a project to begin. Agents connect with scoped keys via the REST API or <code>botflow push</code>.</div></div>';return}
+  if(!p){main.innerHTML='<div class="view"><div class="empty">'
+    +(IS_OWNER?'Create a space and a project to begin. Bots connect with their own credentials via the REST API or <code>botflow push</code>.'
+      :'Nothing here yet. An owner has to give you a space or a project before there is a board to work.')
+    +'</div></div>';return}
+  // Keys moved to your own account (they belong to a member, not a project),
+  // and sharing hands out public urls, which stays a company-level decision.
+  const tabs=['board','activity'].concat(IS_OWNER?['sharing']:[]);
+  if(!tabs.includes(VIEW))VIEW='board';
   main.innerHTML='<div class="phead"><h2>'+esc(p.name)+'</h2><span class="pct" id="pinfo"></span>'
-    +'<button id="editboard" class="ghost" title="edit lanes, substates, wip, rollup">✎ edit board</button>'
-    +'<div class="tabs" role="tablist">'+['board','activity','keys','sharing'].map(t=>
+    +(CAN_WRITE?'<button id="newcard" class="ghost" title="add a card to this board">+ card</button>':'')
+    +(IS_OWNER?'<button id="editboard" class="ghost" title="edit lanes, substates, wip, rollup">✎ edit board</button>':'')
+    +'<div class="tabs" role="tablist">'+tabs.map(t=>
       '<button data-tab="'+t+'" role="tab" aria-selected="'+(VIEW===t)+'" class="'+(VIEW===t?'on':'')+'">'+t+'</button>').join('')+'</div></div>'
     +'<div class="view" id="view">loading…</div>';
   main.querySelector('.tabs').onclick=e=>{const b=e.target.closest('[data-tab]');if(b){VIEW=b.dataset.tab;renderMain()}};
-  $('#editboard').onclick=boardEditor;
-  if(VIEW==='board')refreshBoard();else if(VIEW==='activity')refreshActivity();else if(VIEW==='sharing')refreshSharing();else refreshKeys();
+  const eb=$('#editboard');if(eb)eb.onclick=boardEditor;
+  const nc=$('#newcard');if(nc)nc.onclick=()=>newCard();
+  if(VIEW==='board')refreshBoard();else if(VIEW==='activity')refreshActivity();else refreshSharing();
+}
+// Create a card on the selected board. A lane argument pre-selects the column
+// whose plus was clicked; leaving it undefined lets the board choose its own
+// todo lane, exactly as the CLI's card add does. (No backticks in here: this
+// whole script lives inside a TypeScript template literal.)
+function newCard(lane){
+  if(!CAN_WRITE)return;
+  formModal('New card',[
+    {name:'title',label:'title',required:true},
+    {name:'priority',label:'priority (p0-p3, optional)'},
+    {name:'labels',label:'labels (comma separated, optional)'},
+    {name:'assignee',label:'assignee (username, optional)'},
+  ],'create',async d=>{
+    const labels=d.labels?d.labels.split(',').map(x=>x.trim()).filter(Boolean):undefined;
+    const r=await api('/api/projects/'+SEL+'/cards',{method:'POST',body:JSON.stringify({
+      title:d.title,lane:lane||undefined,priority:d.priority||undefined,labels:labels,assignee:d.assignee||undefined})});
+    await refreshBoard();await reloadOrg();
+    if(r&&r.id)openCard(r.id,'card');
+  });
 }
 function badge(ic,txt,cls){return '<span class="'+(cls||'')+'">'+ic+(txt!==undefined?' '+txt:'')+'</span>'}
 function cardHtml(b,c){
@@ -597,8 +657,9 @@ function cardHtml(b,c){
   if(c.checklist)badges.push(badge(IC.check,c.checklist.done+'/'+c.checklist.total,c.checklist.done===c.checklist.total?'ok':''));
   if(c.comments)badges.push(badge(IC.chat,c.comments));
   if(c.attachments)badges.push(badge(IC.clip,c.attachments));
-  if(c.assignee)badges.push('<span>@'+esc(c.assignee)+'</span>');
-  if(c.priority)badges.push('<span class="'+(c.priority==='p0'?'p0':c.priority==='p1'?'p1':'')+'">'+c.priority+'</span>');
+  if(c.assignee)badges.push('<span title="assignee">@'+esc(who(c.assignee))+'</span>');
+  else if(c.author)badges.push('<span class="by" title="created by '+esc(c.author)+'">'+esc(who(c.author))+'</span>');
+  if(c.priority)badges.push('<span class="'+(c.priority==='p0'?'p0':c.priority==='p1'?'p1':'')+'">'+esc(c.priority)+'</span>');
   for(const l of c.labels||[])badges.push('<span>#'+esc(l)+'</span>');
   if(c.blocked)badges.push('<span class="blk" title="'+esc(c.blocked)+'">⛔ blocked</span>');
   if((c.deps||[]).length)badges.push('<span>deps→'+c.deps.map(esc).join(',')+'</span>');
@@ -625,10 +686,13 @@ function colsHtml(b){
         if(cs.length)body+='<div class="sub-h">· '+esc(sub)+'</div>'+cs.map(c=>cardHtml(b,c)).join('');
       }
     }else body=lane.cards.map(c=>cardHtml(b,c)).join('');
-    return '<section class="col"><h3>'+esc(lane.name)+' '+wip+'</h3>'+(body||'<div class="empty">·</div>')+'</section>';
+    const add=!RO?'<button class="add" data-addcard="'+esc(lane.id)+'" title="add a card to '+esc(lane.name)+'" aria-label="add a card to '+esc(lane.name)+'">+</button>':'';
+    return '<section class="col"><h3>'+esc(lane.name)+' '+wip+add+'</h3>'+(body||'<div class="empty">·</div>')+'</section>';
   }).join('')+'</div>';
 }
 function boardClicks(e){
+  const ac=e.target.closest('[data-addcard]');
+  if(ac){newCard(ac.dataset.addcard);e.stopPropagation();return}
   const go=e.target.closest('[data-goto]');
   if(go&&!go.disabled){SEL=go.dataset.goto;VIEW='board';BOARD=null;renderSide();renderMain();e.stopPropagation();return}
   const el=e.target.closest('[data-card]');
@@ -848,8 +912,9 @@ async function openCard(cid,tab){
 function cardModalHtml(c,tab){
   const p=c.parsed||{};
   const meta=[statechip(c.state),'<span class="cid">'+esc(c.position)+'</span>'];
-  if(c.assignee)meta.push('<span class="badges"><span>@'+esc(c.assignee)+'</span></span>');
-  if(c.priority)meta.push('<span class="badges"><span class="'+(c.priority==='p0'?'p0':'')+'">'+c.priority+'</span></span>');
+  if(c.assignee)meta.push('<span class="badges"><span title="assignee">@'+esc(who(c.assignee))+'</span></span>');
+  if(c.author)meta.push('<span class="badges"><span class="by" title="created by '+esc(c.author)+'">'+esc(who(c.author))+'</span></span>');
+  if(c.priority)meta.push('<span class="badges"><span class="'+(c.priority==='p0'?'p0':'')+'">'+esc(c.priority)+'</span></span>');
   for(const l of c.labels||[])meta.push('<span class="badges"><span>#'+esc(l)+'</span></span>');
   if(c.blocked)meta.push('<span class="badges"><span class="blk">⛔ '+esc(c.blocked)+'</span></span>');
   if(!RO)meta.push('<button class="ghost" data-editcard title="edit title, priority, labels, deps, assignee">✎ edit</button>'
@@ -998,21 +1063,136 @@ async function refreshActivity(){
       :'<div class="empty">no activity yet</div>';
   }catch(err){$('#view').innerHTML='<div class="err">'+esc(err.message)+'</div>'}
 }
-async function refreshKeys(){
-  try{
-    const keys=await api('/api/projects/'+SEL+'/keys');
-    $('#view').innerHTML='<p style="margin-bottom:10px"><button class="primary" id="mk">+ agent key</button>'
-      +' <span style="color:var(--muted);font-size:12px">scoped to this project and everything nested beneath it</span></p>'
-      +(keys.length?'<table class="list"><tr><th>label</th><th>id</th><th>created</th><th></th></tr>'
-        +keys.map(k=>'<tr'+(k.revoked?' style="opacity:.5"':'')+'><td>'+esc(k.label)+'</td><td class="mono">'+esc(k.id)+'</td><td class="mono">'+esc(k.created.slice(0,10))+'</td>'
-          +'<td>'+(k.revoked?'revoked':'<button data-rk="'+esc(k.id)+'">revoke</button>')+'</td></tr>').join('')+'</table>'
-        :'<div class="empty">no keys yet</div>');
-    $('#mk').onclick=()=>formModal('New agent key',[{name:'label',label:'label (becomes the agent actor name)',required:true}],'mint',async d=>{
-      const r=await api('/api/projects/'+SEL+'/keys',{method:'POST',body:JSON.stringify({label:d.label})});
-      $('#view').insertAdjacentHTML('afterbegin','<div class="tokenbox">'+esc(r.token)+'</div><p class="warn">Copy this agent key now: it is never shown again.</p>');
-    });
-    $('#view').addEventListener('click',async e=>{const b=e.target.closest('[data-rk]');if(b){await api('/api/keys/'+b.dataset.rk+'/revoke',{method:'POST'});refreshKeys()}});
-  }catch(err){$('#view').innerHTML='<div class="err">'+esc(err.message)+'</div>'}
+// ---- my account: password + my own api keys ----
+// A key label is a note to self ("laptop", "CI"). It is NOT an identity: the
+// board shows your display name, which only an owner can change. That
+// distinction is spelled out in the UI because conflating the two is exactly
+// what made the old per-project "agent key label" confusing.
+async function renderAccount(host){
+  let keys=[];
+  try{keys=await api('/api/keys')}catch(err){host.innerHTML='<div class="err">'+esc(err.message)+'</div>';return}
+  host.innerHTML='<p class="setting-note">You are <b>'+esc(ME.display)+'</b> (<code>'+esc(ME.username)+'</code>), '
+    +esc(ME.role)+' on '+esc(ME.scope.kind)+'. Cards you touch are logged under your username; boards render your display name.</p>'
+    +'<p style="margin:10px 0"><button id="chpw">change password</button> '
+    +'<button class="primary" id="mk">+ api key</button></p>'
+    +'<p class="setting-note">An api key is an alternative to sending your password: same identity, same scope, revocable on its own. Bots can use either.</p>'
+    +(keys.length?'<table class="list"><tr><th>name</th><th>id</th><th>created</th><th>last used</th><th></th></tr>'
+      +keys.map(k=>'<tr'+(k.revoked?' style="opacity:.5"':'')+'><td>'+esc(k.label)+'</td><td class="mono">'+esc(k.id)+'</td>'
+        +'<td class="mono">'+esc(k.created.slice(0,10))+'</td><td class="mono">'+esc(k.lastUsed?k.lastUsed.slice(0,10):'never')+'</td>'
+        +'<td>'+(k.revoked?'revoked':'<button data-renk="'+esc(k.id)+'" data-label="'+esc(k.label)+'">rename</button> <button data-rk="'+esc(k.id)+'">revoke</button>')+'</td></tr>').join('')+'</table>'
+      :'<div class="empty">no api keys yet</div>');
+  $('#chpw').onclick=()=>formModal('Change password',[
+    {name:'current',label:'current password',type:'password',required:true},
+    {name:'next',label:'new password (8+ characters)',type:'password',required:true},
+  ],'change',async d=>{
+    const r=await api('/api/me/password',{method:'POST',body:JSON.stringify({current:d.current,next:d.next})});
+    // The reset ended every session including this one; adopt the fresh token.
+    TOKEN=r.token;localStorage.setItem('bf_token',TOKEN);
+  });
+  $('#mk').onclick=()=>formModal('New api key',[{name:'label',label:'name (optional: defaults to "api key #N")'}],'mint',async d=>{
+    const r=await api('/api/keys',{method:'POST',body:JSON.stringify(d.label?{label:d.label}:{})});
+    await renderAccount(host);
+    host.insertAdjacentHTML('afterbegin','<div class="tokenbox">'+esc(r.token)+'</div><p class="warn">Copy '+esc(r.label)+' now: it is never shown again.</p>');
+  });
+  host.onclick=async e=>{
+    const ren=e.target.closest('[data-renk]');
+    if(ren)return formModal('Rename key',[{name:'label',label:'name',value:ren.dataset.label,required:true}],'save',async d=>{
+      await api('/api/keys/'+ren.dataset.renk,{method:'PATCH',body:JSON.stringify({label:d.label})});await renderAccount(host)});
+    const rev=e.target.closest('[data-rk]');
+    if(rev)return confirmModal('Revoke key','That credential stops working immediately. Anything using it will start getting 401s.','revoke',async()=>{
+      await api('/api/keys/'+rev.dataset.rk+'/revoke',{method:'POST'});await renderAccount(host)});
+  };
+}
+// ---- members: the company directory, owner only ----
+function scopeLabel(m){
+  if(m.scope.kind==='org')return 'whole company';
+  const id=m.scope.id;
+  if(m.scope.kind==='space'){const sp=ORG.spaces.find(x=>x.id===id);return 'space: '+(sp?sp.name:id)}
+  const p=findAny(id);return 'project: '+(p?p.name:id);
+}
+function scopeOptions(sel){
+  let out='<option value="org">whole company (all spaces and projects)</option>';
+  for(const sp of ORG.spaces){
+    out+='<option value="space:'+esc(sp.id)+'"'+(sel==='space:'+sp.id?' selected':'')+'>space: '+esc(sp.name)+'</option>';
+    const walk=(nodes,depth)=>{for(const n of nodes){
+      out+='<option value="project:'+esc(n.id)+'"'+(sel==='project:'+n.id?' selected':'')+'>'+'\u00a0'.repeat(depth*4)+'project: '+esc(n.name)+'</option>';
+      walk(n.children,depth+1)}};
+    walk(sp.projects,1);
+  }
+  return out;
+}
+function memberFields(m){
+  const sel=m?(m.scope.kind==='org'?'org':m.scope.kind+':'+m.scope.id):'org';
+  return '<div class="field"><label>display name<input id="mdisplay" value="'+esc(m?m.display:'')+'" placeholder="what boards show"></label></div>'
+    +'<div class="field"><label>role<select id="mrole">'
+    +['read','write','owner'].map(r=>'<option value="'+r+'"'+(m&&m.role===r?' selected':'')+'>'+r+(r==='owner'?' (runs the company)':r==='write'?' (works the board)':' (looks, cannot touch)')+'</option>').join('')
+    +'</select></label></div>'
+    +'<div class="field"><label>scope<select id="mscope">'+scopeOptions(sel)+'</select></label></div>';
+}
+function readMemberFields(){
+  const raw=$('#mscope').value;
+  const cut=raw.indexOf(':');
+  return {
+    display:$('#mdisplay').value.trim()||undefined,
+    role:$('#mrole').value,
+    scopeKind:cut<0?raw:raw.slice(0,cut),
+    scopeId:cut<0?null:raw.slice(cut+1),
+  };
+}
+async function renderMembers(host){
+  let members=[];
+  try{members=await api('/api/members')}catch(err){host.innerHTML='<div class="err">'+esc(err.message)+'</div>';return}
+  host.innerHTML='<p style="margin-bottom:10px"><button class="primary" id="addm">+ member</button>'
+    +' <span style="color:var(--muted);font-size:12px">people and bots. A username is permanent (cards are logged under it); a display name is not.</span></p>'
+    +'<table class="list"><tr><th>display name</th><th>username</th><th>type</th><th>role</th><th>scope</th><th>keys</th><th></th></tr>'
+    +members.map(m=>'<tr'+(m.disabled?' style="opacity:.5"':'')+'><td>'+esc(m.display)+'</td><td class="mono">'+esc(m.username)+'</td>'
+      +'<td>'+esc(m.kind)+'</td><td>'+esc(m.role)+'</td><td>'+esc(scopeLabel(m))+'</td><td class="mono">'+m.keys+'</td>'
+      +'<td><button data-edm="'+esc(m.memberId)+'">edit</button> <button data-pwm="'+esc(m.memberId)+'">password</button>'
+      +(m.username===ME.username?'':' <button data-delm="'+esc(m.memberId)+'" data-name="'+esc(m.display)+'">remove</button>')+'</td></tr>').join('')
+    +'</table>';
+  $('#addm').onclick=()=>{
+    const m=overlay('<h3>New member</h3>'
+      +'<div class="field"><label>username<input id="musername" placeholder="a-z, 0-9, - and _" autocomplete="off"></label></div>'
+      +'<p class="setting-note">Permanent: it is the actor name written into every card log.</p>'
+      +'<div class="field"><label>type<select id="mkind"><option value="human">human</option><option value="bot">bot</option></select></label></div>'
+      +'<div class="field"><label>password<input id="mpw" type="password" placeholder="8+ characters" autocomplete="new-password"></label></div>'
+      +memberFields(null)
+      +'<div class="err" id="merr"></div><div class="actions"><button id="mcancel">cancel</button><button class="primary" id="mok">create</button></div>',
+      '','New member');
+    $('#mcancel').onclick=closeOverlay;
+    $('#mok').onclick=async()=>{
+      try{
+        await api('/api/members',{method:'POST',body:JSON.stringify({
+          username:$('#musername').value.trim(),kind:$('#mkind').value,password:$('#mpw').value,...readMemberFields()})});
+        closeOverlay();await renderMembers(host);await reloadOrg();
+      }catch(err){$('#merr').textContent=err.message}
+    };
+  };
+  host.onclick=async e=>{
+    const ed=e.target.closest('[data-edm]');
+    if(ed){
+      const m=members.find(x=>x.memberId===ed.dataset.edm);
+      const dlg=overlay('<h3>Edit '+esc(m.username)+'</h3>'+memberFields(m)
+        +'<div class="field"><label class="row"><input type="checkbox" id="mdis"'+(m.disabled?' checked':'')+'> disabled (every session ends)</label></div>'
+        +'<p class="setting-note">Renaming updates this member everywhere on every board at once. The username stays as it is: card history is not rewritten.</p>'
+        +'<div class="err" id="merr"></div><div class="actions"><button id="mcancel">cancel</button><button class="primary" id="mok">save</button></div>',
+        '','Edit member');
+      $('#mcancel').onclick=closeOverlay;
+      $('#mok').onclick=async()=>{
+        try{
+          await api('/api/members/'+m.memberId,{method:'PATCH',body:JSON.stringify({...readMemberFields(),disabled:$('#mdis').checked})});
+          closeOverlay();await renderMembers(host);await reloadOrg();
+        }catch(err){$('#merr').textContent=err.message}
+      };
+      return;
+    }
+    const pw=e.target.closest('[data-pwm]');
+    if(pw)return formModal('Set password',[{name:'password',label:'new password (8+ characters)',type:'password',required:true}],'set',async d=>{
+      await api('/api/members/'+pw.dataset.pwm+'/password',{method:'POST',body:JSON.stringify({password:d.password})})});
+    const del=e.target.closest('[data-delm]');
+    if(del)return confirmModal('Remove member','Removing '+esc(del.dataset.name)+' revokes every key and ends every session. The username stays reserved: it is the name already written into card logs and assignments, so it must never be handed to someone else.','remove',async()=>{
+      await api('/api/members/'+del.dataset.delm,{method:'DELETE'});await renderMembers(host);await reloadOrg()});
+  };
 }
 async function refreshSharing(){
   try{
@@ -1056,10 +1236,21 @@ function stylePreview(st){
     +'<div class="pvbar"><i></i><span></span><b></b></div><div class="pvbody"><div class="pvside"><i></i><i></i><i></i></div>'
     +'<div class="pvdeck"><i class="pvcard"></i><i class="pvcard"></i><i class="pvcard"></i></div></div></div>';
 }
+const SH='<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">';
 function renderSettings(main){
   const st=THEMES.find(s=>s.id===THEME.style)||THEMES[0];
+  // Everyone gets their own account. Everything below it reshapes the company,
+  // so a non-owner simply stops here.
+  const account=SH+'my account</h4><div id="maccount">loading…</div>';
+  if(!IS_OWNER){
+    main.innerHTML='<div class="phead"><h2>settings</h2></div><div class="view settings">'+account+'<div class="err" id="serr"></div></div>';
+    renderAccount($('#maccount'));
+    return;
+  }
   main.innerHTML='<div class="phead"><h2>settings</h2></div><div class="view settings">'
-    +'<h4 class="setting-title">visual world</h4><p class="setting-note">Five complete directions. Pick the character first, then tune its color and rhythm.</p>'
+    +account
+    +SH+'members</h4><div id="mmembers" style="max-width:900px">loading…</div>'
+    +'<h4 class="setting-title" style="margin-top:22px">visual world</h4><p class="setting-note">Five complete directions. Pick the character first, then tune its color and rhythm.</p>'
     +'<div class="stiles">'+THEMES.map(s=>'<button type="button" class="stile '+(s.id===THEME.style?'on':'')+'" data-style="'+s.id+'" aria-pressed="'+(s.id===THEME.style)+'">'+stylePreview(s)+'<b>'+esc(s.name)+'</b><div class="blurb">'+esc(s.blurb)+'</div></button>').join('')+'</div>'
     +'<h4 class="setting-title">accent</h4><p class="setting-note">Each set is tuned for this world in both light and dark mode.</p>'
     +'<div class="accents">'+st.accents.map(a=>{const mode=THEME.mode==='system'?(mq.matches?'dark':'light'):THEME.mode;
@@ -1073,13 +1264,10 @@ function renderSettings(main){
     +'<p class="setting-note">Saved company-wide. Operators and public share pages use the same visual system and density.</p>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">login page</h4>'
     +'<label style="font-size:13px;display:flex;gap:8px;align-items:center"><input type="checkbox" id="gs"> list public board links on the login page</label>'
-    +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">security</h4>'
-    +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button id="rotate">rotate admin token</button></div>'
-    +'<p class="setting-note">Mints a new admin token and kills the current one immediately; this browser switches over automatically. A lost token is recovered from the login page with the SETUP_KEY secret.</p>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">company data</h4>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button id="orgexp">download company export</button>'
     +'<button id="demoload">load the Scoops Empire demo</button></div>'
-    +'<p style="color:var(--muted);font-size:12px;margin-top:6px">The export is restore-grade JSON: every space, project, board, card, key hash, and share link. Store it like a credential. Uploaded files are NOT inside it: they live in the R2 bucket (the export lists their keys), so back the bucket up separately before any deletion. File urls are permanent bearer links: anyone holding one can fetch that file, and revoking a share does not revoke it. The demo adds a sample ice cream company as a new space.</p>'
+    +'<p style="color:var(--muted);font-size:12px;margin-top:6px">The export is restore-grade JSON: every space, project, board, card, member (password hashes included), api key hash, and share link. Store it like a credential: it is one. Uploaded files are NOT inside it: they live in the R2 bucket (the export lists their keys), so back the bucket up separately before any deletion. File urls are permanent bearer links: anyone holding one can fetch that file, and revoking a share does not revoke it. The demo adds a sample ice cream company as a new space.</p>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">manage: spaces and projects</h4>'
     +'<div id="mtree" style="max-width:560px"></div>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">manage: share links</h4>'
@@ -1116,14 +1304,8 @@ function renderSettings(main){
   };
   api('/api/settings').then(cur=>{const gs=$('#gs');if(gs){gs.checked=cur.gateShares!==false;
     gs.onchange=()=>api('/api/settings',{method:'POST',body:JSON.stringify({...THEME,gateShares:gs.checked})}).catch(err=>{$('#serr').textContent=err.message})}});
-  $('#rotate').onclick=()=>confirmModal('Rotate admin token',
-    'The current token stops working the moment you confirm. The new one appears exactly once at the top of settings, and this browser switches to it automatically.',
-    'rotate now',async()=>{
-      const r=await api('/api/rotate-token',{method:'POST'});
-      TOKEN=r.token;localStorage.setItem('bf_token',TOKEN);
-      renderSettings(main);
-      $('.settings').insertAdjacentHTML('afterbegin','<div class="tokenbox">'+esc(r.token)+'</div><p class="warn">New admin token. Copy it now: it is never shown again.</p>');
-    });
+  renderAccount($('#maccount'));
+  renderMembers($('#mmembers'));
   $('#orgexp').onclick=async()=>{
     try{const data=await api('/api/org/export');
       const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});

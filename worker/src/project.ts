@@ -69,6 +69,18 @@ export type ImportValidation =
  *  share one gate; this alias keeps the worker-side name. */
 export const validateImportDocuments = validateBoardDocuments;
 
+/** Card text is permanent: the Log is append-only by spec and there is no
+ *  delete verb to reclaim the space. Unbounded single-line entries let one
+ *  write member grow a card without limit, and every board read re-parses the
+ *  whole document. These caps are generous for real use and finite. */
+const MAX_LINE_TEXT = 4_000;
+const MAX_BODY_TEXT = 100_000;
+
+const clampLine = (value: unknown, fallback: string): string => {
+  const text = value === undefined || value === null ? fallback : String(value);
+  return text.slice(0, MAX_LINE_TEXT);
+};
+
 const DDL = `
   CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS cards(id TEXT PRIMARY KEY, file TEXT NOT NULL, text TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -458,9 +470,10 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           return { id, from: res.from, to: res.to };
         }
         case 'block': {
-          opBlock(card, actor, String(args['reason'] ?? 'blocked'));
+          const reason = clampLine(args['reason'], 'blocked');
+          opBlock(card, actor, reason);
           this.persistCard(card);
-          this.event(actor, 'block', id, String(args['reason'] ?? ''));
+          this.event(actor, 'block', id, reason.slice(0, 200));
           return { id, blocked: card.blocked };
         }
         case 'unblock': {
@@ -470,7 +483,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           return { id, blocked: null };
         }
         case 'comment': {
-          const text = String(args['message'] ?? '').trim();
+          const text = clampLine(args['message'], '').trim();
           if (text === '') return { error: 'message required' };
           opComment(card, actor, text);
           this.persistCard(card);
@@ -514,13 +527,14 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           return { id, edited: Object.keys(patch) };
         }
         case 'log': {
-          opLog(card, actor, String(args['message'] ?? ''));
+          const message = clampLine(args['message'], '');
+          opLog(card, actor, message);
           this.persistCard(card);
-          this.event(actor, 'log', id, String(args['message'] ?? ''));
+          this.event(actor, 'log', id, message.slice(0, 200));
           return { id, logged: true };
         }
         case 'describe': {
-          const text = String(args['text'] ?? '');
+          const text = String(args['text'] ?? '').slice(0, MAX_BODY_TEXT);
           opDescribe(card, actor, text);
           this.persistCard(card);
           this.event(actor, 'describe', id, text.slice(0, 160));
@@ -528,9 +542,10 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
         }
         case 'checkadd': {
           const section = typeof args['section'] === 'string' && args['section'].trim() !== '' ? (args['section'] as string) : undefined;
-          opChecklistAdd(card, actor, String(args['text'] ?? ''), section);
+          const item = clampLine(args['text'], '');
+          opChecklistAdd(card, actor, item, section);
           this.persistCard(card);
-          this.event(actor, 'checkadd', id, String(args['text'] ?? '').slice(0, 160));
+          this.event(actor, 'checkadd', id, item.slice(0, 160));
           return { id, added: true };
         }
         default:

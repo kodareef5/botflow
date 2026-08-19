@@ -198,7 +198,8 @@ test('hosted: concurrent claim storm has one winner, push/pull converges', { tim
     }
     assert.ok(up, 'wrangler dev came up');
 
-    const setup = await call('/api/setup', { method: 'POST', body: JSON.stringify({ name: 'stressco', setupKey: 'stress-key' }) });
+    const setup = await call('/api/setup', { method: 'POST', body: JSON.stringify({
+      name: 'stressco', username: 'root', password: 'stress-owner-pw', setupKey: 'stress-key' }) });
     const admin = setup.body['token'] as string;
     const space = (await call('/api/spaces', { method: 'POST', token: admin, body: JSON.stringify({ name: 'ops' }) })).body['id'] as string;
     const project = (await call('/api/projects', { method: 'POST', token: admin, body: JSON.stringify({ space, name: 'arena' }) })).body['id'] as string;
@@ -211,11 +212,24 @@ test('hosted: concurrent claim storm has one winner, push/pull converges', { tim
     const pushed = await run(dir, 'seed', 'push', '--token', admin);
     assert.equal(pushed.code, 0, pushed.stderr);
 
-    // Six concurrent hosted claims: the DO serializes, exactly one wins.
+    // Six concurrent hosted claims by six real agents: the DO serializes,
+    // exactly one wins. Each needs its own credential now that identity comes
+    // from the caller rather than the request body, which makes this a
+    // genuine race between distinct actors instead of one actor repeating
+    // itself (a re-claim by the holder is an idempotent 200).
+    const stormers = await Promise.all(
+      Array.from({ length: 6 }, async (_, i) => {
+        const created = await call('/api/members', { method: 'POST', token: admin, body: JSON.stringify({
+          username: `stormer-${i}`, kind: 'bot', password: `stormer-pw-${i}`,
+          role: 'write', scopeKind: 'project', scopeId: project,
+        }) });
+        assert.equal(created.status, 200, JSON.stringify(created.body));
+        const key = await call(`/api/keys?member=${created.body['id'] as string}`, { method: 'POST', token: admin, body: JSON.stringify({}) });
+        return key.body['token'] as string;
+      }),
+    );
     const storm = await Promise.all(
-      Array.from({ length: 6 }, (_, i) =>
-        call(`/api/projects/${project}/cards/001/claim`, { method: 'POST', token: admin, body: JSON.stringify({ actor: `stormer-${i}` }) }),
-      ),
+      stormers.map((token) => call(`/api/projects/${project}/cards/001/claim`, { method: 'POST', token, body: JSON.stringify({}) })),
     );
     assert.deepEqual(
       storm.map((r) => r.status).sort(),

@@ -84,22 +84,49 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     }
     assert.ok(up, 'wrangler dev came up');
 
-    // Setup requires the key when configured.
-    assert.equal((await call('/api/setup', { method: 'POST', body: JSON.stringify({ name: 'testco' }) })).status, 403);
-    const setup = await call('/api/setup', { method: 'POST', body: JSON.stringify({ name: 'testco', setupKey: SETUP_KEY }) });
+    // Setup requires the key when configured, and now mints the owner account.
+    const OWNER_PW = 'owner-password-1';
+    assert.equal((await call('/api/setup', { method: 'POST', body: JSON.stringify({ name: 'testco', username: 'root', password: OWNER_PW }) })).status, 403);
+    assert.equal(
+      (await call('/api/setup', { method: 'POST', body: JSON.stringify({ name: 'testco', username: 'root', password: 'short', setupKey: SETUP_KEY }) })).status,
+      409,
+      'a weak owner password does not initialize the company',
+    );
+    assert.equal(
+      (await call('/api/setup', { method: 'POST', body: JSON.stringify({ name: 'testco', username: 'Root Bot', password: OWNER_PW, setupKey: SETUP_KEY }) })).status,
+      409,
+      'an unusable username does not initialize the company',
+    );
+    const setup = await call('/api/setup', { method: 'POST', body: JSON.stringify({ name: 'testco', username: 'root', password: OWNER_PW, setupKey: SETUP_KEY }) });
     assert.equal(setup.status, 200);
     const admin = setup.body['token'] as string;
+    assert.ok(admin.startsWith('bfu_'), 'setup returns a live session, not a token to copy down');
     assert.equal(
-      (await call('/api/setup', { method: 'POST', body: JSON.stringify({ name: 'again', setupKey: 'guess' }) })).status,
+      (await call('/api/setup', { method: 'POST', body: JSON.stringify({ name: 'again', username: 'x', password: OWNER_PW, setupKey: 'guess' }) })).status,
       409,
       'initialized deployments do not act as setup-key oracles',
     );
+
+    // Login is the ordinary way in; a wrong password is not a way in.
+    assert.equal((await call('/api/login', { method: 'POST', body: JSON.stringify({ username: 'root', password: 'nope' }) })).status, 401);
+    assert.equal((await call('/api/login', { method: 'POST', body: JSON.stringify({ username: 'ghost', password: OWNER_PW }) })).status, 401);
+    const second = await call('/api/login', { method: 'POST', body: JSON.stringify({ username: 'root', password: OWNER_PW }) });
+    assert.equal(second.status, 200, 'the owner can open a second session');
+    assert.equal((await call('/api/whoami', { token: second.body['token'] as string })).body['role'], 'owner');
+    await call('/api/logout', { method: 'POST', token: second.body['token'] as string });
+    assert.equal((await call('/api/whoami', { token: second.body['token'] as string })).status, 401, 'logout kills that session only');
+    assert.equal((await call('/api/whoami', { token: admin })).status, 200, 'and leaves the other one alone');
 
     // Org structure: space, parent, child.
     const space = (await call('/api/spaces', { method: 'POST', token: admin, body: JSON.stringify({ name: 'eng' }) })).body['id'] as string;
     const parent = (await call('/api/projects', { method: 'POST', token: admin, body: JSON.stringify({ space, name: 'parent' }) })).body['id'] as string;
     const childP = (await call('/api/projects', { method: 'POST', token: admin, body: JSON.stringify({ parent, name: 'child', lane: 'doing' }) })).body['id'] as string;
     const stranger = (await call('/api/projects', { method: 'POST', token: admin, body: JSON.stringify({ space, name: 'stranger' }) })).body['id'] as string;
+    // A second space with two sibling projects: the shape a space-wide grant
+    // has to cover and a project-wide one must not.
+    const space2 = (await call('/api/spaces', { method: 'POST', token: admin, body: JSON.stringify({ name: 'ops' }) })).body['id'] as string;
+    const sibA = (await call('/api/projects', { method: 'POST', token: admin, body: JSON.stringify({ space: space2, name: 'sib-a' }) })).body['id'] as string;
+    const sibB = (await call('/api/projects', { method: 'POST', token: admin, body: JSON.stringify({ space: space2, name: 'sib-b' }) })).body['id'] as string;
 
     // A sub-project whose parent card cannot be created must not survive as
     // a registry orphan: the create compensates and fails whole.
@@ -109,16 +136,29 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     const parentNode0 = orgTree0.spaces[0]!.projects.find((p) => p.name === 'parent')!;
     assert.ok(!parentNode0.children.some((c) => c.name === 'ghost'), 'no orphan child in the org tree');
 
-    // Agent key on parent; actor forgery must be impossible.
-    const key = (await call(`/api/projects/${parent}/keys`, { method: 'POST', token: admin, body: JSON.stringify({ label: 'alpha-agent' }) })).body['token'] as string;
+    // A bot member scoped to `parent`, plus an api key for it. Actor forgery
+    // must be impossible: identity comes from the credential, never the body.
+    const BOT_PW = 'alpha-agent-pw';
+    const botCreate = await call('/api/members', { method: 'POST', token: admin, body: JSON.stringify({
+      username: 'alpha-agent', display: 'Alpha Agent', kind: 'bot', password: BOT_PW,
+      role: 'write', scopeKind: 'project', scopeId: parent,
+    }) });
+    assert.equal(botCreate.status, 200);
+    const botId = botCreate.body['id'] as string;
+    const mintedKey = await call(`/api/keys?member=${botId}`, { method: 'POST', token: admin, body: JSON.stringify({}) });
+    assert.equal(mintedKey.body['label'], 'api key #1', 'an unnamed key names itself');
+    const key = mintedKey.body['token'] as string;
+    assert.ok(key.startsWith('bfk_'));
     const own = (await call(`/api/projects/${parent}/cards`, { method: 'POST', token: key, body: JSON.stringify({ title: 'Own task', actor: 'admin' }) })).body['id'] as string;
-    const claimed = await call(`/api/projects/${parent}/cards/${own}/claim`, { method: 'POST', token: key, body: JSON.stringify({ actor: 'root' }) });
+    const claimed = await call(`/api/projects/${parent}/cards/${own}/claim`, { method: 'POST', token: key, body: JSON.stringify({ actor: 'imposter' }) });
     assert.equal(claimed.status, 200, 'ready unassigned card claims fine');
     const forged = await call(`/api/projects/${parent}/cards/${own}`, { token: admin });
-    assert.equal(forged.body['assignee'], 'alpha-agent', 'assignee bound to key label');
+    assert.equal(forged.body['assignee'], 'alpha-agent', 'assignee bound to the member username, not the request body');
+    assert.equal(forged.body['author'], 'alpha-agent', 'the card records who created it');
     const events = (await call(`/api/projects/${parent}/events?limit=10`, { token: admin })).body as unknown as { actor: string }[];
-    assert.ok(events.filter((e) => e.actor === 'alpha-agent').length >= 2, 'audit records the key label');
-    assert.equal(events.some((e) => e.actor === 'root'), false, 'forged actor never recorded');
+    assert.ok(events.filter((e) => e.actor === 'alpha-agent').length >= 2, 'audit records the member username');
+    assert.equal(events.some((e) => e.actor === 'imposter'), false, 'forged actor never recorded');
+    assert.equal(events.some((e) => e.actor === 'admin'), false, 'nor the one smuggled in at create time');
 
     // Claim is conditional: re-claim by the holder is a no-op, a rival gets a
     // structured 409, force overrides.
@@ -131,12 +171,12 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.equal(conflict.reason, 'assigned');
     assert.equal(conflict.holder, 'alpha-agent');
     const agentForce = await call(`/api/projects/${parent}/cards/${own}/claim`, { method: 'POST', token: key, body: JSON.stringify({ force: true }) });
-    assert.equal(agentForce.status, 403, 'force is an admin-only override');
+    assert.equal(agentForce.status, 403, 'force is an owner-only override');
     const agentForceMove = await call(`/api/projects/${parent}/cards/${own}/move`, { method: 'POST', token: key, body: JSON.stringify({ to: 'done', force: true }) });
-    assert.equal(agentForceMove.status, 403, 'forced moves are admin-only too');
+    assert.equal(agentForceMove.status, 403, 'forced moves are owner-only too');
     const forcedClaim = await call(`/api/projects/${parent}/cards/${own}/claim`, { method: 'POST', token: admin, body: JSON.stringify({ force: true }) });
     assert.equal(forcedClaim.status, 200);
-    assert.equal(forcedClaim.body['assignee'], 'admin', 'force takes the card');
+    assert.equal(forcedClaim.body['assignee'], 'root', 'force takes the card under the owner username');
     const forceAudit = (await call('/api/org/activity?limit=10', { token: admin })).body as unknown as { action: string }[];
     assert.ok(forceAudit.some((a) => a.action === 'force-override'), 'admin force use lands in the org audit log');
 
@@ -206,7 +246,7 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
       rollup: { blockedWhen: 'never', doingWhen: 'any-doing', elseState: 'todo' },
       migrations: { wishlist: 'todo' },
     };
-    assert.equal((await call(`/api/projects/${parent}/config`, { method: 'PUT', token: key, body: JSON.stringify(reshape) })).status, 403, 'agents cannot reshape boards');
+    assert.equal((await call(`/api/projects/${parent}/config`, { method: 'PUT', token: key, body: JSON.stringify(reshape) })).status, 403, 'non-owners cannot reshape boards');
     assert.equal((await call(`/api/projects/${parent}/config`, { method: 'PUT', token: admin, body: JSON.stringify({ name: 'x', lanes: [{ id: 'weird' }] }) })).status, 400, 'custom lane without canonical rejected');
     const put = await call(`/api/projects/${parent}/config`, { method: 'PUT', token: admin, body: JSON.stringify(reshape) });
     assert.equal(put.status, 200, JSON.stringify(put.body));
@@ -230,6 +270,80 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.deepEqual(authoredParsed.checklists.map((cl) => cl.section), ['Checklist', 'Launch']);
     assert.deepEqual(authored.body['checklist'], { done: 0, total: 2 });
 
+    // ---- the members model: scopes, roles, credential forms, renaming ----
+
+    // A space-scoped reader and a project-scoped writer, over the same tree.
+    const READER_PW = 'reader-password-1';
+    assert.equal((await call('/api/members', { method: 'POST', token: admin, body: JSON.stringify({
+      username: 'alpha-agent', kind: 'human', password: READER_PW, role: 'read', scopeKind: 'org' }) })).status, 400,
+      'usernames are unique: card logs would otherwise be ambiguous');
+    assert.equal((await call('/api/members', { method: 'POST', token: admin, body: JSON.stringify({
+      username: 'nowhere', kind: 'human', password: READER_PW, role: 'read', scopeKind: 'project', scopeId: 'p-nope' }) })).status, 400,
+      'a grant over a project that does not exist is refused');
+    const readerId = (await call('/api/members', { method: 'POST', token: admin, body: JSON.stringify({
+      username: 'watcher', display: 'Wendy Watcher', kind: 'human', password: READER_PW,
+      role: 'read', scopeKind: 'space', scopeId: space2 }) })).body['id'] as string;
+    const reader = (await call('/api/login', { method: 'POST', body: JSON.stringify({ username: 'watcher', password: READER_PW }) })).body['token'] as string;
+
+    // Space scope reaches every project in that space, which is the grant
+    // shape the old per-project keys could not express at all.
+    assert.equal((await call(`/api/projects/${sibA}/board`, { token: reader })).status, 200, 'space scope reaches one sibling');
+    assert.equal((await call(`/api/projects/${sibB}/board`, { token: reader })).status, 200, 'space scope reaches the other');
+    assert.equal((await call(`/api/projects/${parent}/board`, { token: reader })).status, 403, 'and stops at the space boundary');
+
+    // Read really means read.
+    assert.equal((await call(`/api/projects/${sibA}/cards`, { method: 'POST', token: reader, body: JSON.stringify({ title: 'nope' }) })).status, 403, 'a reader cannot create cards');
+    assert.equal((await call(`/api/projects/${sibA}/import`, { method: 'PUT', token: reader, body: JSON.stringify({ config: 'botflow: 0\nlanes:\n  - id: todo\n', cards: [] }) })).status, 403, 'a reader cannot replace a board');
+    assert.equal((await call('/api/spaces', { method: 'POST', token: reader, body: JSON.stringify({ name: 'mine' }) })).status, 403, 'a reader is not an owner');
+    assert.equal((await call('/api/members', { token: reader })).status, 403, 'a reader cannot read the member directory');
+
+    // The org tree a member bootstraps from is their slice, not the company.
+    const readerOrg = (await call('/api/org', { token: reader })).body as {
+      spaces: { id: string }[]; me: { role: string; display: string }; directory: { username: string; display: string }[];
+    };
+    assert.deepEqual(readerOrg.spaces.map((sp) => sp.id), [space2], 'a scoped member sees only their own space');
+    assert.equal(readerOrg.me.role, 'read');
+    assert.ok(readerOrg.directory.some((d) => d.username === 'alpha-agent'), 'the directory resolves other members by name');
+
+    // A bot authenticates with its own username and password, and produces
+    // the same identity as its api key does.
+    const basic = `Basic ${Buffer.from(`alpha-agent:${BOT_PW}`).toString('base64')}`;
+    const basicWho = await fetch(`${U}/api/whoami`, { headers: { authorization: basic } });
+    assert.equal(basicWho.status, 200, 'a bot can use basic auth');
+    assert.equal(((await basicWho.json()) as { username: string }).username, 'alpha-agent');
+    const badBasic = await fetch(`${U}/api/whoami`, { headers: { authorization: `Basic ${Buffer.from('alpha-agent:wrong').toString('base64')}` } });
+    assert.equal(badBasic.status, 401, 'a wrong password is not a way in');
+
+    // Key labels are notes to self: renaming one changes no identity anywhere.
+    const keys = (await call(`/api/keys?member=${botId}`, { token: admin })).body as unknown as { id: string; label: string }[];
+    const keyId = keys[0]!.id;
+    assert.equal((await call(`/api/keys/${keyId}`, { method: 'PATCH', token: admin, body: JSON.stringify({ label: 'CI runner' }) })).status, 200);
+    assert.equal(((await call(`/api/keys?member=${botId}`, { token: admin })).body as unknown as { label: string }[])[0]!.label, 'CI runner');
+    assert.equal(((await call(`/api/whoami`, { token: key })).body)['username'], 'alpha-agent', 'renaming a key does not rename its member');
+    const second2 = await call(`/api/keys?member=${botId}`, { method: 'POST', token: admin, body: JSON.stringify({}) });
+    assert.equal(second2.body['label'], 'api key #2', 'default key names do not collide after a rename');
+    assert.equal((await call(`/api/keys/${keyId}`, { method: 'PATCH', token: reader, body: JSON.stringify({ label: 'stolen' }) })).status, 403, 'you cannot rename someone else\'s key');
+
+    // The bug this whole model exists to fix: a display-name edit must show
+    // up on the boards without rewriting one byte of card history.
+    // A card the bot creates here and now: an earlier import replaced card
+    // 001's body with one carrying no log, which correctly has no author.
+    assert.equal(
+      ((await call(`/api/projects/${parent}/cards/${own}`, { token: admin })).body)['author'], null,
+      'a card imported without a creation entry claims no author',
+    );
+    const fresh = (await call(`/api/projects/${parent}/cards`, { method: 'POST', token: key, body: JSON.stringify({ title: 'Named by its maker' }) })).body['id'] as string;
+    const cardBefore = (await call(`/api/projects/${parent}/cards/${fresh}`, { token: admin })).body;
+    assert.equal(cardBefore['author'], 'alpha-agent', 'the card records its creator');
+    assert.equal((await call(`/api/members/${botId}`, { method: 'PATCH', token: admin, body: JSON.stringify({ display: 'Renamed Bot' }) })).status, 200);
+    const dir = (await call('/api/org', { token: admin })).body['directory'] as { username: string; display: string }[];
+    assert.equal(dir.find((d) => d.username === 'alpha-agent')!.display, 'Renamed Bot', 'the rename is live for every board view');
+    const cardAfter = (await call(`/api/projects/${parent}/cards/${fresh}`, { token: admin })).body;
+    assert.equal(cardAfter['body'], cardBefore['body'], 'and the stored card is byte-identical: history is not rewritten');
+
+    // Disabling a member cuts every credential it holds at once.
+    assert.equal((await call(`/api/members/${readerId}`, { method: 'PATCH', token: admin, body: JSON.stringify({ disabled: true }) })).status, 200);
+    assert.equal((await call('/api/whoami', { token: reader })).status, 401, 'a disabled member has no sessions');
     // Org imports are fully validated before they create registry state.
     const badOrg = await call('/api/org/import', {
       method: 'PUT', token: admin,
@@ -338,8 +452,15 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     });
     assert.equal(themed.body['density'], 'compact');
     const exported = (await call('/api/org/export', { token: admin })).body as Record<string, unknown>;
-    assert.equal(exported['version'], 2);
-    assert.ok(Array.isArray(exported['keys']) && (exported['keys'] as unknown[]).length === 1, 'keys exported');
+    assert.equal(exported['version'], 3, 'members and member-keyed api keys are a new export shape');
+    assert.ok(Array.isArray(exported['keys']) && (exported['keys'] as unknown[]).length === 2, 'both of the bot keys exported');
+    const exportedMembers = exported['members'] as { username: string; passHash: string; role: string }[];
+    assert.ok(Array.isArray(exportedMembers), 'members exported');
+    assert.deepEqual(exportedMembers.map((m) => m.username).sort(), ['alpha-agent', 'root', 'watcher']);
+    // Password hashes ride along or a restore locks the owner out of their
+    // own company. That is also why the export is a credential.
+    assert.match(exportedMembers.find((m) => m.username === 'root')!.passHash, /^pbkdf2\$/);
+    assert.ok((exported['keys'] as { username: string }[]).every((k) => k.username === 'alpha-agent'), 'keys name their member, not a project');
     const manifest = exported['uploads'] as { key: string }[];
     assert.ok(manifest.some((u) => upUrl === `/files/${u.key}`), 'export manifests uploaded objects');
     await call('/api/settings', {
@@ -349,7 +470,19 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
 
     await call(`/api/spaces/${space}`, { method: 'DELETE', token: admin });
     assert.equal((await call(`/api/public/${share}/board`)).status, 404, 'share died with the space');
-    assert.equal((await call(`/api/projects/${parent}/board`, { token: key })).status, 401, 'deleted key no longer authenticates');
+    // Deleting the space took the bot's whole scope with it, so the member is
+    // disabled and every credential it holds stops working at once.
+    assert.equal((await call(`/api/projects/${parent}/board`, { token: key })).status, 401, 'a member with no scope left cannot authenticate');
+    // Including a basic-auth credential that was verified moments ago: the
+    // derivation is cached, the member's state never is.
+    assert.equal(
+      (await fetch(`${U}/api/whoami`, { headers: { authorization: `Basic ${Buffer.from(`alpha-agent:${BOT_PW}`).toString('base64')}` } })).status,
+      401,
+      'a cached basic-auth credential dies with its scope too',
+    );
+    // The space-scoped reader loses access on the same deletion, even though
+    // no project it named was individually deleted.
+    assert.equal((await call('/api/whoami', { token: reader })).status, 401, 'space-scoped members are disabled with their space');
 
     const imported = await call('/api/org/import', { method: 'PUT', token: admin, body: JSON.stringify(exported) });
     assert.equal(imported.status, 200, JSON.stringify(imported.body));
@@ -376,10 +509,54 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
       'visual system and density survive a restore',
     );
 
-    // The restored key hash keeps the original agent token valid.
+    // The restored member and key hash keep the original bot credential valid.
     const whoami = await call('/api/whoami', { token: key });
-    assert.equal(whoami.status, 200, 'exported key survives restore');
-    assert.equal(whoami.body['label'], 'alpha-agent');
+    assert.equal(whoami.status, 200, 'exported member and key survive restore');
+    assert.equal(whoami.body['username'], 'alpha-agent');
+    assert.equal(whoami.body['kind'], 'bot');
+
+    // A version-2 backup predates members, so its project-keyed `keys` block
+    // cannot be re-homed. The boards must still restore: refusing the whole
+    // payload would strand every card in someone's only backup.
+    const legacy = {
+      version: 2, name: 'legacy co',
+      keys: [{ hash: 'a'.repeat(64), projectId: 'p-old', label: 'old agent', created: '2026-01-01T00:00:00.000Z', revoked: false }],
+      spaces: [{ id: 's-old', name: 'legacy space', projects: [{ id: 'p-old', name: 'legacy project', board: { config: 'botflow: 0\nname: legacy project\nlanes:\n  - id: todo\n', cards: [] }, children: [] }] }],
+    };
+    // A v2 payload's members are not validated (the validator gates on v3), so
+    // they must not be applied either: an unvalidated members block would skip
+    // every check the validator exists to make.
+    const smuggled = {
+      ...legacy,
+      members: [{ username: 'root', display: 'pwned', kind: 'human', role: 'owner', scopeKind: 'org', scopeId: null,
+        passHash: `pbkdf2$100000$${'a'.repeat(32)}$${'b'.repeat(64)}`, disabled: false, created: '2026-01-01T00:00:00.000Z' }],
+    };
+    assert.equal((await call('/api/org/import', { method: 'PUT', token: admin, body: JSON.stringify(smuggled) })).status, 200);
+    assert.equal((await call('/api/org', { token: admin })).status, 200, 'the owner session still works: no password was overwritten');
+
+    const legacyImport = await call('/api/org/import', { method: 'PUT', token: admin, body: JSON.stringify(legacy) });
+    assert.equal(legacyImport.status, 200, `a v2 backup still restores: ${JSON.stringify(legacyImport.body)}`);
+    const afterLegacy = (await call('/api/org', { token: admin })).body as { spaces: { name: string }[] };
+    assert.ok(afterLegacy.spaces.some((sp) => sp.name === 'legacy space'), 'and its boards come back');
+    const legacyAudit = (await call('/api/org/activity?limit=20', { token: admin })).body as unknown as { action: string }[];
+    assert.ok(legacyAudit.some((a) => a.action === 'import-legacy-keys-dropped'), 'while saying plainly that its keys did not');
+
+    // A restored owner is org-wide by construction: role checks never consult
+    // scope, so a row claiming owner+project would gate as owner while the
+    // members table showed it as project-scoped.
+    const exportedNow = (await call('/api/org/export', { token: admin })).body as Record<string, unknown>;
+    const narrowed = {
+      ...exportedNow,
+      members: (exportedNow['members'] as Record<string, unknown>[]).map((m) =>
+        m['role'] === 'owner' ? { ...m, scopeKind: 'project', scopeId: 'p-anything' } : m),
+    };
+    assert.equal((await call('/api/org/import', { method: 'PUT', token: admin, body: JSON.stringify(narrowed) })).status, 200);
+    const owners = ((await call('/api/members', { token: admin })).body as unknown as { role: string; scopeKind: string }[])
+      .filter((m) => m.role === 'owner');
+    assert.ok(owners.length > 0);
+    assert.ok(owners.every((m) => m.scopeKind === 'org'), 'a restored owner is normalized back to org scope');
+    const credAudit = (await call('/api/org/activity?limit=30', { token: admin })).body as unknown as { action: string }[];
+    assert.ok(credAudit.some((a) => a.action === 'import-credentials'), 'and the restore itemizes what it brought');
 
     // A prose mention of an exported project id is not mistaken for a project
     // card during restore: the registry child still gets exactly one card.
@@ -432,23 +609,149 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.ok(audit.some((a) => a.action === 'delete-space'), 'deletion in org audit log');
     assert.ok(audit.some((a) => a.action === 'import'), 'restore in org audit log');
 
-    // Token rotation and setup-key recovery: each mints a fresh admin token
-    // and the previous one dies instantly. Runs last: it retires `admin`.
-    assert.equal((await call('/api/rotate-token', { method: 'POST', token: key })).status, 403, 'agents cannot rotate the admin token');
-    const rotated = await call('/api/rotate-token', { method: 'POST', token: admin });
-    assert.equal(rotated.status, 200);
-    const admin2 = rotated.body['token'] as string;
-    assert.equal((await call('/api/org', { token: admin })).status, 401, 'old admin token is dead after rotation');
-    assert.equal((await call('/api/org', { token: admin2 })).status, 200, 'new token works');
-    assert.equal((await call('/api/recover', { method: 'POST', body: JSON.stringify({ setupKey: 'wrong' }) })).status, 403, 'recovery rejects a wrong setup key');
-    const recovered = await call('/api/recover', { method: 'POST', body: JSON.stringify({ setupKey: SETUP_KEY }) });
+    // Rotating a credential is how an operator throws someone out. An api key
+    // that outlived the reset would leave them holding the access it revoked.
+    const evictKey = (await call(`/api/keys?member=${botId}`, { method: 'POST', token: admin, body: JSON.stringify({}) })).body['token'] as string;
+    assert.equal((await call('/api/whoami', { token: evictKey })).status, 200, 'the key works to begin with');
+    await call(`/api/members/${botId}/password`, { method: 'POST', token: admin, body: JSON.stringify({ password: 'rotated-bot-pw-1' }) });
+    assert.equal((await call('/api/whoami', { token: evictKey })).status, 401, 'a password reset revokes that member api keys');
+
+    // A username is the actor string already written into card logs, so
+    // removing a member must not free it for someone else to inherit.
+    const ghost = (await call('/api/members', { method: 'POST', token: admin, body: JSON.stringify({
+      username: 'ghost', kind: 'human', password: 'ghost-pass-1', role: 'read', scopeKind: 'org' }) })).body['id'] as string;
+    assert.equal((await call(`/api/members/${ghost}`, { method: 'DELETE', token: admin })).status, 200);
+    assert.equal((await call('/api/login', { method: 'POST', body: JSON.stringify({ username: 'ghost', password: 'ghost-pass-1' }) })).status, 401,
+      'a removed member cannot log in');
+    assert.equal((await call('/api/members', { method: 'POST', token: admin, body: JSON.stringify({
+      username: 'ghost', kind: 'human', password: 'different-pw-1', role: 'owner', scopeKind: 'org' }) })).status, 400,
+      'and nobody else can take the name and inherit their card history');
+
+    // Changing your own password proves the old one and ends every other
+    // session. Runs last: it retires `admin` in favour of `admin2`.
+    assert.equal(
+      (await call('/api/me/password', { method: 'POST', token: admin, body: JSON.stringify({ current: 'wrong', next: 'brand-new-pw-1' }) })).status,
+      403,
+      'a borrowed session cannot change the password without the old one',
+    );
+    const changed = await call('/api/me/password', { method: 'POST', token: admin, body: JSON.stringify({ current: OWNER_PW, next: 'brand-new-pw-1' }) });
+    assert.equal(changed.status, 200);
+    const admin2 = changed.body['token'] as string;
+    assert.equal((await call('/api/org', { token: admin })).status, 401, 'the old session dies with the old password');
+    assert.equal((await call('/api/org', { token: admin2 })).status, 200, 'the caller gets a fresh session back');
+
+    // Setup-key recovery resets an owner password and clears every session.
+    assert.equal(
+      (await call('/api/recover', { method: 'POST', body: JSON.stringify({ username: 'root', password: 'recovered-pw-1', setupKey: 'wrong' }) })).status,
+      403,
+      'recovery rejects a wrong setup key',
+    );
+    const recovered = await call('/api/recover', { method: 'POST', body: JSON.stringify({ username: 'root', password: 'recovered-pw-1', setupKey: SETUP_KEY }) });
     assert.equal(recovered.status, 200);
     const admin3 = recovered.body['token'] as string;
-    assert.equal((await call('/api/org', { token: admin2 })).status, 401, 'rotated token dies on recovery');
+    assert.equal((await call('/api/org', { token: admin2 })).status, 401, 'recovery ends every live session');
     assert.equal((await call('/api/org', { token: admin3 })).status, 200);
+    // Failed-credential throttle. The bucket is (client, account): under
+    // `wrangler dev` workerd sets cf-connecting-ip itself, so every caller
+    // here is one client and only the account half of the pair varies. That
+    // is enough to prove the scoping that matters, and the flood targets a
+    // throwaway account so it cannot strand the owner for the rest of the run.
+    await call('/api/members', { method: 'POST', token: admin3, body: JSON.stringify({
+      username: 'lockme', kind: 'human', password: 'lockme-pass-1', role: 'read', scopeKind: 'org' }) });
+    const guess = (username: string) => call('/api/login', {
+      method: 'POST', body: JSON.stringify({ username, password: 'not-the-password' }),
+    });
+    let blocked = 0;
+    for (let i = 0; i < 12; i++) if ((await guess('lockme')).status === 429) blocked++;
+    assert.ok(blocked >= 2, `sustained guessing is cut off (saw ${blocked} blocked)`);
+    const limited = await guess('lockme');
+    assert.equal(limited.status, 429);
+    assert.ok((limited.body['retryAfter'] as number) > 0, 'and says how long to wait');
+    assert.equal((await call('/api/login', { method: 'POST', body: JSON.stringify({ username: 'lockme', password: 'lockme-pass-1' }) })).status, 429,
+      'the block is a real gate, not just wrong-password rejection');
+
+    // Another account from the same client is served normally: the block
+    // follows the pair, so a flood aimed at one member cannot lock out the
+    // rest of the company.
+    assert.equal((await guess('nobody-here')).status, 401, 'another account is unaffected');
+    assert.equal((await call('/api/org', { token: admin3 })).status, 200, 'and a live session keeps working');
+
+    // A typo in the owner username must not silently create a SECOND org-wide
+    // owner and kill every session while reporting success.
+    const beforeTypo = ((await call('/api/members', { token: admin3 })).body as unknown as { username: string }[]).length;
+    const typo = await call('/api/recover', { method: 'POST', body: JSON.stringify({ username: 'rooot', password: 'typo-pass-1', setupKey: SETUP_KEY }) });
+    assert.equal(typo.status, 409, 'recovery names an existing owner or it does nothing');
+    assert.equal(((await call('/api/members', { token: admin3 })).body as unknown as { username: string }[]).length, beforeTypo, 'and no member was added');
+    assert.equal((await call('/api/org', { token: admin3 })).status, 200, 'and the live session survives');
+
+    // Recovery must refuse a password it would then be unable to verify:
+    // setting an unusable hash locks the company instead of recovering it.
+    assert.equal(
+      (await call('/api/recover', { method: 'POST', body: JSON.stringify({ username: 'root', password: '', setupKey: SETUP_KEY }) })).status,
+      409,
+      'recovery rejects an empty password',
+    );
+    assert.equal((await call('/api/org', { token: admin3 })).status, 200, 'and leaves the recovered session alone');
+    assert.equal(
+      (await call('/api/login', { method: 'POST', body: JSON.stringify({ username: 'root', password: 'recovered-pw-1' }) })).status,
+      200,
+      'the real password still works',
+    );
+
     const postRotate = (await call('/api/org/activity?limit=10', { token: admin3 })).body as unknown as { action: string }[];
-    assert.ok(postRotate.some((a) => a.action === 'rotate-token'), 'rotation audited');
-    assert.ok(postRotate.some((a) => a.action === 'recover-admin'), 'recovery audited');
+    assert.ok(postRotate.some((a) => a.action === 'password-change'), 'password change audited');
+    assert.ok(postRotate.some((a) => a.action === 'recover-owner'), 'recovery audited');
+  } finally {
+    await stopWorker(child, state);
+  }
+});
+
+test('recovery on a deployment that was never set up leaves a working company', { timeout: 180_000 }, async () => {
+  // The failure this pins down: recovery used to create an owner without an
+  // org row, so /api/org answered 500 and /api/setup refused forever with
+  // "already initialized". That state has no way out.
+  const port = PORT + 1;
+  const state = mkdtempSync(join(tmpdir(), 'botflow-recover-'));
+  const child = spawn(
+    process.execPath,
+    [WRANGLER, 'dev', '--port', String(port), '--persist-to', state, '--var', `SETUP_KEY:${SETUP_KEY}`],
+    { cwd: join(import.meta.dirname, '..'), stdio: 'ignore', env: { ...process.env }, detached: true },
+  );
+  const at = async (path: string, opts: RequestInit & { token?: string } = {}) => {
+    const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+      ...opts,
+      headers: { 'content-type': 'application/json', ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}) },
+    });
+    return { status: res.status, body: (await res.json().catch(() => ({}))) as Record<string, unknown> };
+  };
+  try {
+    let up = false;
+    for (let i = 0; i < 90 && !up; i++) {
+      up = await fetch(`http://127.0.0.1:${port}/api/public/gate`).then((r) => r.ok, () => false);
+      if (!up) await new Promise((r) => setTimeout(r, 1000));
+    }
+    assert.ok(up, 'wrangler dev came up');
+
+    assert.equal((await at('/api/recover', { method: 'POST', body: JSON.stringify({ username: 'rescue', password: 'rescue-pass-1', setupKey: 'wrong' }) })).status, 403,
+      'a fresh deployment is not a setup-key oracle either');
+    assert.equal((await at('/api/recover', { method: 'POST', body: JSON.stringify({ username: 'rescue', password: 'short', setupKey: SETUP_KEY }) })).status, 409,
+      'and it will not set a password it could never verify');
+    assert.equal((await at('/api/recover', { method: 'POST', body: JSON.stringify({ username: 'Rescue Me', password: 'rescue-pass-1', setupKey: SETUP_KEY }) })).status, 409,
+      'nor accept a username that cannot survive a card log');
+
+    const rescued = await at('/api/recover', { method: 'POST', body: JSON.stringify({ username: 'rescue', password: 'rescue-pass-1', setupKey: SETUP_KEY }) });
+    assert.equal(rescued.status, 200);
+    const token = rescued.body['token'] as string;
+
+    const org = await at('/api/org', { token });
+    assert.equal(org.status, 200, 'the recovered company is readable, not a 500');
+    assert.equal(org.body['name'], 'company');
+    assert.equal((org.body['me'] as { role: string }).role, 'owner');
+
+    // And it is a real company: the owner can log in again and use it.
+    assert.equal((await at('/api/login', { method: 'POST', body: JSON.stringify({ username: 'rescue', password: 'rescue-pass-1' }) })).status, 200);
+    const space = await at('/api/spaces', { method: 'POST', token, body: JSON.stringify({ name: 'after-rescue' }) });
+    assert.equal(space.status, 200, 'and it can be built out normally');
   } finally {
     await stopWorker(child, state);
   }

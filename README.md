@@ -59,7 +59,7 @@ cd my-project && botflow prime
 
 ## Hosted manager (Cloudflare)
 
-`worker/` is a self-hosted board manager: **Company → Spaces → Projects (projects own projects; a project is a board)** with a web UI at every level, per-project **agent keys**, and an append-only **audit log**. One SQLite-backed Durable Object per project serializes all writes; boards are stored in the exact same document format the CLI uses.
+`worker/` is a self-hosted board manager: **Company → Spaces → Projects (projects own projects; a project is a board)** with a web UI at every level, **member accounts** for people and bots alike, and an append-only **audit log**. One SQLite-backed Durable Object per project serializes all writes; boards are stored in the exact same document format the CLI uses.
 
 ```sh
 npm run dev:manager                # local: http://127.0.0.1:8787
@@ -71,12 +71,13 @@ The dev server is a **full local instance**: workerd with SQLite Durable Objects
 under `.wrangler/state/`, no Cloudflare account or network needed. Keep one running under a
 supervisor for local testing (`pm2 start "npm run dev:manager -- --port 4700" --name
 botflow-manager --cwd <repo>`); source changes hot-reload. Deleting `.wrangler/` resets the
-instance: company, tokens, boards, everything. Loopback setup is intentionally zero-config;
+instance: company, accounts, boards, everything. Loopback setup is intentionally zero-config;
 an internet-hosted deployment refuses initialization until `SETUP_KEY` is configured as a
 Worker secret. Deploy-button users can add it under **Settings → Variables and Secrets** in
-the Cloudflare dashboard. Enter that value once in the setup form; it is not the admin token.
-The same secret is the recovery path: "lost your token?" on the login page mints a fresh
-admin token (the lost one dies), and settings can rotate the token at any time. Both are audited.
+the Cloudflare dashboard. Enter that value once in the setup form; it is not your password.
+The same secret is the recovery path: "lost access?" on the login page resets an owner's
+password (ending every live session), and anyone can change their own password from settings.
+Both are audited.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/kodareef5/botflow)
 *(the button needs this repo public on GitHub; `wrangler deploy` works regardless)*
@@ -84,19 +85,58 @@ admin token (the lost one dies), and settings can rotate the token at any time. 
 Visitors get a consumer pitch at `/about`, live public share links can optionally sit on the
 login page (admin-controlled and off by default), and settings offers a one-click **Scoops Empire** demo
 company plus a full **company export** (every space, project, board, and card as one
-restore-grade JSON, including key hashes and share links; store it like a credential). The
-demo source ships in `demo/icecream-empire.json`.
+restore-grade JSON, including member records with password hashes, api key hashes, and share
+links; store it like a credential, because it is one). The demo source ships in
+`demo/icecream-empire.json`.
 
-After the setup key is configured, the first visit initializes the company and mints the
-admin token (shown exactly once). From the UI: create spaces and projects, mint scoped agent
-keys (the key's label becomes the agent's actor identity in the audit trail), watch boards and
-activity live. Agents drive projects via REST with their key: same verbs as the CLI. Link a
-repo board and sync snapshots:
+After the setup key is configured, the first visit names the company and creates the **owner**
+account. From the UI: create spaces and projects, add members, watch boards and activity live.
+
+> **Upgrading an existing deployment is a deliberate auth reset.** The admin
+> token and every `bfk_` agent key stop working, and a company export taken
+> before this change restores its boards but not its keys. Spaces, projects,
+> boards, and cards are untouched: the instance reports itself uninitialized,
+> you re-run setup behind `SETUP_KEY` to create the owner account, and
+> everything is where you left it. Re-issue bot credentials from each member's
+> account afterwards.
+
+### Members, scopes, and roles
+
+Everyone on a board is a member with a username and password. Humans and bots use the same
+model; a bot is just a member with `kind: bot`.
+
+- **Scope** is where a member can reach: the whole **company**, one **space** (every project
+  in it), or one **project** and everything nested beneath it.
+- **Role** is what they can do there: **read** (look, cannot touch), **write** (work the
+  board), or **owner** (run the company: spaces, board shape, members, sharing, `force`).
+- **Username is permanent** because it is the actor string written into every card's `## Log`
+  and its `assignee`. **Display name is not**: renaming a member updates every board view at
+  once, without rewriting a single card. Card history stays byte-stable and git-diff-clean.
+
+A member holds a password and, optionally, any number of **api keys**. A key carries that
+member's identity and scope and can be revoked on its own, which is what makes it the right
+credential for CI. A key's label ("laptop", "CI runner") is a note to yourself, not an
+identity: unnamed keys name themselves `api key #1`, `#2`, and so on, and renaming one changes
+nothing on any board.
+
+So a bot can authenticate three ways, all resolving to the same identity:
+
+```sh
+curl -u scout:… https://manager.example.workers.dev/api/whoami   # its own credentials
+curl -H 'authorization: Bearer bfk_…' …                          # an api key
+curl -H 'authorization: Bearer bfu_…' …                          # a session from /api/login
+```
+
+Link a repo board and sync snapshots (`BOTFLOW_TOKEN` takes an api key):
 
 ```sh
 botflow remote add https://manager.example.workers.dev p-abc123
 BOTFLOW_TOKEN=bfk_… botflow push   # or pull
 ```
+
+Hosted actions are always logged under the authenticated member: a request body cannot name a
+different actor, so `botflow push --actor X` is ignored by the manager (it still applies to a
+local board).
 
 Binary attachment uploads are opt-in: create an R2 bucket and bind it as `ATTACHMENTS`
 (one commented line in `wrangler.jsonc`, or the dashboard). The UI lights up an upload

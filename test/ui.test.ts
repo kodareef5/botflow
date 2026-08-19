@@ -28,6 +28,10 @@ test('ui: keyboard and aria wiring is present', () => {
     'role="tablist"',
     'aria-selected=',
     'role="checkbox" aria-checked=',
+    'data-addcard=',                                     // create a card from a lane header
+    'aria-label="add a card to ',                        // and it says which lane
+    'autocomplete="current-password"',                   // login is a real credential form
+    'type="password"',
     'onkeydown=boardKeys',
     "e.key==='ArrowDown'",
     '_restoreFocus',
@@ -129,6 +133,26 @@ function loadMorph(): { morphChildren: (a: MiniNode, b: MiniNode) => void } {
   runInNewContext(`${js.slice(start, end)}; exports={nodeKey,morphChildren,morphNode}`, ctx);
   return (ctx as { exports: { morphChildren: (a: MiniNode, b: MiniNode) => void } }).exports;
 }
+
+test('ui: identity, role flags and the name directory refresh together', () => {
+  const app = scripts.join('\n');
+  // A rename is only visible because the UI resolves usernames through the
+  // directory at render time, so every path that reloads the org has to
+  // rebuild it. Reassigning ORG alone leaves renamed members showing their
+  // old name until a full page load.
+  assert.match(app, /function adoptOrg\(org\)\{/, 'org adoption lives in one place');
+  for (const derived of ['ME=', 'CAN_WRITE=', 'IS_OWNER=', 'RO=', 'DIR=']) {
+    assert.ok(app.slice(app.indexOf('function adoptOrg(')).slice(0, 400).includes(derived),
+      `adoptOrg refreshes ${derived}`);
+  }
+  assert.match(app, /async function reloadOrg\(\)\{adoptOrg\(await api\('\/api\/org'\)\)/, 'reloadOrg goes through it');
+  assert.ok(!/\bORG=await api\('\/api\/org'\)/.test(app), 'nothing assigns ORG behind adoptOrg\'s back');
+
+  // Creating a member must not default to the most powerful role.
+  const roles = /\[([^\]]*'owner'[^\]]*)\]\.map\(r=>'<option value="'\+r/.exec(app);
+  assert.ok(roles, 'the role select is built from a list');
+  assert.ok(!roles[1]!.trimStart().startsWith("'owner'"), 'owner is not the default-selected first option');
+});
 
 test('morph: keyed cards keep node identity across reorder and update', () => {
   const { morphChildren } = loadMorph();

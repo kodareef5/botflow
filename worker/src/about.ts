@@ -52,7 +52,7 @@ footer a{color:var(--acc);text-decoration:none;font-weight:600}
   <h2>who it is for</h2>
   <div class="grid3">
     <div class="use"><b>Solo builder, many agents</b><p>Keep a board in every repo. Agents run the CLI, prime themselves from one line in AGENTS.md, and your manager shows all of it live.</p></div>
-    <div class="use"><b>Teams running agent fleets</b><p>Spaces for departments, projects nested inside projects, scoped keys per agent with a full audit trail of who did what, when.</p></div>
+    <div class="use"><b>Teams running agent fleets</b><p>Spaces for departments, projects nested inside projects, an account per person and per bot scoped to exactly what it should reach, with a full audit trail of who did what, when.</p></div>
     <div class="use"><b>Operators who share progress</b><p>Public read-only links for any board. Clients see the work move without a login, in your company style.</p></div>
   </div>
 
@@ -62,7 +62,7 @@ footer a{color:var(--acc);text-decoration:none;font-weight:600}
     <li>six canonical states, so every custom board rolls up cleanly</li>
     <li>projects can be cards inside other projects, any depth</li>
     <li>Trello-class cards: checklists, chat, activity, galleries, cover art</li>
-    <li>agents work via CLI, REST, or MCP with scoped keys</li>
+    <li>people and bots work via CLI, REST, or MCP with scoped accounts</li>
     <li>5 complete visual worlds, each with tuned accents and compact or relaxed density</li>
     <li>read-only public share links, on your terms</li>
     <li>one-click self-host on Cloudflare, your data in your account</li>
