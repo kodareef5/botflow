@@ -427,6 +427,8 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.equal(((await call(`/api/whoami`, { token: key })).body)['username'], 'alpha-agent', 'renaming a key does not rename its member');
     const second2 = await call(`/api/keys?member=${botId}`, { method: 'POST', token: admin, body: JSON.stringify({}) });
     assert.equal(second2.body['label'], 'api key #2', 'default key names do not collide after a rename');
+    assert.equal((await call(`/api/keys?member=${botId}`, { method: 'POST', token: reader, body: JSON.stringify({}) })).status, 403,
+      'a non-owner cannot provision a key for another member');
     assert.equal((await call(`/api/keys/${keyId}`, { method: 'PATCH', token: reader, body: JSON.stringify({ label: 'stolen' }) })).status, 403, 'you cannot rename someone else\'s key');
 
     // The bug this whole model exists to fix: a display-name edit must show

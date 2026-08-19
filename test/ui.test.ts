@@ -154,21 +154,24 @@ function renderCols(readOnly = false): string {
 function loadMemberHelpers(): {
   scopeLabel: (member: Record<string, unknown>) => string;
   memberFields: (member: Record<string, unknown> | null) => string;
+  memberRow: (member: Record<string, unknown>) => string;
 } {
   const js = scripts[1]!;
   const start = js.indexOf('function scopeLabel');
-  const end = js.indexOf('function readMemberFields', start);
+  const end = js.indexOf('function provisionBotKey', start);
   assert.ok(start !== -1 && end > start, 'member rendering helpers found in page JS');
   const project = { id: 'p-build', name: 'Build', children: [] };
   const ctx: Record<string, unknown> = {
     ORG: { spaces: [{ id: 's-ops', name: 'Operations', projects: [project] }] },
+    ME: { username: 'owner' },
     findAny: (id: string) => id === project.id ? project : null,
     esc: (s: unknown) => String(s ?? ''),
   };
-  runInNewContext(`${js.slice(start, end)}; exports={scopeLabel,memberFields}`, ctx);
+  runInNewContext(`${js.slice(start, end)}; exports={scopeLabel,memberFields,memberRow}`, ctx);
   return ctx['exports'] as {
     scopeLabel: (member: Record<string, unknown>) => string;
     memberFields: (member: Record<string, unknown> | null) => string;
+    memberRow: (member: Record<string, unknown>) => string;
   };
 }
 
@@ -286,13 +289,26 @@ test('ui: ordinary settings clicks cannot masquerade as theme choices', () => {
 });
 
 test('ui: the member directory consumes the flat identity scope contract', () => {
-  const { scopeLabel, memberFields } = loadMemberHelpers();
+  const { scopeLabel, memberFields, memberRow } = loadMemberHelpers();
   assert.equal(scopeLabel({ scopeKind: 'org', scopeId: null }), 'whole company');
   assert.equal(scopeLabel({ scopeKind: 'space', scopeId: 's-ops' }), 'space: Operations');
   assert.equal(scopeLabel({ scopeKind: 'project', scopeId: 'p-build' }), 'project: Build');
   const fields = memberFields({ display: 'Builder', role: 'write', scopeKind: 'project', scopeId: 'p-build' });
   assert.match(fields, /value="project:p-build" selected/,
     'editing a member selects the scope returned by /api/members');
+
+  const common = { display: 'Agent', username: 'agent', role: 'write', scopeKind: 'project', scopeId: 'p-build', keys: 0, disabled: false };
+  const bot = memberRow({ ...common, memberId: 'm-bot', kind: 'bot' });
+  const human = memberRow({ ...common, memberId: 'm-human', kind: 'human' });
+  assert.match(bot, /data-keym="m-bot"/, 'owners get an explicit key action for bots');
+  assert.match(bot, /aria-label="create API key for agent"/);
+  assert.doesNotMatch(human, /data-keym=/, 'human accounts keep key creation in their own account panel');
+
+  const app = scripts.join('\n');
+  assert.match(app, /api\('\/api\/keys\?member='\+encodeURIComponent\(m\.memberId\),\{method:'POST'/,
+    'the bot key flow provisions the selected member, not the logged-in owner');
+  assert.match(app, /The bot does not need to log in/);
+  assert.match(app, /Copy this key now\. It is never shown again/);
 });
 
 test('ui: a card can be moved without a pointer', () => {

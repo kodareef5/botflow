@@ -1518,16 +1518,49 @@ function readMemberFields(){
     scopeId:cut<0?null:raw.slice(cut+1),
   };
 }
+function memberRow(m){
+  const botKey=m.kind==='bot'
+    ?'<button data-keym="'+esc(m.memberId)+'" aria-label="create API key for '+esc(m.username)+'">+ key</button> '
+    :'';
+  return '<tr'+(m.disabled?' style="opacity:.5"':'')+'><td>'+esc(m.display)+'</td><td class="mono">'+esc(m.username)+'</td>'
+    +'<td>'+esc(m.kind)+'</td><td>'+esc(m.role)+'</td><td>'+esc(scopeLabel(m))+'</td>'
+    +'<td class="mono" data-keycount="'+esc(m.memberId)+'">'+esc(m.keys)+'</td>'
+    +'<td>'+botKey+'<button data-edm="'+esc(m.memberId)+'">edit</button> <button data-pwm="'+esc(m.memberId)+'">password</button>'
+    +(m.username===ME.username?'':' <button data-delm="'+esc(m.memberId)+'" data-name="'+esc(m.display)+'">remove</button>')+'</td></tr>';
+}
+function provisionBotKey(m,host){
+  const title='New API key for '+m.username;
+  const dlg=overlay('<h3>'+esc(title)+'</h3>'
+    +'<p class="setting-note">This credential acts as <code>'+esc(m.username)+'</code>: '+esc(m.role)+' on '+esc(scopeLabel(m))+'. The bot does not need to log in.</p>'
+    +'<form><div class="field"><label>name<input name="label" placeholder="optional: defaults to api key #N"></label></div>'
+    +'<div class="err" role="alert"></div><div class="actions"><button type="button" class="ghost" data-x>cancel</button><button class="primary" data-mint>mint key</button></div></form>',
+    '',title);
+  $('[data-x]',dlg).onclick=closeOverlay;
+  $('form',dlg).onsubmit=async e=>{e.preventDefault();
+    const submit=$('[data-mint]',dlg);submit.disabled=true;submit.textContent='minting…';
+    try{
+      const label=$('[name="label"]',dlg).value.trim();
+      const r=await api('/api/keys?member='+encodeURIComponent(m.memberId),{method:'POST',body:JSON.stringify(label?{label}:{})});
+      m.keys=Number(m.keys||0)+1;
+      const count=[...host.querySelectorAll('[data-keycount]')].find(x=>x.dataset.keycount===m.memberId);
+      if(count)count.textContent=String(m.keys);
+      dlg.innerHTML='<h3>'+esc(r.label)+' for '+esc(m.username)+'</h3>'
+        +'<div class="tokenbox">'+esc(r.token)+'</div>'
+        +'<p class="warn">Copy this key now. It is never shown again.</p>'
+        +'<div class="actions"><button type="button" class="ghost" data-copykey>copy</button><button type="button" class="primary" data-done>done</button></div>';
+      const copy=$('[data-copykey]',dlg);copy.onclick=async()=>{try{await navigator.clipboard.writeText(r.token);copy.textContent='copied'}catch{copy.textContent='copy failed'}};
+      $('[data-done]',dlg).onclick=closeOverlay;
+    }catch(err){$('.err',dlg).textContent=err.message;submit.disabled=false;submit.textContent='mint key'}
+  };
+  const input=$('[name="label"]',dlg);if(input)input.focus();
+}
 async function renderMembers(host){
   let members=[];
   try{members=await api('/api/members')}catch(err){host.innerHTML='<div class="err">'+esc(err.message)+'</div>';return}
   host.innerHTML='<p style="margin-bottom:10px"><button class="primary" id="addm">+ member</button>'
     +' <span style="color:var(--muted);font-size:12px">people and bots. A username is permanent (cards are logged under it); a display name is not.</span></p>'
     +'<table class="list"><tr><th>display name</th><th>username</th><th>type</th><th>role</th><th>scope</th><th>keys</th><th></th></tr>'
-    +members.map(m=>'<tr'+(m.disabled?' style="opacity:.5"':'')+'><td>'+esc(m.display)+'</td><td class="mono">'+esc(m.username)+'</td>'
-      +'<td>'+esc(m.kind)+'</td><td>'+esc(m.role)+'</td><td>'+esc(scopeLabel(m))+'</td><td class="mono">'+m.keys+'</td>'
-      +'<td><button data-edm="'+esc(m.memberId)+'">edit</button> <button data-pwm="'+esc(m.memberId)+'">password</button>'
-      +(m.username===ME.username?'':' <button data-delm="'+esc(m.memberId)+'" data-name="'+esc(m.display)+'">remove</button>')+'</td></tr>').join('')
+    +members.map(memberRow).join('')
     +'</table>';
   $('#addm').onclick=()=>{
     const m=overlay('<h3>New member</h3>'
@@ -1548,6 +1581,8 @@ async function renderMembers(host){
     };
   };
   host.onclick=async e=>{
+    const key=e.target.closest('[data-keym]');
+    if(key){const bot=members.find(x=>x.memberId===key.dataset.keym&&x.kind==='bot');if(bot)provisionBotKey(bot,host);return}
     const ed=e.target.closest('[data-edm]');
     if(ed){
       const m=members.find(x=>x.memberId===ed.dataset.edm);

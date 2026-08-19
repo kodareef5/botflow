@@ -137,7 +137,8 @@ A member holds a password and, optionally, any number of **api keys**. A key car
 member's identity and scope and can be revoked on its own, which is what makes it the right
 credential for CI. A key's label ("laptop", "CI runner") is a note to yourself, not an
 identity: unnamed keys name themselves `api key #1`, `#2`, and so on, and renaming one changes
-nothing on any board.
+nothing on any board. An owner can mint a bot's key directly from **Settings → Members → + key**;
+the secret is shown once, so the owner never has to sign in as the bot.
 
 So a bot can authenticate three ways, all resolving to the same identity:
 
