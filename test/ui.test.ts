@@ -180,6 +180,19 @@ test('ui: a card can be moved, claimed, closed and blocked from the board', () =
   assert.match(app, /order==='strict'/);
 });
 
+test('ui: setup asks only for what the deployment needs', () => {
+  const app = scripts.join('\n');
+  // The setup key exists to stop a stranger claiming a public deployment
+  // first. Where it would be ignored, the field is not rendered at all.
+  assert.match(app, /cfg\.needsKey\?'<input id="skey"/);
+  assert.match(app, /cfg\.locked/, 'a public deployment with no secret says so instead of offering a dead form');
+  // Company name is optional at setup because it is renameable afterwards.
+  assert.match(app, /company name \(optional, you can change it later\)/);
+  assert.match(app, /id="orgsave"/);
+  // And the header reflects a rename without a reload.
+  assert.match(app, /const name=\$\('#horg'\);if\(name\)name\.textContent=ORG\.name/);
+});
+
 test('ui: a card can be moved without a pointer', () => {
   const app = scripts.join('\n');
   // Shift+Arrow rather than a grab mode: Enter and Space are already spent on

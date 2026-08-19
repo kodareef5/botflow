@@ -349,7 +349,14 @@ export default {
       // ---- public (no auth): gate listing + shared read-only boards ----
       if (req.method === 'GET' && url.pathname === '/api/public/gate') {
         const status0 = await registry.status();
-        return json({ shares: status0.initialized ? await registry.listGateShares() : [] });
+        // A setup key is only meaningful where setupAccess would demand one.
+        // Asking for it on a loopback dev instance that ignores it is just
+        // friction, so the form is told which of the two cases it is in.
+        const probe = setupAccess(url.hostname, env.SETUP_KEY, undefined);
+        return json({
+          shares: status0.initialized ? await registry.listGateShares() : [],
+          setup: { needsKey: !probe.ok && probe.status === 403, locked: !probe.ok && probe.status === 503 },
+        });
       }
       const pub = /^\/api\/public\/([a-f0-9]{16,64})(\/.*)?$/.exec(url.pathname);
       if (req.method === 'GET' && pub) {
@@ -531,6 +538,15 @@ export default {
           },
           directory: await registry.directory(),
         });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/org/name') {
+        const denied = requireOwner();
+        if (denied) return denied;
+        const body = ((await smallJson(req)) ?? {}) as { name?: string };
+        if (typeof body.name !== 'string' || body.name.trim() === '') return json({ error: 'name required' }, 400);
+        await registry.setOrgName(body.name);
+        await registry.audit(actor, 'rename-company', `renamed to "${body.name}"`);
+        return json({ name: (await registry.status()).name });
       }
       if (url.pathname === '/api/settings') {
         const denied = requireOwner();

@@ -506,16 +506,29 @@ function gate(kind,extra){
   // where api() already looks for it. No token to copy down any more.
   const enter=r=>{TOKEN=r.token;localStorage.setItem('bf_token',TOKEN);start()};
   if(kind==='setup'){
-    g.innerHTML='<h2>Set up botflow manager</h2><p>Name your company and create the owner account. Public deployments require the <code>SETUP_KEY</code> Worker secret; loopback development does not.</p>'
-      +'<form id="f" style="flex-direction:column"><input id="name" placeholder="company name" required style="margin-bottom:8px">'
-      +'<input id="user" placeholder="owner username (a-z, 0-9, - and _)" autocomplete="username" required style="margin-bottom:8px">'
-      +'<input id="pw" type="password" placeholder="password (8+ characters)" autocomplete="new-password" required style="margin-bottom:8px">'
-      +'<input id="skey" placeholder="setup key" autocomplete="off" style="margin-bottom:8px">'
-      +'<button class="primary">Initialize</button></form><div class="err" id="err"></div>';
-    $('#f').onsubmit=async e=>{e.preventDefault();
-      try{enter(await api('/api/setup',{method:'POST',body:JSON.stringify({
-        name:$('#name').value,username:$('#user').value.trim(),password:$('#pw').value,setupKey:$('#skey').value||undefined})}));
-      }catch(err){$('#err').textContent=err.message}};
+    // Ask for as little as the deployment actually needs. The setup key only
+    // exists to stop a stranger claiming a public deployment first, so a
+    // loopback instance that ignores it should not be asking for one; and the
+    // company name has a default and can be renamed later, so it is optional.
+    const cfg=(extra&&extra.setup)||{needsKey:false,locked:false};
+    if(cfg.locked){
+      g.innerHTML='<h2>Setup is locked</h2><p>This deployment is reachable from the internet, so it will not initialize until a <code>SETUP_KEY</code> Worker secret is configured. Without it, whoever loads this page first would own the company.</p>'
+        +'<p style="font-size:12px;color:var(--muted)">Set one with <code>npx wrangler secret put SETUP_KEY</code>, or under Settings &rarr; Variables and Secrets in the Cloudflare dashboard, then reload.</p>';
+    }else{
+      g.innerHTML='<h2>Set up botflow manager</h2><p>Create the account that owns this deployment.</p>'
+        +'<form id="f" style="flex-direction:column">'
+        +'<input id="user" placeholder="owner username (a-z, 0-9, - and _)" autocomplete="username" required style="margin-bottom:8px">'
+        +'<input id="pw" type="password" placeholder="password (8+ characters)" autocomplete="new-password" required style="margin-bottom:8px">'
+        +'<input id="name" placeholder="company name (optional, you can change it later)" style="margin-bottom:8px">'
+        +(cfg.needsKey?'<input id="skey" placeholder="setup key" autocomplete="off" required style="margin-bottom:8px">':'')
+        +'<button class="primary">Initialize</button></form><div class="err" id="err"></div>';
+      $('#f').onsubmit=async e=>{e.preventDefault();
+        const k=$('#skey');
+        try{enter(await api('/api/setup',{method:'POST',body:JSON.stringify({
+          name:$('#name').value.trim()||undefined,username:$('#user').value.trim(),password:$('#pw').value,
+          setupKey:k&&k.value?k.value:undefined})}));
+        }catch(err){$('#err').textContent=err.message}};
+    }
   }else if(kind==='recover'){
     g.innerHTML='<h2>Recover owner access</h2><p>The <code>SETUP_KEY</code> Worker secret resets an owner password, or installs an owner if every one is gone. Every live session ends and the audit log records it. Loopback development needs no key.</p>'
       +'<form id="f" style="flex-direction:column"><input id="ruser" placeholder="owner username" autocomplete="username" required style="margin-bottom:8px">'
@@ -530,7 +543,7 @@ function gate(kind,extra){
       }catch(err){$('#err').textContent=err.message}};
     $('#backlogin').onclick=e=>{e.preventDefault();gate('token')};
   }else{
-    g.innerHTML='<h2>botflow manager</h2>'+(extra?'<p class="err">'+esc(extra)+'</p>':'')
+    g.innerHTML='<h2>botflow manager</h2>'+(typeof extra==='string'&&extra?'<p class="err">'+esc(extra)+'</p>':'')
       +'<form id="f" style="flex-direction:column"><input id="user" placeholder="username" autocomplete="username" required style="margin-bottom:8px">'
       +'<input id="pw" type="password" placeholder="password" autocomplete="current-password" required style="margin-bottom:8px">'
       +'<button class="primary">log in →</button></form><div class="err" id="err"></div>'
@@ -556,7 +569,11 @@ async function start(){
     if(err.status===401)return gate('token',TOKEN?'token rejected':null);
     return gate('token',err.message);
   }
-  if(org.uninitialized)return gate('setup');
+  if(org.uninitialized){
+    let cfg=null;
+    try{cfg=(await api('/api/public/gate')).setup}catch{}
+    return gate('setup',{setup:cfg});
+  }
   adoptOrg(org);
   if(SEL&&SEL!=='::settings'&&!findAny(SEL))SEL=null;
   if(!SEL){const first=firstProject(ORG);SEL=first?first.id:null}
@@ -583,12 +600,13 @@ function adoptOrg(org){
 async function reloadOrg(){adoptOrg(await api('/api/org'));renderSide();renderHeader();if(VIEW==='board'&&BOARD){BOARD=null;await refreshBoard()}}
 function renderHeader(){
   const agg=ORG.aggregate;
+  const name=$('#horg');if(name)name.textContent=ORG.name;
   $('#hmeter').innerHTML='<div class="track"><div class="fill" style="width:'+Math.round((agg.progress||0)*100)+'%"></div></div><b>'+pct(agg.progress)+'</b>';
   $('#hstrip').outerHTML='<span id="hstrip">'+strip(agg.distribution)+'</span>';
 }
 function layout(){
   document.body.innerHTML=
-    '<header class="top"><button id="burger" class="ghost" aria-label="menu">☰</button><h1>'+esc(ORG.name)+' <span class="sub">botflow manager</span></h1>'
+    '<header class="top"><button id="burger" class="ghost" aria-label="menu">☰</button><h1><span id="horg">'+esc(ORG.name)+'</span> <span class="sub">botflow manager</span></h1>'
     +'<div class="meter" id="hmeter" title="structural progress: every card is one unit; a sub-board fills its unit by its own fraction"></div><span id="hstrip"></span>'
     +'<span class="spacer"></span>'+(ME?'<span class="whoami" title="'+esc(ME.username+' · '+ME.role+' on '+ME.scope.kind)+'">'+esc(ME.display)+' <i>'+esc(ME.role)+'</i></span>':'')
     +'<button id="setbtn" class="ghost" title="settings">'+IC.gear+' settings</button><button id="logout" class="ghost">log out</button></header>'
@@ -1582,6 +1600,11 @@ function renderSettings(main){
   }
   main.innerHTML='<div class="phead"><h2>settings</h2></div><div class="view settings">'
     +account
+    +SH+'company</h4>'
+    +'<div style="display:flex;gap:8px;align-items:center;max-width:420px">'
+    +'<input id="orgname" value="'+esc(ORG.name)+'" aria-label="company name" style="flex:1">'
+    +'<button id="orgsave">rename</button></div>'
+    +'<p class="setting-note">Shown at the top of every board and on the login page.</p>'
     +SH+'members</h4><div id="mmembers" style="max-width:900px">loading…</div>'
     +'<h4 class="setting-title" style="margin-top:22px">visual world</h4><p class="setting-note">Five complete directions. Pick the character first, then tune its color and rhythm.</p>'
     +'<div class="stiles">'+THEMES.map(s=>'<button type="button" class="stile '+(s.id===THEME.style?'on':'')+'" data-style="'+s.id+'" aria-pressed="'+(s.id===THEME.style)+'">'+stylePreview(s)+'<b>'+esc(s.name)+'</b><div class="blurb">'+esc(s.blurb)+'</div></button>').join('')+'</div>'
@@ -1639,6 +1662,13 @@ function renderSettings(main){
     gs.onchange=()=>api('/api/settings',{method:'POST',body:JSON.stringify({...THEME,gateShares:gs.checked})}).catch(err=>{$('#serr').textContent=err.message})}});
   renderAccount($('#maccount'));
   renderMembers($('#mmembers'));
+  $('#orgsave').onclick=async()=>{
+    try{
+      const r=await api('/api/org/name',{method:'POST',body:JSON.stringify({name:$('#orgname').value})});
+      ORG.name=r.name;renderHeader();
+      $('#serr').textContent='';toast('Company renamed to '+r.name+'.');
+    }catch(err){$('#serr').textContent=err.message}
+  };
   $('#orgexp').onclick=async()=>{
     try{const data=await api('/api/org/export');
       const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});

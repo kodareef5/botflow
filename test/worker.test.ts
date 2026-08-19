@@ -84,6 +84,11 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     }
     assert.ok(up, 'wrangler dev came up');
 
+    // The gate tells the form what this deployment actually needs, so it can
+    // stop asking for a setup key where one would be ignored.
+    const gate0 = (await call('/api/public/gate')).body as { setup: { needsKey: boolean; locked: boolean } };
+    assert.deepEqual(gate0.setup, { needsKey: true, locked: false }, 'SETUP_KEY is configured here, so the form must ask');
+
     // Setup requires the key when configured, and now mints the owner account.
     const OWNER_PW = 'owner-password-1';
     assert.equal((await call('/api/setup', { method: 'POST', body: JSON.stringify({ name: 'testco', username: 'root', password: OWNER_PW }) })).status, 403);
@@ -683,6 +688,14 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.equal(typo.status, 409, 'recovery names an existing owner or it does nothing');
     assert.equal(((await call('/api/members', { token: admin3 })).body as unknown as { username: string }[]).length, beforeTypo, 'and no member was added');
     assert.equal((await call('/api/org', { token: admin3 })).status, 200, 'and the live session survives');
+
+    // The company name is set at setup and was unreachable afterwards, which
+    // made a one-word field a permanent decision. It is renameable now.
+    assert.equal((await call('/api/org/name', { method: 'POST', token: admin3, body: JSON.stringify({ name: '' }) })).status, 400);
+    assert.equal((await call('/api/org/name', { method: 'POST', token: admin3, body: JSON.stringify({ name: 'Renamed Co' }) })).status, 200);
+    assert.equal(((await call('/api/org', { token: admin3 })).body)['name'], 'Renamed Co');
+    assert.ok(((await call('/api/org/activity?limit=10', { token: admin3 })).body as unknown as { action: string }[])
+      .some((a) => a.action === 'rename-company'), 'and it is audited');
 
     // Recovery must refuse a password it would then be unable to verify:
     // setting an unusable hash locks the company instead of recovering it.

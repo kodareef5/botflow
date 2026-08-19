@@ -89,8 +89,10 @@ restore-grade JSON, including member records with password hashes, api key hashe
 links; store it like a credential, because it is one). The demo source ships in
 `demo/icecream-empire.json`.
 
-After the setup key is configured, the first visit names the company and creates the **owner**
-account. From the UI: create spaces and projects, add members, watch boards and activity live.
+The first visit creates the **owner** account: a username and a password, and nothing else.
+A company name is optional (settings can rename it later), and the setup-key field only appears
+on a deployment that actually requires one, so loopback development asks for two fields. From
+the UI: create spaces and projects, add members, watch boards and activity live.
 
 > **Upgrading an existing deployment is a deliberate auth reset.** The admin
 > token and every `bfk_` agent key stop working, and a company export taken
