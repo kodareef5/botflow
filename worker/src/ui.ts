@@ -67,6 +67,29 @@ aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
 .whoami{font-size:11.5px;color:var(--muted);margin-right:10px;white-space:nowrap}
 .whoami i{font-style:normal;text-transform:uppercase;letter-spacing:.05em;font-size:9.5px;opacity:.7;border:var(--bw) var(--bs) var(--grid);border-radius:999px;padding:1px 5px;margin-left:4px}
 .col h3 .add{margin-left:6px}
+/* ---- drag to move ---- */
+.deck{display:flex;flex-direction:column;gap:var(--card-gap);min-height:24px}
+.subgroup{display:flex;flex-direction:column;gap:var(--card-gap)}
+.dragging{opacity:.35;filter:saturate(.4)}
+.dragghost{position:fixed;z-index:70;pointer-events:none;margin:0;
+  transform:translate(-50%,-50%) rotate(1.5deg);box-shadow:0 18px 40px rgba(0,0,0,.28);opacity:.95}
+/* While a card is in the air the board says where it may land: legal targets
+   lift, illegal ones recede. Nothing is left to a post-drop error message. */
+.dragmode .col{transition:background .12s ease,border-color .12s ease}
+.dragmode .col.nodrop{opacity:.45}
+.dragmode .col.candrop{border-color:var(--acc)}
+.dragmode .drop-on{background:color-mix(in srgb,var(--acc) 12%,var(--surface))}
+.dragmode .subgroup{border-radius:var(--rk);outline:1px dashed transparent;outline-offset:2px}
+.dragmode .subgroup.candrop{outline-color:var(--grid)}
+.dragmode .subgroup.drop-on{outline-color:var(--acc);background:color-mix(in srgb,var(--acc) 12%,var(--surface))}
+.dragmode .subgroup.nodrop{opacity:.4}
+/* Owner-only: dropping somewhere the lane's own rules forbid is an override,
+   and it should not look like an ordinary drop. */
+.dragmode .drop-force{background:color-mix(in srgb,var(--st-blocked) 16%,var(--surface));outline-color:var(--st-blocked)}
+.dragmode .col.drop-force{border-color:var(--st-blocked)}
+.draghint{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:71;pointer-events:none;
+  background:var(--ink);color:var(--page);font-size:12px;padding:6px 12px;border-radius:999px;box-shadow:var(--shadow);opacity:.92}
+.card{touch-action:pan-y}
 .tabs{display:flex;gap:2px;margin-left:auto}
 .tabs button.on{background:var(--acc);color:var(--acc-ink);border-color:transparent}
 .view{flex:1;overflow:auto;padding:var(--view-pad)}
@@ -397,7 +420,9 @@ function applyTheme(t){
 async function api(path,opts){
   const res=await fetch(path,{...opts,headers:{'content-type':'application/json',...(TOKEN?{authorization:'Bearer '+TOKEN}:{}),...(opts&&opts.headers||{})}});
   const body=await res.json().catch(()=>({}));
-  if(!res.ok){const e=new Error(body.error||res.status);e.status=res.status;throw e}
+  // Keep the parsed body on the error: a claim conflict carries structure
+  // (reason, holder, position) that the message alone cannot express.
+  if(!res.ok){const e=new Error(body.error||res.status);e.status=res.status;e.body=body;throw e}
   return body;
 }
 function strip(dist){
@@ -571,7 +596,7 @@ function layout(){
   $('#setbtn').onclick=()=>{SEL='::settings';renderSide();renderMain()};
   $('#burger').onclick=()=>$('#side').classList.toggle('open');
   renderHeader();renderSide();renderMain();
-  timer=setInterval(()=>{if(VIEW==='board'&&SEL&&SEL!=='::settings'&&!MODAL)refreshBoard(true)},3000);
+  timer=setInterval(()=>{if(VIEW==='board'&&SEL&&SEL!=='::settings'&&!MODAL&&!DRAG&&!PRESS)refreshBoard(true)},3000);
 }
 function projRow(n){
   const a=n.aggregate;
@@ -646,7 +671,7 @@ function newCard(lane){
     const labels=d.labels?d.labels.split(',').map(x=>x.trim()).filter(Boolean):undefined;
     const r=await api('/api/projects/'+SEL+'/cards',{method:'POST',body:JSON.stringify({
       title:d.title,lane:lane||undefined,priority:d.priority||undefined,labels:labels,assignee:d.assignee||undefined})});
-    await refreshBoard();await reloadOrg();
+    await reloadOrg();
     if(r&&r.id)openCard(r.id,'card');
   });
 }
@@ -681,16 +706,166 @@ function colsHtml(b){
     const wip=lane.wip!=null?'<span class="'+(n>lane.wip?'wipbad':'n')+'">'+n+'/'+lane.wip+'</span>':'<span class="n">'+n+'</span>';
     let body='';
     if(lane.substates.length){
+      // Every substate gets a group, empty ones included: a strict lane must
+      // be entered at its first substate, which is very often the empty one,
+      // so hiding it would hide the only legal place to drop.
       for(const sub of lane.substates){
         const cs=lane.cards.filter(c=>c.substate===sub||(sub===lane.substates[0]&&c.substate==null));
-        if(cs.length)body+='<div class="sub-h">· '+esc(sub)+'</div>'+cs.map(c=>cardHtml(b,c)).join('');
+        body+='<div class="subgroup" data-lane="'+esc(lane.id)+'" data-sub="'+esc(sub)+'">'
+          +'<div class="sub-h">· '+esc(sub)+'</div>'+cs.map(c=>cardHtml(b,c)).join('')+'</div>';
       }
     }else body=lane.cards.map(c=>cardHtml(b,c)).join('');
     const add=!RO?'<button class="add" data-addcard="'+esc(lane.id)+'" title="add a card to '+esc(lane.name)+'" aria-label="add a card to '+esc(lane.name)+'">+</button>':'';
-    return '<section class="col"><h3>'+esc(lane.name)+' '+wip+add+'</h3>'+(body||'<div class="empty">·</div>')+'</section>';
+    return '<section class="col" data-lane="'+esc(lane.id)+'"><h3>'+esc(lane.name)+' '+wip+add+'</h3>'
+      +'<div class="deck" data-lane="'+esc(lane.id)+'">'+(body||'<div class="empty">·</div>')+'</div></section>';
   }).join('')+'</div>';
 }
+/** A lost claim comes back as a structured conflict. Say what actually
+ *  happened: who holds it, what it waits on, why it is parked. The server's
+ *  own message carries the detail (which deps, which reason), so it rides
+ *  along underneath rather than being thrown away. */
+function conflictHtml(conflict,detail){
+  const r=conflict&&conflict.reason;
+  const lead=r==='assigned'?'<b>'+esc(who(conflict.holder))+'</b> already holds this card.'
+    :r==='blocked'?'This card is parked as blocked.'
+    :r==='deps'?'This card is waiting on work that is not done yet.'
+    :r==='not-ready'?'This card is not ready to be claimed: it sits in <b>'+esc(conflict.position||'')+'</b>.'
+    :'This card cannot be claimed right now.';
+  return '<p style="font-size:13px;color:var(--ink2);line-height:1.55">'+lead+'</p>'
+    +(detail?'<p style="font-size:12px;color:var(--muted);margin-top:6px">'+esc(detail)+'</p>':'');
+}
+
+// ---- drag to move ----
+// Pointer events rather than HTML5 drag-and-drop: the same code path then
+// covers mouse, pen and touch. Touch needs a press-and-hold to lift a card,
+// or every attempt to scroll a column would start a drag instead.
+let DRAG=null,PRESS=null,DRAG_ENDED=0;
+const HOLD_MS=260,SLOP=6;
+
+// Where may this card legally land? Mirrors opMove: a strict lane must be
+// entered at its first substate and stepped through one at a time; everything
+// else is open. Computing it here means an illegal target simply refuses the
+// drop, instead of the drop failing afterwards with a message.
+function dropRules(b,card){
+  const legal=new Map(),lanes=b.lanes||[];
+  for(const lane of lanes){
+    const strict=lane.order==='strict'&&lane.substates.length>0;
+    if(!lane.substates.length){legal.set(lane.id+'\u0000',true);continue}
+    for(const sub of lane.substates){
+      let ok=true;
+      if(strict){
+        if(card.lane!==lane.id)ok=sub===lane.substates[0];
+        else{
+          const cur=lane.substates.indexOf(card.substate||lane.substates[0]);
+          ok=Math.abs(cur-lane.substates.indexOf(sub))===1;
+        }
+      }
+      legal.set(lane.id+'\u0000'+sub,ok);
+    }
+  }
+  return legal;
+}
+function dragTargetAt(x,y){
+  const el=document.elementFromPoint(x,y);
+  if(!el)return null;
+  const group=el.closest('[data-sub]');
+  if(group)return {lane:group.dataset.lane,sub:group.dataset.sub,el:group};
+  const col=el.closest('.col');
+  if(!col)return null;
+  // A lane with substates that was hit on its header: aim at the first group.
+  const first=col.querySelector('[data-sub]');
+  if(first)return {lane:first.dataset.lane,sub:first.dataset.sub,el:first};
+  return {lane:col.dataset.lane,sub:null,el:col};
+}
+function dragCleanup(){
+  if(PRESS&&PRESS.timer)clearTimeout(PRESS.timer);
+  PRESS=null;
+  if(!DRAG)return;
+  // A pointerup after a drag still produces a click, which would open the
+  // card you just dropped. Remember when the drag ended and let the click
+  // that follows it pass through unhandled.
+  DRAG_ENDED=Date.now();
+  if(DRAG.ghost)DRAG.ghost.remove();
+  if(DRAG.hint)DRAG.hint.remove();
+  if(DRAG.src)DRAG.src.classList.remove('dragging');
+  document.body.classList.remove('dragmode');
+  for(const el of document.querySelectorAll('.candrop,.nodrop,.drop-on,.drop-force'))
+    el.classList.remove('candrop','nodrop','drop-on','drop-force');
+  DRAG=null;
+}
+function dragStart(card,ev){
+  if(RO||!BOARD)return;
+  const c=(BOARD.lanes||[]).flatMap(l=>l.cards).find(x=>x.id===card.dataset.card);
+  if(!c)return;
+  const rect=card.getBoundingClientRect();
+  const ghost=card.cloneNode(true);
+  ghost.classList.add('dragghost');ghost.removeAttribute('id');
+  ghost.style.width=rect.width+'px';
+  document.body.appendChild(ghost);
+  const hint=document.createElement('div');
+  hint.className='draghint';
+  hint.textContent=IS_OWNER?'drop to move · hold over a red zone to override · esc cancels':'drop to move · esc cancels';
+  document.body.appendChild(hint);
+  card.classList.add('dragging');
+  document.body.classList.add('dragmode');
+  DRAG={id:c.id,card:c,src:card,ghost:ghost,hint:hint,legal:dropRules(BOARD,c),over:null,force:false};
+  // Mark every zone once, so the whole board reads as legal or not at a glance.
+  for(const g of document.querySelectorAll('[data-sub]')){
+    const ok=DRAG.legal.get(g.dataset.lane+'\u0000'+g.dataset.sub);
+    g.classList.add(ok?'candrop':(IS_OWNER?'candrop':'nodrop'));
+    if(!ok)g.dataset.forceOnly='1';else delete g.dataset.forceOnly;
+  }
+  for(const col of document.querySelectorAll('.col')){
+    if(col.querySelector('[data-sub]'))continue;
+    col.classList.add('candrop');
+  }
+  dragMove(ev);
+}
+function dragMove(ev){
+  if(!DRAG)return;
+  DRAG.ghost.style.left=ev.clientX+'px';
+  DRAG.ghost.style.top=ev.clientY+'px';
+  const t=dragTargetAt(ev.clientX,ev.clientY);
+  if(DRAG.over&&DRAG.over.el!==(t&&t.el))DRAG.over.el.classList.remove('drop-on','drop-force');
+  DRAG.over=t;DRAG.force=false;
+  if(!t)return;
+  const key=t.lane+'\u0000'+(t.sub===null?'':t.sub);
+  const ok=DRAG.legal.get(key)!==false;
+  if(ok)t.el.classList.add('drop-on');
+  else if(IS_OWNER){t.el.classList.add('drop-force');DRAG.force=true}
+  // Auto-scroll the deck when dragging against either edge.
+  const cols=$('.cols');
+  if(cols){
+    const r=cols.getBoundingClientRect();
+    if(ev.clientX>r.right-60)cols.scrollLeft+=14;
+    else if(ev.clientX<r.left+60)cols.scrollLeft-=14;
+  }
+}
+async function dragDrop(){
+  if(!DRAG)return;
+  const t=DRAG.over,card=DRAG.card,force=DRAG.force;
+  const id=DRAG.id;
+  dragCleanup();
+  if(!t)return;
+  const to=t.sub===null?t.lane:t.lane+'.'+t.sub;
+  const from=card.substate?card.lane+'.'+card.substate:card.lane;
+  if(to===from)return;
+  const send=async f=>{
+    await api('/api/projects/'+SEL+'/cards/'+id+'/move',{method:'POST',body:JSON.stringify(f?{to:to,force:true}:{to:to})});
+    await reloadOrg();
+  };
+  if(force){
+    // The lane's own rules forbid this. Say which rule, and make taking the
+    // override a separate, deliberate act.
+    return confirmModal('Override the lane rules',
+      'Moving '+esc(id)+' to <b>'+esc(to)+'</b> breaks the order this lane declares. Forcing is recorded as an override in the activity log.',
+      'force the move',()=>send(true));
+  }
+  try{await send(false)}
+  catch(err){toast(err.message)}
+}
 function boardClicks(e){
+  if(Date.now()-DRAG_ENDED<400)return;
   const ac=e.target.closest('[data-addcard]');
   if(ac){newCard(ac.dataset.addcard);e.stopPropagation();return}
   const go=e.target.closest('[data-goto]');
@@ -770,6 +945,54 @@ async function refreshBoard(quiet){
   patchView(v,boardHtml(b));
   v.onclick=boardClicks;
   v.onkeydown=boardKeys;
+  v.onpointerdown=boardPointerDown;
+}
+// A press on a card is only a drag once it has proved itself: a mouse has to
+// travel past the slop threshold, and a finger has to stay put long enough
+// that it clearly is not a scroll. Until then the press is still a click.
+function boardPointerDown(e){
+  if(RO||e.button!==0)return;
+  const card=e.target.closest('[data-card]');
+  if(!card||e.target.closest('button,a,input,textarea,select'))return;
+  const touch=e.pointerType!=='mouse';
+  PRESS={card:card,x:e.clientX,y:e.clientY,pointerId:e.pointerId,touch:touch,timer:null,ev:e};
+  if(touch){
+    PRESS.timer=setTimeout(()=>{
+      if(!PRESS)return;
+      const p=PRESS;PRESS=null;
+      try{p.card.setPointerCapture(p.pointerId)}catch{}
+      dragStart(p.card,p.ev);
+    },HOLD_MS);
+  }
+}
+window.addEventListener('pointermove',e=>{
+  if(PRESS){
+    const dx=Math.abs(e.clientX-PRESS.x),dy=Math.abs(e.clientY-PRESS.y);
+    if(PRESS.touch){
+      // Moving before the hold elapsed means they meant to scroll.
+      if(dx>SLOP||dy>SLOP){clearTimeout(PRESS.timer);PRESS=null}
+      return;
+    }
+    if(dx>SLOP||dy>SLOP){
+      const p=PRESS;PRESS=null;
+      try{p.card.setPointerCapture(p.pointerId)}catch{}
+      dragStart(p.card,e);
+    }
+    return;
+  }
+  if(DRAG){e.preventDefault();dragMove(e)}
+},{passive:false});
+window.addEventListener('pointerup',()=>{if(DRAG)dragDrop();else dragCleanup()});
+window.addEventListener('pointercancel',dragCleanup);
+// A drag in flight must survive the background poll: patchView would otherwise
+// reconcile the dragged node out from under the pointer.
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&DRAG)dragCleanup()});
+/** Transient message for a failure that has no dialog of its own. */
+function toast(message){
+  const t=document.createElement('div');
+  t.className='draghint';t.setAttribute('role','status');t.textContent=message;
+  document.body.appendChild(t);
+  setTimeout(()=>t.remove(),4000);
 }
 // ---- the board editor: lanes, canonical mapping, rollup, migrations ----
 async function boardEditor(){
@@ -917,8 +1140,19 @@ function cardModalHtml(c,tab){
   if(c.priority)meta.push('<span class="badges"><span class="'+(c.priority==='p0'?'p0':'')+'">'+esc(c.priority)+'</span></span>');
   for(const l of c.labels||[])meta.push('<span class="badges"><span>#'+esc(l)+'</span></span>');
   if(c.blocked)meta.push('<span class="badges"><span class="blk">⛔ '+esc(c.blocked)+'</span></span>');
-  if(!RO)meta.push('<button class="ghost" data-editcard title="edit title, priority, labels, deps, assignee">✎ edit</button>'
-    +'<button class="ghost" data-sharecard title="public read-only link to just this card">↗ share</button>');
+  if(!RO){
+    const mine=ME&&c.assignee===ME.username;
+    const settled=c.state==='done'||c.state==='archive';
+    const acts=[];
+    if(!settled&&!(mine&&c.state==='doing'))acts.push('<button class="ghost" data-claim title="take this card and move it into doing">▶ claim</button>');
+    if(!settled)acts.push('<button class="ghost" data-close title="close this card">✓ close</button>');
+    acts.push(c.blocked
+      ?'<button class="ghost" data-unblock title="clear the blocked flag">unblock</button>'
+      :'<button class="ghost" data-block title="park this card with a reason">⛔ block</button>');
+    meta.push(acts.join(''));
+    meta.push('<button class="ghost" data-editcard title="edit title, priority, labels, deps, assignee">✎ edit</button>'
+      +'<button class="ghost" data-sharecard title="public read-only link to just this card">↗ share</button>');
+  }
   const tabs=[['card','card'],['chat','chat '+((p.comments||[]).length||'')],['activity','activity']];
   return (c.cover?'<img class="banner" src="'+esc(c.cover)+'" alt="">':'')
     +'<div class="inner"><button class="close ghost" data-x aria-label="close card">✕</button>'
@@ -1026,6 +1260,48 @@ function wireCardModal(m,c,tab){
           m2.querySelector('[data-x2]').onclick=()=>{closeOverlay();openCard(c.id,'card')};
         },0);
       });
+      return}
+    // Claim is a coordination primitive: losing is a normal outcome, not an
+    // error, so a lost claim explains itself and (for owners only) offers the
+    // override the spec allows a human operator.
+    if(e.target.closest('[data-claim]')){
+      const act=async force=>{
+        const r=await api(cardApi(c.id)+'/claim',{method:'POST',body:JSON.stringify(force?{force:true}:{})});
+        closeOverlay();await reloadOrg();openCard(c.id,'card');
+        if(r&&r.alreadyYours)toast('You already hold '+c.id+'.');
+      };
+      try{await act(false)}
+      catch(err){
+        if(err.status!==409)return toast(err.message);
+        const conflict=(err.body&&err.body.conflict)||null;
+        const m=overlay('<h3>Cannot claim '+esc(c.id)+'</h3>'+conflictHtml(conflict,err.message)
+          +'<div class="err" role="alert"></div><div class="actions"><button class="ghost" data-x3>leave it</button>'
+          +(IS_OWNER?'<button class="danger" data-force>take it anyway</button>':'')+'</div>',null,'Cannot claim');
+        m.querySelector('[data-x3]').onclick=closeOverlay;
+        const f=m.querySelector('[data-force]');
+        if(f)f.onclick=async()=>{
+          f.disabled=true;f.textContent='taking…';
+          try{await act(true)}catch(e2){$('.err',m).textContent=e2.message;f.disabled=false;f.textContent='take it anyway'}
+        };
+      }
+      return}
+    if(e.target.closest('[data-close]')){
+      formModal('Close '+c.id,[{name:'reason',label:'what holds now (optional)'}],'close',async d=>{
+        await api(cardApi(c.id)+'/close',{method:'POST',body:JSON.stringify(d.reason?{reason:d.reason}:{})});
+        await reloadOrg();
+        setTimeout(()=>openCard(c.id,'card'),0); // after the form modal closes itself
+      });
+      return}
+    if(e.target.closest('[data-block]')){
+      formModal('Block '+c.id,[{name:'reason',label:'why it is parked',required:true}],'block',async d=>{
+        await api(cardApi(c.id)+'/block',{method:'POST',body:JSON.stringify({reason:d.reason})});
+        await reloadOrg();
+        setTimeout(()=>openCard(c.id,'card'),0); // after the form modal closes itself
+      });
+      return}
+    if(e.target.closest('[data-unblock]')){
+      await api(cardApi(c.id)+'/unblock',{method:'POST',body:JSON.stringify({})});
+      await reloadOrg();openCard(c.id,'card');
       return}
     if(e.target.closest('[data-editcard]')){
       formModal('Edit card',[

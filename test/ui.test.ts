@@ -154,6 +154,48 @@ test('ui: identity, role flags and the name directory refresh together', () => {
   assert.ok(!roles[1]!.trimStart().startsWith("'owner'"), 'owner is not the default-selected first option');
 });
 
+test('ui: a card can be moved, claimed, closed and blocked from the board', () => {
+  const app = scripts.join('\n');
+  // Every verb the API exposes has a way in from the browser.
+  for (const hook of ['data-claim', 'data-close', 'data-block', 'data-unblock', 'data-addcard'])
+    assert.ok(app.includes(hook), `${hook} is wired`);
+
+  // Drag is pointer-based, so one code path serves mouse, pen and touch. Touch
+  // needs the hold, or every column scroll would start a drag instead.
+  assert.match(app, /onpointerdown=boardPointerDown/);
+  assert.match(app, /HOLD_MS/, 'touch presses must be held before they lift a card');
+  assert.match(app, /setPointerCapture/);
+  assert.match(app, /dragghost/);
+
+  // A drop must not also open the card: pointerup still produces a click.
+  assert.match(app, /DRAG_ENDED/, 'the click after a drop is suppressed');
+  assert.match(app, /function boardClicks\(e\)\{\s*if\(Date\.now\(\)-DRAG_ENDED/);
+
+  // The poll must not reconcile a card out from under the pointer mid-drag.
+  assert.match(app, /!MODAL&&!DRAG&&!PRESS/, 'polling pauses while a card is in the air');
+
+  // Legality is computed from the lane rules before the drop, not discovered
+  // afterwards from a failed request.
+  assert.match(app, /function dropRules\(/);
+  assert.match(app, /order==='strict'/);
+});
+
+test('ui: a lost claim explains itself, and only owners may override', () => {
+  const app = scripts.join('\n');
+  assert.match(app, /function conflictHtml\(/);
+  // Every conflict the coordination model can produce is spelled out.
+  for (const reason of ['assigned', 'blocked', 'deps', 'not-ready'])
+    assert.ok(app.includes(`'${reason}'`), `${reason} conflicts are explained`);
+  // The holder is rendered through the directory, so a member reads as their
+  // display name rather than the raw username stored on the card.
+  assert.match(app, /who\(conflict\.holder\)/);
+  // force is the owner's override in both places it can be reached.
+  assert.match(app, /IS_OWNER\?'<button class="danger" data-force>/);
+  assert.match(app, /Override the lane rules/);
+  // And the error body has to survive the api() helper for any of it to work.
+  assert.match(app, /e\.body=body/);
+});
+
 test('morph: keyed cards keep node identity across reorder and update', () => {
   const { morphChildren } = loadMorph();
   const live = el('div', {}, el('div', { 'data-card': '001', class: 'card' }, 'one'), el('div', { 'data-card': '002', class: 'card' }, 'two'));
