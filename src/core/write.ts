@@ -49,6 +49,24 @@ export function sanitizeInline(text: string): string {
   return text.replace(/[\s\x00-\x1f\x7f]+/g, ' ').trim();
 }
 
+/** Make free text safe to drop into a body section. Inline fields collapse to
+ *  one line (above); multi-line text cannot, so instead every line that would
+ *  read as a section heading gets its marker escaped (`## Log` becomes
+ *  `\## Log`, which markdown renders as the literal text the writer typed).
+ *  Without this a description can splice a second `## Log` ahead of the real
+ *  one; appends target the FIRST matching heading, so the forged section then
+ *  captures the append-only audit trail and everything derived from it. */
+export function sanitizeBlock(text: string): string {
+  return text.replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').replace(/^(\s{0,3})(#{1,6})(\s)/gm, '$1\\$2$3');
+}
+
+/** A caller-chosen section name is interpolated straight into `## <name>`, so
+ *  it must be a single plain line. Returns null when it cannot be one. */
+export function sanitizeSectionName(name: string): string | null {
+  const clean = sanitizeInline(name);
+  return clean === '' || /[#\[\]`]/.test(clean) ? null : clean;
+}
+
 /** Make a url safe for the `- [label](url)` attachment line: whitespace and
  *  control chars are stripped (never valid in a url), and `)` is
  *  percent-encoded so the link syntax cannot be closed early. */
@@ -56,8 +74,17 @@ export function sanitizeUrl(url: string): string {
   return url.replace(/[\s\x00-\x1f\x7f]+/g, '').replace(/\)/g, '%29');
 }
 
+/** An actor name additionally drops `:`. The entry parser splits a log line
+ *  on the first `": "`, so an actor containing one is silently truncated on
+ *  read-back ("acme: bot" comes back as "acme"), which quietly breaks both the
+ *  audit trail and anything derived from it. Messages keep their colons: they
+ *  sit after the split point. */
+export function sanitizeActor(actor: string): string {
+  return sanitizeInline(actor).replace(/:/g, '');
+}
+
 /** Stamp a log entry onto a card and bump `updated` (SPEC §12 discipline). */
 export function logMutation(card: Card, actor: string, message: string): void {
-  card.body = appendLogLine(card.body, `${nowDateTime()} ${sanitizeInline(actor)}: ${sanitizeInline(message)}`);
+  card.body = appendLogLine(card.body, `${nowDateTime()} ${sanitizeActor(actor)}: ${sanitizeInline(message)}`);
   card.updated = nowDate();
 }

@@ -153,7 +153,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
           labels: list(args['labels'], 'labels'),
           priority: priorityOf(args['priority']),
           deps: list(args['deps'], 'deps'),
-          assignee: opt(args['assignee']),
+          assignee: args['assignee'] === undefined ? undefined : strOf(args['assignee'], 'assignee'),
           actor: actorOf(args),
         });
         return { id: card.id, file: card.file, lane: card.laneId };
@@ -164,7 +164,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       description: 'Move a card to lane[.substate]. Strict lanes advance one substate at a time unless force.',
       inputSchema: schema(['id', 'to'], { id: str, to: str, force: bool, actor: str }),
       run: (args) => {
-        const res = moveCard(root, String(args['id']), String(args['to']), actorOf(args), args['force'] === true);
+        const res = moveCard(root, strOf(args['id'], 'id'), strOf(args['to'], 'to'), actorOf(args), args['force'] === true);
         return { id: res.card.id, from: res.from, to: res.to, warnings: res.warnings };
       },
     },
@@ -174,7 +174,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
         'Atomically claim a card: succeeds only if it is ready (todo, unblocked, deps done) and unassigned, then sets assignee to the actor and moves it into doing. Anything else is a conflict error; force overrides.',
       inputSchema: schema(['id'], { id: str, actor: str, force: bool }),
       run: (args) => {
-        const res = claimCard(root, String(args['id']), actorOf(args), args['force'] === true);
+        const res = claimCard(root, strOf(args['id'], 'id'), actorOf(args), args['force'] === true);
         if (res.alreadyYours) return { id: res.card.id, at: res.to, assignee: res.card.assignee, alreadyYours: true };
         return { id: res.card.id, from: res.from, to: res.to, assignee: res.card.assignee, warnings: res.warnings };
       },
@@ -184,7 +184,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       description: 'Close a card: move to done, clear any blocked flag, log the reason.',
       inputSchema: schema(['id'], { id: str, reason: str, actor: str }),
       run: (args) => {
-        const res = closeCard(root, String(args['id']), actorOf(args), opt(args['reason']));
+        const res = closeCard(root, strOf(args['id'], 'id'), actorOf(args), opt(args['reason']));
         return { id: res.card.id, from: res.from, to: res.to };
       },
     },
@@ -193,7 +193,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       description: 'Set the blocked flag with a reason. Use instead of silently stalling.',
       inputSchema: schema(['id', 'reason'], { id: str, reason: str, actor: str }),
       run: (args) => {
-        const card = blockCard(root, String(args['id']), actorOf(args), String(args['reason']));
+        const card = blockCard(root, strOf(args['id'], 'id'), actorOf(args), strOf(args['reason'], 'reason'));
         return { id: card.id, blocked: card.blocked };
       },
     },
@@ -202,7 +202,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       description: 'Clear the blocked flag.',
       inputSchema: schema(['id'], { id: str, actor: str }),
       run: (args) => {
-        const card = unblockCard(root, String(args['id']), actorOf(args));
+        const card = unblockCard(root, strOf(args['id'], 'id'), actorOf(args));
         return { id: card.id, blocked: null };
       },
     },
@@ -219,11 +219,11 @@ function buildTools(root: string, defaultActor: string): Tool[] {
         if ('title' in args) patch.title = strOf(args['title'], 'title');
         if ('labels' in args) patch.labels = list(args['labels'], 'labels') ?? [];
         if ('priority' in args) patch.priority = args['priority'] === null ? null : priorityOf(args['priority']) ?? null;
-        if ('assignee' in args) patch.assignee = args['assignee'] === null ? null : opt(args['assignee']) ?? null;
+        if ('assignee' in args) patch.assignee = args['assignee'] === null ? null : strOf(args['assignee'], 'assignee');
         if ('deps' in args) patch.deps = list(args['deps'], 'deps') ?? [];
         if ('board_path' in args) patch.boardPath = opt(args['board_path']);
-        if ('cover' in args) patch.cover = args['cover'] === null ? null : String(args['cover']);
-        const card = editCard(root, String(args['id']), patch, actorOf(args));
+        if ('cover' in args) patch.cover = args['cover'] === null ? null : strOf(args['cover'], 'cover');
+        const card = editCard(root, strOf(args['id'], 'id'), patch, actorOf(args));
         return { id: card.id, edited: Object.keys(patch) };
       },
     },
@@ -232,7 +232,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       description: 'Append a comment to the card’s Comments section (discourse; separate from the Log).',
       inputSchema: schema(['id', 'message'], { id: str, message: str, actor: str }),
       run: (args) => {
-        const card = commentCard(root, String(args['id']), actorOf(args), String(args['message']));
+        const card = commentCard(root, strOf(args['id'], 'id'), actorOf(args), strOf(args['message'], 'message'));
         return { id: card.id, commented: true };
       },
     },
@@ -241,7 +241,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       description: 'Replace the card’s Description section (empty text clears it).',
       inputSchema: schema(['id'], { id: str, text: str, actor: str }),
       run: (args) => {
-        const card = describeCard(root, String(args['id']), actorOf(args), String(args['text'] ?? ''));
+        const card = describeCard(root, strOf(args['id'], 'id'), actorOf(args), args['text'] === undefined ? '' : strOf(args['text'], 'text'));
         return { id: card.id, described: true };
       },
     },
@@ -250,7 +250,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       description: 'Add an unchecked checklist task to the card (section defaults to "Checklist").',
       inputSchema: schema(['id', 'text'], { id: str, text: str, section: str, actor: str }),
       run: (args) => {
-        const card = checklistAddCard(root, String(args['id']), actorOf(args), String(args['text']), args['section'] === undefined ? undefined : String(args['section']));
+        const card = checklistAddCard(root, strOf(args['id'], 'id'), actorOf(args), strOf(args['text'], 'text'), args['section'] === undefined ? undefined : strOf(args['section'], 'section'));
         return { id: card.id, added: true };
       },
     },
@@ -260,7 +260,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       inputSchema: schema(['id', 'index'], { id: str, index: { type: 'integer' }, checked: bool, actor: str }),
       run: (args) => {
         const checked = args['checked'] !== false;
-        const card = checkCard(root, String(args['id']), actorOf(args), Number(args['index']), checked);
+        const card = checkCard(root, strOf(args['id'], 'id'), actorOf(args), Number(args['index']), checked);
         return { id: card.id, index: Number(args['index']), checked };
       },
     },
@@ -269,8 +269,8 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       description: 'Attach a link (or image url: images show in the card gallery and can be cover art).',
       inputSchema: schema(['id', 'url'], { id: str, url: str, label: str, actor: str }),
       run: (args) => {
-        const card = attachCard(root, String(args['id']), actorOf(args), String(args['url']), opt(args['label']));
-        return { id: card.id, attached: String(args['url']) };
+        const card = attachCard(root, strOf(args['id'], 'id'), actorOf(args), strOf(args['url'], 'url'), opt(args['label']));
+        return { id: card.id, attached: strOf(args['url'], 'url') };
       },
     },
     {
@@ -278,7 +278,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       description: 'Append a line to the card’s append-only Log section: narrate what you did.',
       inputSchema: schema(['id', 'message'], { id: str, message: str, actor: str }),
       run: (args) => {
-        const card = addLogEntry(root, String(args['id']), actorOf(args), String(args['message']));
+        const card = addLogEntry(root, strOf(args['id'], 'id'), actorOf(args), strOf(args['message'], 'message'));
         return { id: card.id, logged: true };
       },
     },

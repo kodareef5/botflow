@@ -6,7 +6,7 @@ import type { BoardConfig, Card, Lane, LoadedBoard } from './model.ts';
 import { addAttachmentLine, appendToSection, parseBody, removeAttachmentLine, setChecklistItem, setSection } from './body.ts';
 import { emitScalar } from './emit.ts';
 import { newHashId, nextSeqId, slugify } from './ids.ts';
-import { logMutation, nowDate, nowDateTime, sanitizeInline, sanitizeUrl } from './write.ts';
+import { logMutation, nowDate, nowDateTime, sanitizeActor, sanitizeBlock, sanitizeInline, sanitizeSectionName, sanitizeUrl } from './write.ts';
 
 /** An error caused by how a tool was invoked: message for the caller, no stack. */
 export class UsageError extends Error {}
@@ -138,6 +138,16 @@ export interface AddOptions {
 }
 
 /** Build a new card (id allocated, Log opened). Does not persist. */
+/** p0-p3, matching the parser. Writing anything else means the very next load
+ *  reports a schema finding on a card this tool just wrote. */
+const PRIORITY_RE = /^p[0-3]$/;
+
+function checkedPriority(value: string | null | undefined): string | null | undefined {
+  if (value === undefined || value === null || value === '') return value === '' ? null : value;
+  if (!PRIORITY_RE.test(value)) throw new UsageError(`priority must be p0, p1, p2 or p3 (got "${value}")`);
+  return value;
+}
+
 export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
   const config = board.config;
   const type = opts.type ?? 'task';
@@ -161,7 +171,7 @@ export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
     boardPath: type === 'board' ? opts.boardPath! : null,
     labels: opts.labels ?? [],
     assignee: opts.assignee ?? null,
-    priority: opts.priority ?? null,
+    priority: checkedPriority(opts.priority) ?? null,
     deps: opts.deps ?? [],
     cover: null,
     blocked: null,
@@ -324,7 +334,7 @@ export function opEdit(card: Card, patch: EditPatch, actor: string): Card {
     changed.push('labels');
   }
   if (patch.priority !== undefined) {
-    card.priority = patch.priority;
+    card.priority = checkedPriority(patch.priority) ?? null;
     changed.push('priority');
   }
   if (patch.assignee !== undefined) {
@@ -357,7 +367,7 @@ export function opLog(card: Card, actor: string, message: string): Card {
 
 /** Append to the card's Comments section (discourse; separate from the Log). */
 export function opComment(card: Card, actor: string, text: string): Card {
-  card.body = appendToSection(card.body, 'Comments', `- ${nowDateTime()} ${sanitizeInline(actor)}: ${sanitizeInline(text)}`);
+  card.body = appendToSection(card.body, 'Comments', `- ${nowDateTime()} ${sanitizeActor(actor)}: ${sanitizeInline(text)}`);
   card.updated = nowDate();
   return card;
 }
@@ -376,7 +386,7 @@ export function opCheck(card: Card, actor: string, index: number, checked: boole
 
 /** Replace the card's `## Description` (empty text clears it). */
 export function opDescribe(card: Card, actor: string, text: string): Card {
-  card.body = setSection(card.body, 'Description', text, 'start');
+  card.body = setSection(card.body, 'Description', sanitizeBlock(text), 'start');
   card.updated = nowDate();
   logMutation(card, actor, text.trim() === '' ? 'cleared description' : 'edited description');
   return card;
@@ -387,6 +397,13 @@ export function opDescribe(card: Card, actor: string, text: string): Card {
 export function opChecklistAdd(card: Card, actor: string, text: string, section = 'Checklist'): Card {
   const clean = text.trim().replace(/\s+/g, ' ');
   if (clean === '') throw new UsageError('checklist item text required');
+  // The section name is interpolated straight into `## <name>`, so it has to
+  // be a single plain line; and the Log is append-only audit, never a place
+  // to file a task.
+  const named = sanitizeSectionName(section);
+  if (named === null) throw new UsageError(`"${section}" is not a usable section name`);
+  if (named.toLowerCase() === 'log') throw new UsageError('the Log is append-only: pick another section');
+  section = named;
   const escaped = section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   if (!new RegExp(`(^|\\n)## ${escaped}[ \\t]*\\n`).test(card.body)) {
     card.body = setSection(card.body, section, `- [ ] ${clean}`, 'before-log');

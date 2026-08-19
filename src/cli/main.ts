@@ -126,7 +126,17 @@ function getActor(values: Values): string {
 const csv = (v: string | undefined): string[] | undefined =>
   v === undefined ? undefined : v === '' ? [] : v.split(',').map((s) => s.trim()).filter((s) => s !== '');
 
-const out = (s: string): void => void process.stdout.write(s.endsWith('\n') ? s : s + '\n');
+/** Card text is repo-carried, so it arrives from whoever can commit: titles,
+ *  labels and log lines all reach the terminal verbatim. Escape sequences in
+ *  that text would let a hostile card repaint the screen, hide lines, or fake
+ *  output on anyone who runs `botflow board`. Strip C0/DEL here, the single
+ *  place human-facing text leaves the CLI, keeping tab and newline. JSON goes
+ *  out through this too and is unaffected: JSON.stringify has already escaped
+ *  those bytes as \uXXXX, so there is nothing raw left to strip. */
+const out = (s: string): void => {
+  const safe = s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+  void process.stdout.write(safe.endsWith('\n') ? safe : safe + '\n');
+};
 const emitJson = (v: unknown): void => out(JSON.stringify(v, null, 2));
 
 export function run(argv: string[]): number {

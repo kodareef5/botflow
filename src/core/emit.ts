@@ -52,7 +52,16 @@ export function emitMap(obj: Record<string, unknown>, indent = 0): string {
             lines.push(`${pad}  - [${item.map(emitScalar).join(', ')}]`);
           } else if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
             // `- first: v` with continuation keys two deeper (the parser's shape).
+            // An empty map has no first key, and `- ` alone is an empty
+            // sequence item the parser rejects: the card would round-trip into
+            // a document that no longer loads, and vanish from the board on
+            // the next routine rewrite. Emit the inline form, as the mapping
+            // branch below already does for the same reason.
             const innerLines = emitMap(item as Record<string, unknown>, indent + 4).split('\n');
+            if (innerLines[0] === '') {
+              lines.push(`${pad}  - {}`);
+              continue;
+            }
             lines.push(`${pad}  - ${innerLines[0]!.trimStart()}`);
             for (const rest of innerLines.slice(1)) lines.push(rest);
           } else {

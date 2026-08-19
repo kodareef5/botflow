@@ -27,6 +27,13 @@ export function cardJson(card: Card, node: BoardNode, ba: BoardAnalysis): Record
     checklist: parsed.checklist.total > 0 ? parsed.checklist : null,
     comments: parsed.comments.length,
     attachments: parsed.attachments.length,
+    // Who made this card, read back off the creation entry opAdd always
+    // writes first. Derived, not stored: no frontmatter key, no spec change,
+    // and it answers for every card that already exists. The `created` check
+    // matters: a log whose first line is a claim or a move belongs to whoever
+    // did that, and reporting them as the author would be a plain lie. Null
+    // when the card carries no creation entry at all.
+    author: /^created\b/.test(parsed.log[0]?.text ?? '') ? (parsed.log[0]?.actor ?? null) : null,
     created: card.created,
     updated: card.updated,
     file: card.file,
