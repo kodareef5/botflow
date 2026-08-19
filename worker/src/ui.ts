@@ -68,7 +68,6 @@ aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
 .badges .by{opacity:.75;font-style:italic}
 .whoami{font-size:11.5px;color:var(--muted);margin-right:10px;white-space:nowrap}
 .whoami i{font-style:normal;text-transform:uppercase;letter-spacing:.05em;font-size:9.5px;opacity:.7;border:var(--bw) var(--bs) var(--grid);border-radius:999px;padding:1px 5px;margin-left:4px}
-.col h3 .add{margin-left:6px}
 /* ---- drag to move ---- */
 .deck{display:flex;flex-direction:column;gap:var(--card-gap);min-height:24px}
 .subgroup{display:flex;flex-direction:column;gap:var(--card-gap)}
@@ -100,6 +99,10 @@ aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
 .col h3{font:700 11px/1.25 var(--display);text-transform:uppercase;letter-spacing:.04em;color:var(--ink2);padding:2px 4px 7px;display:flex;gap:6px}
 .col h3 .n{color:var(--muted);font-weight:400}
 .col h3 .wipbad{color:var(--st-blocked)}
+.lanefoot{margin-top:7px;padding-top:7px;border-top:1px dashed transparent;opacity:0;transform:translateY(-2px);pointer-events:none;transition:opacity .12s ease,transform .12s ease,border-color .12s ease}
+.laneadd{width:100%;text-align:left;background:transparent;border-color:transparent;color:var(--muted);padding:4px 7px}
+.laneadd:hover,.laneadd:focus-visible{color:var(--ink);border-color:var(--grid);background:var(--surface2)}
+.col:hover .lanefoot,.col:focus-within .lanefoot{opacity:1;transform:none;pointer-events:auto;border-top-color:var(--grid)}
 .sub-h{font-size:11px;color:var(--muted);padding:5px 4px 2px;border-top:1px dashed var(--grid);margin-top:5px}
 .card{border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);margin:var(--card-gap) 0;background:var(--surface);cursor:pointer;overflow:hidden;transition:transform .14s ease,box-shadow .14s ease,border-color .14s ease}
 .card:hover{border-color:var(--baseline)}
@@ -336,6 +339,7 @@ button.danger{background:var(--st-blocked);color:#fff;border-color:transparent}
 .mrow .who{color:var(--muted);font-size:11px}
 .mrow button{margin-left:auto;font-size:11px;padding:1px 8px}
 .mkids{margin-left:16px;border-left:1px dashed var(--grid);padding-left:8px}
+@media (hover:none){.lanefoot{opacity:1;transform:none;pointer-events:auto;border-top-color:var(--grid)}}
 @media (max-width: 760px){
   #burger{display:inline-flex}
   header.top{gap:10px;padding:10px 12px;flex-wrap:wrap}
@@ -751,9 +755,9 @@ function colsHtml(b){
           +'<div class="sub-h">· '+esc(sub)+'</div>'+cs.map(c=>cardHtml(b,c)).join('')+'</div>';
       }
     }else body=lane.cards.map(c=>cardHtml(b,c)).join('');
-    const add=!RO?'<button class="add" data-addcard="'+esc(lane.id)+'" title="add a card to '+esc(lane.name)+'" aria-label="add a card to '+esc(lane.name)+'">+</button>':'';
-    return '<section class="col" data-lane="'+esc(lane.id)+'"><h3>'+esc(lane.name)+' '+wip+add+'</h3>'
-      +'<div class="deck" data-lane="'+esc(lane.id)+'">'+(body||'<div class="empty">·</div>')+'</div></section>';
+    const add=!RO?'<footer class="lanefoot"><button type="button" class="laneadd" data-addcard="'+esc(lane.id)+'" title="add a card to '+esc(lane.name)+'" aria-label="add a card to '+esc(lane.name)+'">+ add card</button></footer>':'';
+    return '<section class="col" data-lane="'+esc(lane.id)+'"><h3>'+esc(lane.name)+' '+wip+'</h3>'
+      +'<div class="deck" data-lane="'+esc(lane.id)+'">'+(body||'<div class="empty">·</div>')+'</div>'+add+'</section>';
   }).join('')+'</div>';
 }
 /** A lost claim comes back as a structured conflict. Say what actually
@@ -1476,10 +1480,13 @@ async function renderAccount(host){
   };
 }
 // ---- members: the company directory, owner only ----
+// /api/members returns Registry Identity rows: scopeKind/scopeId are flat.
+// /api/org.me and /api/whoami deliberately expose a nested scope object, but
+// that presentation shape is not the member-management contract.
 function scopeLabel(m){
-  if(m.scope.kind==='org')return 'whole company';
-  const id=m.scope.id;
-  if(m.scope.kind==='space'){const sp=ORG.spaces.find(x=>x.id===id);return 'space: '+(sp?sp.name:id)}
+  if(m.scopeKind==='org')return 'whole company';
+  const id=m.scopeId;
+  if(m.scopeKind==='space'){const sp=ORG.spaces.find(x=>x.id===id);return 'space: '+(sp?sp.name:id)}
   const p=findAny(id);return 'project: '+(p?p.name:id);
 }
 function scopeOptions(sel){
@@ -1494,7 +1501,7 @@ function scopeOptions(sel){
   return out;
 }
 function memberFields(m){
-  const sel=m?(m.scope.kind==='org'?'org':m.scope.kind+':'+m.scope.id):'org';
+  const sel=m?(m.scopeKind==='org'?'org':m.scopeKind+':'+m.scopeId):'org';
   return '<div class="field"><label>display name<input id="mdisplay" value="'+esc(m?m.display:'')+'" placeholder="what boards show"></label></div>'
     +'<div class="field"><label>role<select id="mrole">'
     +['read','write','owner'].map(r=>'<option value="'+r+'"'+(m&&m.role===r?' selected':'')+'>'+r+(r==='owner'?' (runs the company)':r==='write'?' (works the board)':' (looks, cannot touch)')+'</option>').join('')
@@ -1713,7 +1720,9 @@ function renderSettings(main){
     const dsh=e.target.closest('[data-delsh]');
     if(dsh){await api('/api/shares/'+dsh.dataset.delsh,{method:'DELETE'});renderSettings(main);return}
     if(e.target.closest('#custpill'))return; // the color input handles itself
-    const tile=e.target.closest('[data-style]');
+    // <html> carries data-style too; name the tile class so delegation cannot
+    // escape this panel and treat every ordinary settings click as a theme pick.
+    const tile=e.target.closest('.stile[data-style]');
     const pill=e.target.closest('[data-accent]');
     const mode=e.target.closest('[data-mode]');
     const density=e.target.closest('[data-density]');

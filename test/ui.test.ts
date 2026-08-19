@@ -28,7 +28,7 @@ test('ui: keyboard and aria wiring is present', () => {
     'role="tablist"',
     'aria-selected=',
     'role="checkbox" aria-checked=',
-    'data-addcard=',                                     // create a card from a lane header
+    'data-addcard=',                                     // create a card from a lane footer
     'aria-label="add a card to ',                        // and it says which lane
     'autocomplete="current-password"',                   // login is a real credential form
     'type="password"',
@@ -134,6 +134,44 @@ function loadMorph(): { morphChildren: (a: MiniNode, b: MiniNode) => void } {
   return (ctx as { exports: { morphChildren: (a: MiniNode, b: MiniNode) => void } }).exports;
 }
 
+function renderCols(readOnly = false): string {
+  const js = scripts[1]!;
+  const start = js.indexOf('function colsHtml');
+  const end = js.indexOf('/** A lost claim', start);
+  assert.ok(start !== -1 && end > start, 'column renderer found in page JS');
+  const ctx: Record<string, unknown> = {
+    RO: readOnly,
+    esc: (s: unknown) => String(s),
+    cardHtml: () => '<article data-card="001"></article>',
+    board: {
+      lanes: [{ id: 'todo', name: 'To do', cards: [{ id: '001' }], substates: [], wip: null }],
+    },
+  };
+  runInNewContext(`${js.slice(start, end)}; result=colsHtml(board)`, ctx);
+  return String(ctx['result']);
+}
+
+function loadMemberHelpers(): {
+  scopeLabel: (member: Record<string, unknown>) => string;
+  memberFields: (member: Record<string, unknown> | null) => string;
+} {
+  const js = scripts[1]!;
+  const start = js.indexOf('function scopeLabel');
+  const end = js.indexOf('function readMemberFields', start);
+  assert.ok(start !== -1 && end > start, 'member rendering helpers found in page JS');
+  const project = { id: 'p-build', name: 'Build', children: [] };
+  const ctx: Record<string, unknown> = {
+    ORG: { spaces: [{ id: 's-ops', name: 'Operations', projects: [project] }] },
+    findAny: (id: string) => id === project.id ? project : null,
+    esc: (s: unknown) => String(s ?? ''),
+  };
+  runInNewContext(`${js.slice(start, end)}; exports={scopeLabel,memberFields}`, ctx);
+  return ctx['exports'] as {
+    scopeLabel: (member: Record<string, unknown>) => string;
+    memberFields: (member: Record<string, unknown> | null) => string;
+  };
+}
+
 test('ui: identity, role flags and the name directory refresh together', () => {
   const app = scripts.join('\n');
   // A rename is only visible because the UI resolves usernames through the
@@ -180,6 +218,24 @@ test('ui: a card can be moved, claimed, closed and blocked from the board', () =
   assert.match(app, /order==='strict'/);
 });
 
+test('ui: each writable lane ends with an add-card footer', () => {
+  const html = renderCols();
+  const headingEnd = html.indexOf('</h3>');
+  const deckEnd = html.indexOf('</div>', html.indexOf('class="deck"'));
+  const footer = html.indexOf('<footer class="lanefoot">');
+  assert.ok(headingEnd !== -1 && footer > deckEnd, 'the add action follows the deck instead of floating in the heading');
+  assert.ok(!html.slice(0, headingEnd).includes('data-addcard'), 'the lane heading has no add-card control');
+  assert.match(html, /<button type="button" class="laneadd" data-addcard="todo"/);
+  assert.match(html, />\+ add card<\/button><\/footer>/);
+  assert.ok(!renderCols(true).includes('lanefoot'), 'read-only boards do not advertise a write action');
+
+  // Hover is an enhancement: keyboard focus reveals the same stable footer,
+  // and devices without hover keep it discoverable.
+  assert.match(page, /\.col:hover \.lanefoot,\.col:focus-within \.lanefoot/);
+  assert.match(page, /@media \(hover:none\)\{\.lanefoot\{/);
+  assert.doesNotMatch(page, /\.lanefoot\{[^}]*display:none/);
+});
+
 test('ui: a link preview can become cover art without overriding cover: none', () => {
   const app = scripts.join('\n');
   // cover is null both when art is suppressed and when there simply is none,
@@ -205,6 +261,30 @@ test('ui: setup asks only for what the deployment needs', () => {
   assert.match(app, /id="orgsave"/);
   // And the header reflects a rename without a reload.
   assert.match(app, /const name=\$\('#horg'\);if\(name\)name\.textContent=ORG\.name/);
+});
+
+test('ui: ordinary settings clicks cannot masquerade as theme choices', () => {
+  const app = scripts.join('\n');
+  const start = app.indexOf("main.querySelector('.settings').onclick");
+  const handler = app.slice(start, app.indexOf('\n  };', start));
+  assert.ok(start !== -1, 'settings click delegation is present');
+  // <html> also carries data-style so the active theme can drive CSS. A bare
+  // closest('[data-style]') walks out of settings, finds <html>, and turns a
+  // click in any input or account control into a save + full settings render.
+  assert.match(handler, /closest\('\.stile\[data-style\]'\)/,
+    'only an actual style tile may trigger a theme save');
+  assert.doesNotMatch(handler, /closest\('\[data-style\]'\)/,
+    'delegation must not escape to the document theme attribute');
+});
+
+test('ui: the member directory consumes the flat identity scope contract', () => {
+  const { scopeLabel, memberFields } = loadMemberHelpers();
+  assert.equal(scopeLabel({ scopeKind: 'org', scopeId: null }), 'whole company');
+  assert.equal(scopeLabel({ scopeKind: 'space', scopeId: 's-ops' }), 'space: Operations');
+  assert.equal(scopeLabel({ scopeKind: 'project', scopeId: 'p-build' }), 'project: Build');
+  const fields = memberFields({ display: 'Builder', role: 'write', scopeKind: 'project', scopeId: 'p-build' });
+  assert.match(fields, /value="project:p-build" selected/,
+    'editing a member selects the scope returned by /api/members');
 });
 
 test('ui: a card can be moved without a pointer', () => {
