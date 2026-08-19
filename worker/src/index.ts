@@ -39,6 +39,13 @@ export interface Env {
 const INLINE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'application/pdf', 'text/plain']);
 const MAX_UPLOAD = 10 * 1024 * 1024;
 
+/** App and share pages carry destructive in-page-confirm admin actions, so
+ *  they never load inside a frame (clickjacking). */
+const HTML_HEADERS = {
+  'content-type': 'text/html; charset=utf-8',
+  'content-security-policy': "frame-ancestors 'none'",
+};
+
 /** Every uploaded object's key/size/type: the export's uploads manifest. */
 async function listUploadManifest(bucket: R2Bucket): Promise<{ key: string; size: number; contentType: string | null }[]> {
   const out: { key: string; size: number; contentType: string | null }[] = [];
@@ -53,6 +60,16 @@ async function listUploadManifest(bucket: R2Bucket): Promise<{ key: string; size
 
 const json = (value: unknown, status = 200): Response =>
   new Response(JSON.stringify(value, null, 2), { status, headers: { 'content-type': 'application/json' } });
+
+/** Reads ?limit as an integer in [1, 500]: SQLite treats a negative LIMIT as
+ *  unlimited, so clamp the low end as well as the high. */
+const limitParam = (value: string | null): number =>
+  Math.max(1, Math.min(500, Math.trunc(Number(value ?? 100) || 100)));
+
+/** Pre-read reject on the declared body size. content-length can lie low, so
+ *  this only short-circuits; readers keep their real checks after buffering. */
+const bodyTooBig = (req: Request, max: number): boolean =>
+  Number(req.headers.get('content-length') ?? 0) > max;
 
 interface ProjectSummary {
   name: string;
@@ -204,7 +221,7 @@ export default {
 
     try {
       if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
-        return new Response(uiHtml(null), { headers: { 'content-type': 'text/html; charset=utf-8' } });
+        return new Response(uiHtml(null), { headers: HTML_HEADERS });
       }
       if (req.method === 'GET' && url.pathname === '/about') {
         return new Response(ABOUT_HTML, { headers: { 'content-type': 'text/html; charset=utf-8' } });
@@ -212,7 +229,7 @@ export default {
       const shareMatch = /^\/s\/([a-f0-9]{16,64})$/.exec(url.pathname);
       if (req.method === 'GET' && shareMatch) {
         const share = await registry.resolveShare(shareMatch[1]!);
-        return new Response(uiHtml(shareMatch[1]!, share?.cardId ?? null), { headers: { 'content-type': 'text/html; charset=utf-8' } });
+        return new Response(uiHtml(shareMatch[1]!, share?.cardId ?? null), { headers: HTML_HEADERS });
       }
       // Uploaded attachments: the random key segment is the capability, like
       // share tokens; objects render in <img> tags and on public card pages,
@@ -271,7 +288,8 @@ export default {
       }
       if (req.method === 'POST' && url.pathname === '/api/setup') {
         if (status.initialized) return json({ error: 'already initialized' }, 409);
-        const body = (await req.json()) as { name?: string; setupKey?: string };
+        if (bodyTooBig(req, MAX_UPLOAD)) return json({ error: 'body exceeds 10 MiB' }, 413);
+        const body = (await req.json().catch(() => ({}))) as { name?: string; setupKey?: string };
         const access = setupAccess(url.hostname, env.SETUP_KEY, body.setupKey);
         if (!access.ok) return json({ error: access.error }, access.status);
         const res = await registry.setup(typeof body.name === 'string' && body.name !== '' ? body.name : 'company');
@@ -282,6 +300,7 @@ export default {
       // admin token and kills the old one; the audit log records it.
       if (req.method === 'POST' && url.pathname === '/api/recover') {
         if (!status.initialized) return json({ error: 'not initialized: use setup' }, 409);
+        if (bodyTooBig(req, MAX_UPLOAD)) return json({ error: 'body exceeds 10 MiB' }, 413);
         const body = (await req.json().catch(() => ({}))) as { setupKey?: string };
         const access = setupAccess(url.hostname, env.SETUP_KEY, body.setupKey);
         if (!access.ok) return json({ error: access.error }, access.status);
@@ -369,7 +388,8 @@ export default {
         if (denied) return denied;
         if (req.method === 'GET') return json({ ...(await registry.getTheme()), ...(await registry.getPrefs()) });
         if (req.method === 'POST') {
-          const body = (await req.json()) as Record<string, unknown>;
+          const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+          if (body === null) return json({ error: 'invalid JSON body' }, 400);
           const theme = await registry.setTheme(body as never);
           const prefs = 'gateShares' in body ? await registry.setPrefs(body) : await registry.getPrefs();
           await registry.audit('admin', 'settings', `style ${theme.style}/${theme.accent} ${theme.density}, mode ${theme.mode}, gate shares ${prefs.gateShares ? 'on' : 'off'}`);
@@ -410,7 +430,8 @@ export default {
         const denied = requireAdmin();
         if (denied) return denied;
         const isDemo = url.pathname === '/api/demo';
-        const rawPayload: unknown = isDemo ? DEMO : await req.json();
+        if (!isDemo && bodyTooBig(req, MAX_UPLOAD)) return json({ error: 'import exceeds 10 MiB' }, 413);
+        const rawPayload: unknown = isDemo ? DEMO : await req.json().catch(() => null);
         const validationError = validateOrgImportPayload(rawPayload);
         if (validationError) return json({ error: validationError }, 400);
         const payload = rawPayload as OrgImport;
@@ -514,14 +535,14 @@ export default {
       if (req.method === 'POST' && url.pathname === '/api/spaces') {
         const denied = requireAdmin();
         if (denied) return denied;
-        const body = (await req.json()) as { name?: string };
+        const body = (await req.json().catch(() => ({}))) as { name?: string };
         if (!body.name) return json({ error: 'name required' }, 400);
         const created = await registry.createSpace(body.name);
         await registry.audit('admin', 'create-space', `"${body.name}" (${created.id})`);
         return json(created);
       }
       if (req.method === 'POST' && url.pathname === '/api/projects') {
-        const body = (await req.json()) as { space?: string; parent?: string; name?: string; lane?: string };
+        const body = (await req.json().catch(() => ({}))) as { space?: string; parent?: string; name?: string; lane?: string };
         if (!body.name) return json({ error: 'name required' }, 400);
         if (identity.kind === 'agent') {
           // Agents may decompose their own scope into sub-projects.
@@ -617,7 +638,7 @@ export default {
       if (req.method === 'GET' && url.pathname === '/api/org/activity') {
         const denied = requireAdmin();
         if (denied) return denied;
-        const limit = Math.min(500, Number(url.searchParams.get('limit') ?? 100) || 100);
+        const limit = limitParam(url.searchParams.get('limit'));
         return json(await registry.listAudit(limit));
       }
 
@@ -654,13 +675,13 @@ export default {
       }
       if (req.method === 'GET' && rest === '/export') return json(await stub.exportDocs());
       if (req.method === 'PUT' && rest === '/import') {
-        const body = (await req.json()) as { config?: string; cards?: BoardDocument[]; actor?: string };
+        const body = (await req.json().catch(() => ({}))) as { config?: string; cards?: BoardDocument[]; actor?: string };
         if (typeof body.config !== 'string' || !Array.isArray(body.cards)) return json({ error: 'config and cards required' }, 400);
         const res = await stub.importDocs(body.config, body.cards, actorOf(body as Record<string, unknown>));
         return 'error' in res ? json(res, 400) : json(res);
       }
       if (req.method === 'GET' && rest === '/events') {
-        const limit = Math.min(500, Number(url.searchParams.get('limit') ?? 100) || 100);
+        const limit = limitParam(url.searchParams.get('limit'));
         return json(await stub.listEvents(limit));
       }
       if (rest === '/shares') {
@@ -668,7 +689,8 @@ export default {
         if (denied) return denied;
         if (req.method === 'GET') return json(await registry.listShares(pid));
         if (req.method === 'POST') {
-          const body = (await req.json()) as { label?: string; card?: string };
+          const body = (await req.json().catch(() => null)) as { label?: string; card?: string } | null;
+          if (body === null) return json({ error: 'invalid JSON body' }, 400);
           let cardId: string | null = null;
           if (typeof body.card === 'string' && body.card !== '') {
             if ((await stub.card(body.card)) === null) return json({ error: `no card ${body.card}` }, 400);
@@ -689,14 +711,14 @@ export default {
       if (req.method === 'POST' && rest === '/keys') {
         const denied = requireAdmin();
         if (denied) return denied;
-        const body = (await req.json()) as { label?: string };
+        const body = (await req.json().catch(() => ({}))) as { label?: string };
         if (!body.label) return json({ error: 'label required' }, 400);
         const res = await registry.createKey(pid, body.label);
         if (!('error' in res)) await registry.audit('admin', 'create-key', `"${body.label}" for ${pid}`);
         return 'error' in res ? json(res, 400) : json(res);
       }
       if (req.method === 'POST' && rest === '/cards') {
-        const body = (await req.json()) as Record<string, unknown>;
+        const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
         if (typeof body['title'] !== 'string' || body['title'] === '') return json({ error: 'title required' }, 400);
         // project: refs must point at projects nested beneath this board; the
         // DO enforces this at resolution time too, this is the friendly error.
@@ -735,6 +757,7 @@ export default {
           if (!env.ATTACHMENTS) return json({ error: 'uploads are not enabled: bind an R2 bucket as ATTACHMENTS' }, 503);
           const name = (url.searchParams.get('name') ?? 'file').replace(/[^\w.\- ]+/g, '_').slice(0, 80) || 'file';
           const type = (req.headers.get('content-type') ?? 'application/octet-stream').split(';')[0]!.trim();
+          if (bodyTooBig(req, MAX_UPLOAD)) return json({ error: 'upload exceeds 10 MiB' }, 413);
           const bytes = await req.arrayBuffer();
           if (bytes.byteLength === 0) return json({ error: 'empty upload' }, 400);
           if (bytes.byteLength > MAX_UPLOAD) return json({ error: 'upload exceeds 10 MiB' }, 413);
@@ -781,7 +804,8 @@ export default {
       }
       return json({ error: 'not found' }, 404);
     } catch (err) {
-      return json({ error: (err as Error).message }, 500);
+      console.error('unhandled request failure:', err);
+      return json({ error: 'internal error' }, 500);
     }
   },
 } satisfies ExportedHandler<Env>;

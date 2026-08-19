@@ -334,6 +334,7 @@ const ORDER=['wishlist','todo','blocked','doing','done','archive'];
 const THEMES=window.__THEMES__;
 const $=(s,el)=>(el||document).querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const linkOk=u=>{try{return['https:','http:','mailto:'].includes(new URL(u,location.href).protocol)}catch{return false}};
 const pct=p=>p==null?'·':Math.round(p*100)+'%';
 const IC={check:'<svg class="ic" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" rx="3"/><path d="M5 8.2l2.2 2.2L11.5 6"/></svg>',
   chat:'<svg class="ic" viewBox="0 0 16 16"><path d="M2.5 3.5h11v7h-6l-3 3v-3h-2z"/></svg>',
@@ -700,7 +701,7 @@ async function refreshBoard(quiet){
   let b;try{b=await api('/api/projects/'+SEL+'/board')}catch(err){if(!quiet)$('#view').innerHTML='<div class="err">'+esc(err.message)+'</div>';return}
   if(quiet&&JSON.stringify(b)===JSON.stringify(BOARD))return;
   BOARD=b;
-  const pi=$('#pinfo');if(pi)pi.textContent=b.cards+' cards · '+pct(b.progress);pi.title='structural progress: every card is one unit; a sub-board fills its unit by its own fraction';
+  const pi=$('#pinfo');if(pi){pi.textContent=b.cards+' cards · '+pct(b.progress);pi.title='structural progress: every card is one unit; a sub-board fills its unit by its own fraction'}
   const v=$('#view');if(!v)return;
   patchView(v,boardHtml(b));
   v.onclick=boardClicks;
@@ -883,12 +884,13 @@ function paneCard(c){
   out+=atts.length?atts.map(a=>{
     let host='';try{host=new URL(a.url).hostname}catch{}
     return '<div class="att">'+IC.clip+'<span class="lbl">'+esc(a.label)+'</span><span class="host">'+esc(host)+'</span>'
-      +'<a href="'+esc(a.url)+'" target="_blank" rel="noopener">open '+IC.open+'</a>'+(RO?'':'<button class="ghost" data-detach="'+a.index+'" title="remove">✕</button>')+'</div>';
+      +(linkOk(a.url)?'<a href="'+esc(a.url)+'" target="_blank" rel="noopener">open '+IC.open+'</a>':'<span class="host" style="margin-left:auto">'+esc(a.url)+'</span>')
+      +(RO?'':'<button class="ghost" data-detach="'+a.index+'" title="remove">✕</button>')+'</div>';
   }).join(''):'<div class="empty">nothing attached</div>';
   const imgs=p.images||[];
   if(imgs.length){
     out+='<h4>gallery'+(RO?'':' <span class="h-act">'+(c.cover?'<button data-cover="none">hide art</button>':'<button data-cover="auto">auto art</button>')+'</span>')+'</h4><div class="gallery">'
-      +imgs.map(u=>'<div class="shot"><a href="'+esc(u)+'" target="_blank" rel="noopener"><img src="'+esc(u)+'" alt="" loading="lazy"></a>'+(RO?'':'<button class="setcov primary" data-cover="'+esc(u)+'">☆ cover</button>')+'</div>').join('')+'</div>';
+      +imgs.map(u=>'<div class="shot">'+(linkOk(u)?'<a href="'+esc(u)+'" target="_blank" rel="noopener"><img src="'+esc(u)+'" alt="" loading="lazy"></a>':'<img src="'+esc(u)+'" alt="" loading="lazy">')+(RO?'':'<button class="setcov primary" data-cover="'+esc(u)+'">☆ cover</button>')+'</div>').join('')+'</div>';
   }
   const kv=[];
   if(c.created)kv.push('<span><b>created</b> '+esc(c.created)+'</span>');
@@ -1164,6 +1166,9 @@ if(PUB)publicStart();else start();
 `;
 
 export function uiHtml(pub: string | null, pubCard: string | null = null): string {
+  // JSON inside <script>: escape "<" so an attacker-controlled card id cannot
+  // close the tag early and inject markup (same trick as the CLI viewer).
+  const safeJson = (v: unknown): string => JSON.stringify(v).replace(/</g, '\\u003c');
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -1174,7 +1179,7 @@ export function uiHtml(pub: string | null, pubCard: string | null = null): strin
 <style>${CSS}</style>
 </head>
 <body>
-<script>window.__THEMES__=${JSON.stringify(STYLES)};window.__PUB__=${JSON.stringify(pub)};window.__PUBCARD__=${JSON.stringify(pubCard)};</script>
+<script>window.__THEMES__=${safeJson(STYLES)};window.__PUB__=${safeJson(pub)};window.__PUBCARD__=${safeJson(pubCard)};</script>
 <script>${JS}</script>
 </body>
 </html>`;
