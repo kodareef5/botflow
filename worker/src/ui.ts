@@ -1638,6 +1638,56 @@ async function refreshSharing(){
     });
   }catch(err){$('#view').innerHTML='<div class="err">'+esc(err.message)+'</div>'}
 }
+const AUDIT_PAGE_SIZE=25;
+function renderAudit(host){
+  const pages=[];
+  let pageIndex=-1;
+  let loading=false;
+  let failure='';
+  const paint=()=>{
+    if(!host.isConnected)return;
+    const page=pages[pageIndex];
+    if(!page){
+      host.innerHTML=loading?'loading…':failure?'<div class="err">'+esc(failure)+'</div>':'<div class="empty">no company activity yet</div>';
+      return;
+    }
+    const table=page.items.length?'<table class="list"><tr><th>when</th><th>actor</th><th>action</th><th>detail</th></tr>'
+      +page.items.map(a=>'<tr><td class="mono">'+esc((a.ts||'').replace('T',' ').slice(0,16))+'</td><td>'+esc(a.actor)+'</td><td>'+esc(a.action)+'</td><td>'+esc(a.detail)+'</td></tr>').join('')+'</table>'
+      :'<div class="empty">no company activity yet</div>';
+    const hasNewer=pageIndex>0;
+    const hasOlder=pageIndex+1<pages.length||page.hasMore;
+    const pager=hasNewer||hasOlder
+      ?'<nav aria-label="Company activity pages" style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px">'
+        +'<button type="button" data-audit-prev'+(hasNewer&&!loading?'':' disabled')+'>← newer</button>'
+        +'<span class="setting-note" style="margin:0">page '+(pageIndex+1)+' · '+AUDIT_PAGE_SIZE+' per page</span>'
+        +'<button type="button" data-audit-next'+(hasOlder&&!loading?'':' disabled')+'>'+(loading?'loading…':'older →')+'</button></nav>'
+      :'';
+    host.innerHTML=table+pager+(failure?'<div class="err">'+esc(failure)+'</div>':'');
+    const previous=host.querySelector('[data-audit-prev]');
+    if(previous)previous.onclick=()=>{pageIndex--;failure='';paint()};
+    const next=host.querySelector('[data-audit-next]');
+    if(next)next.onclick=()=>{
+      if(pageIndex+1<pages.length){pageIndex++;failure='';paint();return}
+      const last=page.items[page.items.length-1];
+      if(last)load(last.seq);
+    };
+  };
+  const load=async before=>{
+    if(loading)return;
+    loading=true;failure='';paint();
+    try{
+      const cursor=before==null?'':'&before='+encodeURIComponent(before);
+      const list=await api('/api/org/activity?limit='+(AUDIT_PAGE_SIZE+1)+cursor);
+      if(!host.isConnected)return;
+      if(!Array.isArray(list))throw new Error('Invalid company activity response.');
+      pages.splice(pageIndex+1);
+      pages.push({items:list.slice(0,AUDIT_PAGE_SIZE),hasMore:list.length>AUDIT_PAGE_SIZE});
+      pageIndex++;
+    }catch(err){failure=err.message}
+    finally{loading=false;if(host.isConnected)paint()}
+  };
+  load(null);
+}
 function stylePreview(st){
   const mode=THEME.mode==='system'?(mq.matches?'dark':'light'):THEME.mode;
   const p=st[mode];
@@ -1694,12 +1744,7 @@ function renderSettings(main){
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">company activity</h4>'
     +'<div id="maudit" style="max-width:720px">loading…</div>'
     +'<div class="err" id="serr"></div></div>';
-  api('/api/org/activity?limit=50').then(list=>{
-    const el=$('#maudit');if(!el)return;
-    el.innerHTML=list.length?'<table class="list"><tr><th>when</th><th>actor</th><th>action</th><th>detail</th></tr>'
-      +list.map(a=>'<tr><td class="mono">'+esc((a.ts||'').replace('T',' ').slice(0,16))+'</td><td>'+esc(a.actor)+'</td><td>'+esc(a.action)+'</td><td>'+esc(a.detail)+'</td></tr>').join('')+'</table>'
-      :'<div class="empty">no org activity yet</div>';
-  }).catch(()=>{});
+  renderAudit($('#maudit'));
   const countTree=n=>1+n.children.reduce((a,c)=>a+countTree(c),0);
   const mrowProj=n=>'<div class="mrow">'+esc(n.name)+'<span class="who">'+esc(n.id)+'</span>'
     +'<button data-delproj="'+esc(n.id)+'" data-name="'+esc(n.name)+'" data-count="'+countTree(n)+'">delete</button></div>'

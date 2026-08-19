@@ -41,6 +41,18 @@ test('ui: keyboard and aria wiring is present', () => {
   }
 });
 
+test('ui: company activity is fetched in cursor-paginated pages', () => {
+  const app = scripts.join('\n');
+  assert.match(app, /const AUDIT_PAGE_SIZE=25/);
+  assert.match(app, /\/api\/org\/activity\?limit='\+\(AUDIT_PAGE_SIZE\+1\)\+cursor/,
+    'the browser fetches only one page plus a has-more sentinel');
+  assert.match(app, /'&before='\+encodeURIComponent\(before\)/, 'older pages use the server cursor');
+  assert.match(app, /items:list\.slice\(0,AUDIT_PAGE_SIZE\)/, 'the sentinel row is not rendered');
+  assert.match(app, /data-audit-prev/);
+  assert.match(app, /data-audit-next/);
+  assert.doesNotMatch(app, /\/api\/org\/activity\?limit=50/, 'settings no longer loads its activity history in one batch');
+});
+
 // ---- a minimal DOM for the reconciler ----
 type Attr = { name: string; value: string };
 class MiniNode {

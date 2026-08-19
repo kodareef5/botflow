@@ -961,8 +961,16 @@ export default {
       if (req.method === 'GET' && url.pathname === '/api/org/activity') {
         const denied = requireOwner();
         if (denied) return denied;
-        const limit = limitParam(url.searchParams.get('limit'));
-        return json(await registry.listAudit(limit));
+        // Audit sequence numbers only grow, so an exclusive cursor avoids the
+        // skips and duplicates that OFFSET pagination gets when new activity
+        // arrives while somebody is looking through older pages.
+        const rawBefore = url.searchParams.get('before');
+        const before = rawBefore === null ? null : Number(rawBefore);
+        if (before !== null && (!Number.isSafeInteger(before) || before < 1)) {
+          return json({ error: 'before must be a positive integer' }, 400);
+        }
+        const limit = Math.min(100, limitParam(url.searchParams.get('limit')));
+        return json(await registry.listAudit(limit, before));
       }
 
       // ---- project routes ----

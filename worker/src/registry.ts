@@ -154,10 +154,11 @@ export class RegistryDO extends DurableObject {
     return { ok: true };
   }
 
-  listAudit(limit: number): { seq: number; ts: string; actor: string; action: string; detail: string }[] {
-    return this.sql
-      .exec('SELECT seq, ts, actor, action, detail FROM audit ORDER BY seq DESC LIMIT ?', limit)
-      .toArray() as unknown as { seq: number; ts: string; actor: string; action: string; detail: string }[];
+  listAudit(limit: number, before: number | null = null): { seq: number; ts: string; actor: string; action: string; detail: string }[] {
+    const query = before === null
+      ? this.sql.exec('SELECT seq, ts, actor, action, detail FROM audit ORDER BY seq DESC LIMIT ?', limit)
+      : this.sql.exec('SELECT seq, ts, actor, action, detail FROM audit WHERE seq < ? ORDER BY seq DESC LIMIT ?', before, limit);
+    return query.toArray() as unknown as { seq: number; ts: string; actor: string; action: string; detail: string }[];
   }
 
   // ---- prefs (small org-wide switches) ----

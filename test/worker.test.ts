@@ -215,6 +215,21 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     const forceAudit = (await call('/api/org/activity?limit=10', { token: admin })).body as unknown as { action: string }[];
     assert.ok(forceAudit.some((a) => a.action === 'force-override'), 'admin force use lands in the org audit log');
 
+    // Company activity is keyset-paginated. The cursor is exclusive so two
+    // adjacent pages cannot repeat an event, even as newer rows are appended.
+    type AuditItem = { seq: number; action: string };
+    const newestAudit = (await call('/api/org/activity?limit=3', { token: admin })).body as unknown as AuditItem[];
+    assert.equal(newestAudit.length, 3);
+    assert.ok(newestAudit.every((row, i) => i === 0 || newestAudit[i - 1]!.seq > row.seq), 'activity is newest first');
+    const auditCursor = newestAudit.at(-1)!.seq;
+    const olderAudit = (await call(`/api/org/activity?limit=3&before=${auditCursor}`, { token: admin })).body as unknown as AuditItem[];
+    assert.equal(olderAudit.length, 3);
+    assert.ok(olderAudit.every((row) => row.seq < auditCursor), 'the next page is strictly older than its cursor');
+    assert.equal(new Set([...newestAudit, ...olderAudit].map((row) => row.seq)).size, 6, 'adjacent pages do not overlap');
+    for (const badCursor of ['0', '-1', '1.5', 'not-a-sequence']) {
+      assert.equal((await call(`/api/org/activity?before=${badCursor}`, { token: admin })).status, 400, `rejects cursor ${badCursor}`);
+    }
+
     // Scoping: a card referencing an unrelated project is rejected, and a
     // smuggled ref (via board import) leaks nothing at resolution time.
     const refReject = await call(`/api/projects/${parent}/cards`, {
