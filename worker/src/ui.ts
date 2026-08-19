@@ -577,7 +577,10 @@ function adoptOrg(org){
   RO=!!PUB||!CAN_WRITE;
   DIR=new Map((org.directory||[]).map(m=>[m.username,m]));
 }
-async function reloadOrg(){adoptOrg(await api('/api/org'));renderSide();renderHeader();if(VIEW==='board'&&BOARD){BOARD=null;refreshBoard()}}
+// Awaits the board too: callers that await this expect the deck to be current
+// when it resolves, or anything touching the re-rendered DOM afterwards (like
+// putting keyboard focus back on a card that just moved) acts on the old one.
+async function reloadOrg(){adoptOrg(await api('/api/org'));renderSide();renderHeader();if(VIEW==='board'&&BOARD){BOARD=null;await refreshBoard()}}
 function renderHeader(){
   const agg=ORG.aggregate;
   $('#hmeter').innerHTML='<div class="track"><div class="fill" style="width:'+Math.round((agg.progress||0)*100)+'%"></div></div><b>'+pct(agg.progress)+'</b>';
@@ -690,7 +693,8 @@ function cardHtml(b,c){
   if((c.deps||[]).length)badges.push('<span>deps→'+c.deps.map(esc).join(',')+'</span>');
   if(ready.has(c.id))badges.push('<span class="ready bare">▶ ready</span>');
   const board=c.type==='board';
-  return '<div class="card '+(c.blocked?'blocked':'')+'" data-card="'+esc(c.id)+'" tabindex="0" role="button" aria-label="'+esc(c.id+' '+c.title)+'">'
+  return '<div class="card '+(c.blocked?'blocked':'')+'" data-card="'+esc(c.id)+'" tabindex="0" role="button" aria-label="'+esc(c.id+' '+c.title)+'"'
+    +(RO?'':' aria-keyshortcuts="Shift+ArrowLeft Shift+ArrowRight Shift+ArrowUp Shift+ArrowDown"')+'>'
     +(c.cover?'<img class="art" src="'+esc(c.cover)+'" alt="" loading="lazy">':'')
     +'<div class="inner"><div class="cid">'+esc(c.id)+'</div><div class="t">'+esc(c.title)+'</div>'
     +'<div class="badges">'+badges.join('')+'</div>'
@@ -874,8 +878,61 @@ function boardClicks(e){
   if(el)openCard(el.dataset.card);
 }
 // Keyboard nav: cards are tabbable; arrows walk the deck, Enter/Space opens.
+// Moving a card without a pointer. Shift+Arrow rather than a grab mode: the
+// board already spends Enter and Space on opening a card, and a modeless
+// binding needs no instructions to escape from. Left/right crosses lanes,
+// up/down steps substates within one.
+async function keyboardMove(el,dir){
+  if(RO||!BOARD)return;
+  const id=el.dataset.card;
+  const c=(BOARD.lanes||[]).flatMap(l=>l.cards).find(x=>x.id===id);
+  if(!c)return;
+  const lanes=BOARD.lanes||[];
+  const li=lanes.findIndex(l=>l.id===c.lane);
+  if(li<0)return;
+  let lane=lanes[li],sub=c.substate;
+  if(dir==='left'||dir==='right'){
+    const ni=li+(dir==='right'?1:-1);
+    if(ni<0||ni>=lanes.length)return;
+    lane=lanes[ni];
+    // Entering a lane with substates lands on its first, which is also the
+    // only legal entry point when that lane is strict.
+    sub=lane.substates.length?lane.substates[0]:null;
+  }else{
+    if(!lane.substates.length)return;
+    const si=lane.substates.indexOf(sub||lane.substates[0]);
+    const ns=si+(dir==='down'?1:-1);
+    if(ns<0||ns>=lane.substates.length)return;
+    sub=lane.substates[ns];
+  }
+  const to=sub?lane.id+'.'+sub:lane.id;
+  const from=c.substate?c.lane+'.'+c.substate:c.lane;
+  if(to===from)return;
+  const send=async force=>{
+    try{
+      await api('/api/projects/'+SEL+'/cards/'+id+'/move',{method:'POST',body:JSON.stringify(force?{to:to,force:true}:{to:to})});
+      await reloadOrg();
+      // The card lives in another column now; put focus back on it so a run
+      // of moves does not strand the keyboard at the old position.
+      const again=document.querySelector('[data-card="'+id+'"]');
+      if(again)again.focus();
+      toast(id+' moved to '+to);
+    }catch(err){toast(err.message)}
+  };
+  const legal=dropRules(BOARD,c).get(lane.id+'\u0000'+(sub||''))!==false;
+  if(legal)return send(false);
+  if(!IS_OWNER)return toast(lane.id+' is strict: '+id+' can only enter at '+lane.id+'.'+lane.substates[0]);
+  confirmModal('Override the lane rules',
+    'Moving '+esc(id)+' to <b>'+esc(to)+'</b> breaks the order this lane declares. Forcing is recorded as an override in the activity log.',
+    'force the move',()=>send(true));
+}
 function boardKeys(e){
   const cur=e.target.closest('[data-card]');if(!cur)return;
+  if(e.shiftKey&&e.key.startsWith('Arrow')){
+    e.preventDefault();
+    keyboardMove(cur,e.key.slice(5).toLowerCase());
+    return;
+  }
   if(e.key==='Enter'||e.key===' '){e.preventDefault();openCard(cur.dataset.card);return}
   const col=cur.closest('.col');if(!col)return;
   const inCol=[...col.querySelectorAll('[data-card]')];

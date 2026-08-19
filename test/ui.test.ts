@@ -180,6 +180,28 @@ test('ui: a card can be moved, claimed, closed and blocked from the board', () =
   assert.match(app, /order==='strict'/);
 });
 
+test('ui: a card can be moved without a pointer', () => {
+  const app = scripts.join('\n');
+  // Shift+Arrow rather than a grab mode: Enter and Space are already spent on
+  // opening a card, and a modeless binding needs no way to escape from it.
+  assert.match(app, /e\.shiftKey&&e\.key\.startsWith\('Arrow'\)/);
+  assert.match(app, /async function keyboardMove\(el,dir\)/);
+  // Plain arrows must keep navigating: the move binding has to come first and
+  // return, or focus movement and card movement would fight.
+  const keys = app.slice(app.indexOf('function boardKeys(e)'));
+  assert.ok(keys.indexOf('shiftKey') < keys.indexOf("e.key==='Enter'"), 'shift is handled before the open binding');
+  // Focus has to survive the move or a run of moves strands the keyboard.
+  assert.match(app, /if\(again\)again\.focus\(\)/);
+  assert.match(app, /await refreshBoard\(\)\}\}/, 'reloadOrg awaits the re-render focus depends on');
+  // Announced, not silent: toast carries role=status.
+  assert.match(app, /toast\(id\+' moved to '\+to\)/);
+  assert.match(app, /role','status'/);
+  // Discoverable by assistive tech without adding visual noise.
+  assert.match(app, /aria-keyshortcuts="Shift\+ArrowLeft/);
+  // The same legality rules the drag uses, so the two paths cannot disagree.
+  assert.match(app, /dropRules\(BOARD,c\)\.get/);
+});
+
 test('ui: a lost claim explains itself, and only owners may override', () => {
   const app = scripts.join('\n');
   assert.match(app, /function conflictHtml\(/);
