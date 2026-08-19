@@ -3,6 +3,7 @@
 // access to the board. Protocol errors → JSON-RPC errors; tool failures →
 // result payloads with isError (per MCP convention).
 
+import process from 'node:process';
 import type { Readable, Writable } from 'node:stream';
 
 import { analyze, lintBoard } from '../core/analyze.ts';
@@ -29,6 +30,9 @@ import { cardDetailJson } from '../core/json.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_INFO = { name: 'botflow', version: '0.1.0' };
+const PRIORITIES: readonly string[] = ['p0', 'p1', 'p2', 'p3'];
+/** Cap on the pending stdin buffer: a client that never sends '\n' would otherwise grow it until the host OOMs. */
+const MAX_BUFFER_BYTES = 8 * 1024 * 1024;
 
 type Json = Record<string, unknown>;
 
@@ -49,8 +53,28 @@ function schema(required: string[], props: Json): Json {
 
 function buildTools(root: string, defaultActor: string): Tool[] {
   const actorOf = (args: Json): string => (typeof args['actor'] === 'string' ? (args['actor'] as string) : defaultActor);
-  const list = (v: unknown): string[] | undefined => (Array.isArray(v) ? v.map(String) : undefined);
   const opt = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+  // Arguments arrive off the wire unchecked (the schema is only advisory), so
+  // reject wrong shapes loudly instead of coercing: String(obj) would write
+  // "[object Object]" and `list(nonArray) ?? []` would silently wipe deps.
+  const strOf = (v: unknown, name: string): string => {
+    if (typeof v !== 'string') throw new UsageError(`invalid ${name}: expected a string`);
+    return v;
+  };
+  const list = (v: unknown, name: string): string[] | undefined => {
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v) || !v.every((item) => typeof item === 'string')) {
+      throw new UsageError(`invalid ${name}: expected an array of strings`);
+    }
+    return v as string[];
+  };
+  const priorityOf = (v: unknown): string | undefined => {
+    if (v === undefined) return undefined;
+    if (typeof v !== 'string' || !PRIORITIES.includes(v)) {
+      throw new UsageError(`invalid priority: expected one of ${PRIORITIES.join(', ')}`);
+    }
+    return v;
+  };
 
   const view = () => {
     const tree = loadTree(root);
@@ -117,18 +141,18 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       description: 'Create a card. type "board" with board_path makes a nested-board card.',
       inputSchema: schema(['title'], {
         title: str, lane: str, type: { type: 'string', enum: ['task', 'board'] }, board_path: str,
-        labels: strList, priority: { type: 'string', enum: ['p0', 'p1', 'p2', 'p3'] }, deps: strList,
+        labels: strList, priority: { type: 'string', enum: PRIORITIES }, deps: strList,
         assignee: str, actor: str,
       }),
       run: (args) => {
         const card = addCard(root, {
-          title: String(args['title']),
+          title: strOf(args['title'], 'title'),
           lane: opt(args['lane']),
           type: args['type'] === 'board' ? 'board' : 'task',
           boardPath: opt(args['board_path']),
-          labels: list(args['labels']),
-          priority: opt(args['priority']),
-          deps: list(args['deps']),
+          labels: list(args['labels'], 'labels'),
+          priority: priorityOf(args['priority']),
+          deps: list(args['deps'], 'deps'),
           assignee: opt(args['assignee']),
           actor: actorOf(args),
         });
@@ -186,17 +210,17 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       name: 'card_edit',
       description: 'Edit card fields. Pass null priority/assignee to clear them.',
       inputSchema: schema(['id'], {
-        id: str, title: str, labels: strList, priority: { type: ['string', 'null'] },
+        id: str, title: str, labels: strList, priority: { type: ['string', 'null'], enum: [...PRIORITIES, null] },
         assignee: { type: ['string', 'null'] }, deps: strList, board_path: str,
         cover: { type: ['string', 'null'] }, actor: str,
       }),
       run: (args) => {
         const patch: EditPatch = {};
-        if ('title' in args) patch.title = String(args['title']);
-        if ('labels' in args) patch.labels = list(args['labels']) ?? [];
-        if ('priority' in args) patch.priority = args['priority'] === null ? null : opt(args['priority']) ?? null;
+        if ('title' in args) patch.title = strOf(args['title'], 'title');
+        if ('labels' in args) patch.labels = list(args['labels'], 'labels') ?? [];
+        if ('priority' in args) patch.priority = args['priority'] === null ? null : priorityOf(args['priority']) ?? null;
         if ('assignee' in args) patch.assignee = args['assignee'] === null ? null : opt(args['assignee']) ?? null;
-        if ('deps' in args) patch.deps = list(args['deps']) ?? [];
+        if ('deps' in args) patch.deps = list(args['deps'], 'deps') ?? [];
         if ('board_path' in args) patch.boardPath = opt(args['board_path']);
         if ('cover' in args) patch.cover = args['cover'] === null ? null : String(args['cover']);
         const card = editCard(root, String(args['id']), patch, actorOf(args));
@@ -266,6 +290,11 @@ export function startMcpServer(root: string, defaultActor: string, input: Readab
   const byName = new Map(tools.map((t) => [t.name, t]));
   const send = (msg: Json): void => void output.write(JSON.stringify(msg) + '\n');
 
+  // A client that exits before reading a reply breaks the pipe (EPIPE). The
+  // mutation already landed by then, so there is nothing to roll back — shut
+  // down quietly instead of crashing with an unhandled stream error.
+  output.on('error', () => process.exit(0));
+
   const handle = (msg: Json): void => {
     const id = msg['id'];
     const method = msg['method'];
@@ -276,17 +305,12 @@ export function startMcpServer(root: string, defaultActor: string, input: Readab
     }
     switch (method) {
       case 'initialize':
+        // Report the version this server speaks, whatever the client offered
+        // (no negotiation: any client version is accepted).
         send({
           jsonrpc: '2.0',
           id,
-          result: {
-            protocolVersion:
-              typeof (msg['params'] as Json | undefined)?.['protocolVersion'] === 'string'
-                ? ((msg['params'] as Json)['protocolVersion'] as string)
-                : PROTOCOL_VERSION,
-            capabilities: { tools: {} },
-            serverInfo: SERVER_INFO,
-          },
+          result: { protocolVersion: PROTOCOL_VERSION, capabilities: { tools: {} }, serverInfo: SERVER_INFO },
         });
         return;
       case 'ping':
@@ -306,13 +330,24 @@ export function startMcpServer(root: string, defaultActor: string, input: Readab
           send({ jsonrpc: '2.0', id, error: { code: -32602, message: `unknown tool "${String(params['name'])}"` } });
           return;
         }
+        const args = params['arguments'] ?? {};
+        if (typeof args !== 'object' || args === null || Array.isArray(args)) {
+          send({ jsonrpc: '2.0', id, error: { code: -32602, message: 'invalid params: arguments must be an object' } });
+          return;
+        }
         try {
-          const value = tool.run((params['arguments'] ?? {}) as Json);
+          const value = tool.run(args as Json);
           const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
           send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], isError: false } });
         } catch (err) {
-          if (!(err instanceof UsageError)) throw err;
-          send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `error: ${err.message}` }], isError: true } });
+          // UsageError is the caller's fault → MCP isError result; anything
+          // else is a server fault → JSON-RPC internal error, request id kept.
+          if (err instanceof UsageError) {
+            send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `error: ${err.message}` }], isError: true } });
+          } else {
+            const message = err instanceof Error ? err.message : String(err);
+            send({ jsonrpc: '2.0', id, error: { code: -32603, message: `internal error: ${message}` } });
+          }
         }
         return;
       }
@@ -326,17 +361,29 @@ export function startMcpServer(root: string, defaultActor: string, input: Readab
   input.setEncoding('utf8');
   input.on('data', (chunk: string) => {
     buffer += chunk;
+    if (buffer.length > MAX_BUFFER_BYTES) {
+      process.stderr.write(`botflow mcp: message exceeds ${MAX_BUFFER_BYTES} bytes; shutting down\n`);
+      process.exit(1);
+    }
     for (;;) {
       const nl = buffer.indexOf('\n');
       if (nl === -1) break;
       const line = buffer.slice(0, nl).trim();
       buffer = buffer.slice(nl + 1);
       if (line === '') continue;
+      // Frame-level failure (-32700) stays separate from request handling.
+      let msg: unknown;
       try {
-        handle(JSON.parse(line) as Json);
+        msg = JSON.parse(line);
       } catch {
         send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } });
+        continue;
       }
+      if (msg === null || typeof msg !== 'object' || Array.isArray(msg)) {
+        send({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'invalid request' } });
+        continue;
+      }
+      handle(msg as Json);
     }
   });
 }

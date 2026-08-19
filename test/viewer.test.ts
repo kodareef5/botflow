@@ -2,6 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { get } from 'node:http';
 import { join } from 'node:path';
 
 import { serveBoard } from '../src/viewer/serve.ts';
@@ -51,4 +52,35 @@ test('viewer: shared theme layer ships and its scripts parse', () => {
   for (const needle of ['__THEMES__', 'applyTheme', 'data-style=harbor', 'data-style=blockparty', 'id="tstyle"', '--st-doing']) {
     assert.ok(html.includes(needle), `viewer page missing: ${needle}`);
   }
+});
+
+test('viewer: serve answers only loopback Host headers (DNS-rebinding guard)', async () => {
+  const { server, port } = await serveBoard(NESTED, 0);
+  // node:http lets us set Host arbitrarily; fetch (undici) forbids it.
+  const status = (host?: string): Promise<number> =>
+    new Promise((resolve, reject) => {
+      const req = get({ host: '127.0.0.1', port, path: '/api/data', headers: host === undefined ? {} : { host } }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode ?? 0));
+      });
+      req.on('error', reject);
+    });
+  try {
+    assert.equal(await status(`127.0.0.1:${port}`), 200);
+    assert.equal(await status('localhost'), 200);
+    assert.equal(await status('localhost:4666'), 200);
+    assert.equal(await status('[::1]'), 200);
+    assert.equal(await status('[::1]:4666'), 200);
+    assert.equal(await status('evil.com'), 403);
+    assert.equal(await status('127.0.0.1.evil.com'), 403);
+    assert.equal(await status('localhost.evil.com:4666'), 403);
+  } finally {
+    server.close();
+  }
+});
+
+test('viewer: board key is escaped in the findings heading', () => {
+  // A hostile board directory name lands in CUR; it must go through esc().
+  const html = viewerHtml(null, { live: true });
+  assert.ok(html.includes(`'<h3>findings: '+esc(CUR)+'</h3>'`), 'findings heading must escape CUR');
 });

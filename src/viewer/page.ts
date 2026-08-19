@@ -259,7 +259,7 @@ function render(){
     return '<section class="col"><h2>'+esc(lane.name)+' '+canon+' '+wip+'</h2>'+body+'</section>'
   }).join('');
   $('#findings').innerHTML=(b.findings||[]).length
-    ?'<h3>findings: '+CUR+'</h3>'+(b.findings||[]).map(f=>'<div class="finding">'+(f.severity==='error'?'<b>error</b>':f.severity==='warning'?'<i>warning</i>':'info')
+    ?'<h3>findings: '+esc(CUR)+'</h3>'+(b.findings||[]).map(f=>'<div class="finding">'+(f.severity==='error'?'<b>error</b>':f.severity==='warning'?'<i>warning</i>':'info')
       +' '+esc(f.rule)+' <b style="color:var(--ink)">'+esc(f.ref)+'</b> · '+esc(f.message)+'</div>').join('')
     :'';
 }

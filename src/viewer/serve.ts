@@ -10,6 +10,17 @@ import { viewerData, viewerHtml } from './page.ts';
 
 export const DEFAULT_PORT = 4666;
 
+// The server binds loopback but would still answer a DNS-rebinding site that
+// points its domain at 127.0.0.1: the browser treats it as same-origin and
+// could read the whole board tree via /api/data. Only answer loopback Hosts.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+function hostAllowed(host: string | undefined): boolean {
+  if (host === undefined) return false;
+  const name = host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : (host.split(':')[0] ?? '');
+  return LOOPBACK_HOSTS.has(name);
+}
+
 export interface RunningViewer {
   server: Server;
   port: number;
@@ -18,6 +29,11 @@ export interface RunningViewer {
 
 export function serveBoard(root: string, port: number): Promise<RunningViewer> {
   const server = createServer((req, res) => {
+    if (!hostAllowed(req.headers.host)) {
+      res.writeHead(403, { 'content-type': 'text/plain' });
+      res.end('forbidden: untrusted host');
+      return;
+    }
     try {
       const url = req.url ?? '/';
       if (url === '/' || url === '/index.html') {
