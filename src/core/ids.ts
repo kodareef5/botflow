@@ -3,14 +3,15 @@ import { randomInt } from 'node:crypto';
 const HASH_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
 export function nextSeqId(existing: string[]): string {
-  let max = 0;
+  let max = 0n; // BigInt: ids past 2^53 must not round down into a collision
   let width = 3;
   for (const id of existing) {
     if (!/^[0-9]+$/.test(id)) continue;
-    max = Math.max(max, parseInt(id, 10));
+    const n = BigInt(id);
+    if (n > max) max = n;
     width = Math.max(width, id.length);
   }
-  const next = String(max + 1);
+  const next = (max + 1n).toString();
   return next.padStart(Math.max(width, 3), '0');
 }
 

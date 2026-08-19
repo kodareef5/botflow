@@ -6,7 +6,7 @@ import type { BoardConfig, Card, Lane, LoadedBoard } from './model.ts';
 import { addAttachmentLine, appendToSection, parseBody, removeAttachmentLine, setChecklistItem, setSection } from './body.ts';
 import { emitScalar } from './emit.ts';
 import { newHashId, nextSeqId, slugify } from './ids.ts';
-import { logMutation, nowDate, nowDateTime } from './write.ts';
+import { logMutation, nowDate, nowDateTime, sanitizeInline, sanitizeUrl } from './write.ts';
 
 /** An error caused by how a tool was invoked: message for the caller, no stack. */
 export class UsageError extends Error {}
@@ -96,6 +96,27 @@ export function positionLabel(p: Position): string {
   return p.substate === null ? p.laneId : `${p.laneId}.${p.substate}`;
 }
 
+/** A child-board reference is a RELATIVE path from the referencing board's
+ *  root (SPEC §3) that must not escape it: reject absolute paths and any
+ *  path that climbs above the board root, so bad values never reach disk.
+ *  `project:` refs are hosted-manager handles, not filesystem paths. */
+export function validateBoardPath(boardPath: string): void {
+  if (boardPath.startsWith('project:')) return;
+  if (/^([\\/]|[A-Za-z]:[\\/])/.test(boardPath)) {
+    throw new UsageError(`board path "${boardPath}" must be relative, not absolute`);
+  }
+  let depth = 0;
+  for (const seg of boardPath.split(/[\\/]+/)) {
+    if (seg === '' || seg === '.') continue;
+    if (seg !== '..') {
+      depth++;
+      continue;
+    }
+    depth--;
+    if (depth < 0) throw new UsageError(`board path "${boardPath}" escapes the board root`);
+  }
+}
+
 function wipWarnings(board: LoadedBoard, moved: Card): string[] {
   const lane = board.config.lanes.find((l) => l.id === moved.laneId);
   if (!lane || lane.wip === null) return [];
@@ -120,7 +141,10 @@ export interface AddOptions {
 export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
   const config = board.config;
   const type = opts.type ?? 'task';
-  if (type === 'board' && !opts.boardPath) throw new UsageError('a board-card needs a board path');
+  if (type === 'board') {
+    if (!opts.boardPath) throw new UsageError('a board-card needs a board path');
+    validateBoardPath(opts.boardPath);
+  }
 
   const spec = opts.lane ?? (config.lanes.find((l) => l.canonical === 'todo') ?? config.lanes[0])?.id;
   if (!spec) throw new UsageError('board has no lanes');
@@ -163,6 +187,12 @@ export interface MoveResult {
 export function opMove(board: LoadedBoard, card: Card, spec: string, actor: string, force = false): MoveResult {
   const target = resolvePosition(board.config, spec);
   const from = positionLabel({ laneId: card.laneId, substate: card.substate });
+
+  // Same-position move: a successful no-op, like a re-claim — no log entry,
+  // no rewrite, and strict-lane adjacency does not apply to standing still.
+  if (target.laneId === card.laneId && target.substate === card.substate) {
+    return { card, from, to: from, warnings: [] };
+  }
 
   const lane = findLane(board.config, target.laneId);
   if (lane.order === 'strict' && lane.substates.length > 0 && !force) {
@@ -259,8 +289,9 @@ export function opClose(board: LoadedBoard, card: Card, actor: string, reason?: 
 }
 
 export function opBlock(card: Card, actor: string, reason: string): Card {
-  card.blocked = reason;
-  logMutation(card, actor, `blocked: ${reason}`);
+  const clean = sanitizeInline(reason);
+  card.blocked = clean;
+  logMutation(card, actor, `blocked: ${clean}`);
   return card;
 }
 
@@ -306,6 +337,7 @@ export function opEdit(card: Card, patch: EditPatch, actor: string): Card {
   }
   if (patch.boardPath !== undefined) {
     if (card.type !== 'board') throw new UsageError('board path only applies to board-cards');
+    validateBoardPath(patch.boardPath);
     card.boardPath = patch.boardPath;
     changed.push('board');
   }
@@ -325,7 +357,7 @@ export function opLog(card: Card, actor: string, message: string): Card {
 
 /** Append to the card's Comments section (discourse; separate from the Log). */
 export function opComment(card: Card, actor: string, text: string): Card {
-  card.body = appendToSection(card.body, 'Comments', `- ${nowDateTime()} ${actor}: ${text}`);
+  card.body = appendToSection(card.body, 'Comments', `- ${nowDateTime()} ${sanitizeInline(actor)}: ${sanitizeInline(text)}`);
   card.updated = nowDate();
   return card;
 }
@@ -366,15 +398,16 @@ export function opChecklistAdd(card: Card, actor: string, text: string, section 
 }
 
 export function opAttach(card: Card, actor: string, url: string, label?: string): Card {
-  let name = label;
+  const cleanUrl = sanitizeUrl(url);
+  let name = label === undefined ? label : sanitizeInline(label);
   if (!name) {
     try {
-      name = new URL(url).hostname;
+      name = new URL(cleanUrl).hostname;
     } catch {
-      name = url.slice(0, 40);
+      name = cleanUrl.slice(0, 40);
     }
   }
-  card.body = addAttachmentLine(card.body, name, url);
+  card.body = addAttachmentLine(card.body, name, cleanUrl);
   logMutation(card, actor, `attached ${name}`);
   return card;
 }

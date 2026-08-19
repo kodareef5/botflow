@@ -1,8 +1,8 @@
 // Filesystem loading: board directories → LoadedBoard, and recursive board
 // trees with cycle detection (SPEC §3, §7).
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { basename, join, relative, resolve, sep } from 'node:path';
+import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { boardFromDocuments, type BoardDocument } from './docs.ts';
 import type { BoardNode, LoadedBoard, Tree } from './model.ts';
@@ -32,22 +32,28 @@ export function discoverBoardRoot(startDir: string): string | null {
   }
 }
 
-/** Read a board's raw documents from disk: the wire format for push/pull. */
+/** Read a board's raw documents from disk: the wire format for push/pull.
+ *  Only regular files are read (lstat semantics at every level), so a
+ *  committed symlink — cards/007.md -> /etc/passwd, or a symlinked cards/
+ *  subdir — is silently skipped instead of exfiltrated into a push. */
 export function readBoardDocuments(rootAbs: string): { configText: string | null; cards: BoardDocument[] } {
   const configPath = join(rootAbs, 'board.yaml');
-  const configText = existsSync(configPath) ? readFileSync(configPath, 'utf8') : null;
+  const configText = existsSync(configPath) && lstatSync(configPath).isFile() ? readFileSync(configPath, 'utf8') : null;
 
   const cards: BoardDocument[] = [];
   const cardsDir = join(rootAbs, 'cards');
-  if (existsSync(cardsDir) && statSync(cardsDir).isDirectory()) {
-    const files = readdirSync(cardsDir, { recursive: true, encoding: 'utf8' })
-      .filter((f) => f.endsWith('.md'))
-      .map((f) => f.split(sep).join('/'));
-    for (const rel of files) {
-      const filePath = join(cardsDir, rel);
-      if (!statSync(filePath).isFile()) continue;
-      cards.push({ path: `cards/${rel}`, text: readFileSync(filePath, 'utf8') });
-    }
+  if (existsSync(cardsDir) && lstatSync(cardsDir).isDirectory()) {
+    const walk = (dirAbs: string, rel: string): void => {
+      for (const entry of readdirSync(dirAbs, { withFileTypes: true })) {
+        const childRel = rel === '' ? entry.name : `${rel}/${entry.name}`;
+        if (entry.isDirectory()) {
+          walk(join(dirAbs, entry.name), childRel);
+        } else if (entry.isFile() && entry.name.endsWith('.md')) {
+          cards.push({ path: `cards/${childRel}`, text: readFileSync(join(dirAbs, entry.name), 'utf8') });
+        }
+      }
+    };
+    walk(cardsDir, '');
   }
   return { configText, cards };
 }
@@ -86,7 +92,16 @@ export function loadTree(rootDir: string): Tree {
         node.childKeyByCard.set(card.id, null);
         continue;
       }
-      const childRoot = resolveBoardRoot(resolve(abs, card.boardPath));
+      const targetAbs = resolve(abs, card.boardPath);
+      const relToRoot = relative(rootAbs, targetAbs);
+      if (isAbsolute(card.boardPath) || relToRoot === '..' || relToRoot.startsWith(`..${sep}`) || isAbsolute(relToRoot)) {
+        // A child-board reference is relative to the referencing board and
+        // must stay inside the tree (SPEC §3); never walk out of the project.
+        node.board.findings.push(finding('board-path-escape', card.id, `board path "${card.boardPath}" escapes the project root`));
+        node.childKeyByCard.set(card.id, null);
+        continue;
+      }
+      const childRoot = resolveBoardRoot(targetAbs);
       if (childRoot === null) {
         node.board.findings.push(finding('board-path-missing', card.id, `board path "${card.boardPath}" does not resolve to a board`));
         node.childKeyByCard.set(card.id, null);

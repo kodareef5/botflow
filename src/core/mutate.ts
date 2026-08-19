@@ -150,7 +150,7 @@ export function addCard(root: string, opts: AddOptions): Card {
 export function moveCard(root: string, id: string, spec: string, actor: string, force = false): MoveResult {
   return mutateCard(root, (board) => {
     const res = opMove(board, getCard(board, id), spec, actor, force);
-    writeCard(root, res.card);
+    if (res.from !== res.to) writeCard(root, res.card); // same-position move: no-op
     return res;
   });
 }

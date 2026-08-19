@@ -11,7 +11,9 @@ function needsQuote(s: string): boolean {
   if (PLAIN_INT_RE.test(s)) return true; // would reparse as a number
   if (/^[-&*!|>{}[\]'"@`%,# ]/.test(s)) return true;
   if (s.includes(' #')) return true;
-  if (s.includes(',') || s.includes('[') || s.includes(']')) return true; // safe inside flow lists
+  // Anywhere in the scalar: chars parseFlowList rejects or reinterprets when
+  // the item sits unquoted inside a flow list (labels/deps emit as flow).
+  if (/[{}[\],"']/.test(s)) return true;
   return false;
 }
 
@@ -59,8 +61,13 @@ export function emitMap(obj: Record<string, unknown>, indent = 0): string {
         }
       }
     } else if (value !== null && typeof value === 'object') {
-      lines.push(`${pad}${key}:`);
-      lines.push(emitMap(value as Record<string, unknown>, indent + 2));
+      const entries = Object.entries(value as Record<string, unknown>);
+      if (entries.length === 0) {
+        lines.push(`${pad}${key}: {}`); // inline empty map: `key:` alone reparses as null
+      } else {
+        lines.push(`${pad}${key}:`);
+        lines.push(emitMap(value as Record<string, unknown>, indent + 2));
+      }
     } else {
       lines.push(`${pad}${key}: ${emitScalar(value as Scalar)}`);
     }

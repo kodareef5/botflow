@@ -15,6 +15,10 @@ export type YamlValue = string | number | boolean | null | YamlValue[] | { [key:
 const KEY_RE = /^([A-Za-z0-9_-]+):(.*)$/;
 const INT_RE = /^-?(0|[1-9][0-9]*)$/;
 
+/** Nesting bound: the parser recurses per level, so an unbounded document
+ *  would escape as a stack-overflow crash instead of a YamlError. */
+const MAX_DEPTH = 100;
+
 interface Tok {
   indent: number;
   content: string;
@@ -78,6 +82,7 @@ function isKeyLine(s: string): boolean {
 
 class Parser {
   private i = 0;
+  private depth = 0;
   private readonly toks: Tok[];
   constructor(toks: Tok[]) {
     this.toks = toks;
@@ -96,7 +101,13 @@ class Parser {
     const t = this.peek();
     if (!t) return null;
     if (t.indent !== indent) throw new YamlError('bad indentation', t.line);
-    return isDashItem(t.content) ? this.parseSeq(indent) : this.parseMap(indent, null);
+    if (this.depth >= MAX_DEPTH) throw new YamlError(`nesting deeper than ${MAX_DEPTH} levels is not supported`, t.line);
+    this.depth++;
+    try {
+      return isDashItem(t.content) ? this.parseSeq(indent) : this.parseMap(indent, null);
+    } finally {
+      this.depth--;
+    }
   }
 
   private parseSeq(indent: number): YamlValue[] {
@@ -205,6 +216,7 @@ function parseFlowList(s: string, line: number): YamlValue[] {
 
 function parseScalar(s: string, line: number): YamlValue {
   if (s === '') return null;
+  if (s === '{}') return {}; // the one inline flow mapping: emit's empty-map form
   const c0 = s[0]!;
   if (c0 === '"') return parseDoubleQuoted(s, line);
   if (c0 === "'") return parseSingleQuoted(s, line);

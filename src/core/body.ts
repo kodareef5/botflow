@@ -45,6 +45,50 @@ const TASK_RE = /^\s*- \[([ xX])\]\s+(.*)$/;
 const LINK_RE = /^-\s+\[(.*?)\]\((\S+?)\)\s*$/;
 const ENTRY_RE = /^-\s+(\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2})?)\s+(.+?):\s+(.*)$/;
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|svg|avif)(\?.*)?$|^data:image\//i;
+const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
+
+type Fence = { char: string; len: number } | null;
+
+/** Update fenced-code state after consuming `line`: an opening fence is 3+
+ *  backticks or tildes (up to 3 spaces indent); it closes on the same marker
+ *  at least as long. Lines inside a fence are literal content: no heading,
+ *  task, link, or entry may match there. */
+function fenceAfter(line: string, fence: Fence): Fence {
+  const m = FENCE_OPEN_RE.exec(line);
+  if (!m) return fence;
+  const marker = m[1]!;
+  if (fence === null) return { char: marker[0]!, len: marker.length };
+  return marker[0] === fence.char && marker.length >= fence.len ? null : fence;
+}
+
+interface HeadingLine {
+  /** Heading text with trailing whitespace stripped. */
+  name: string;
+  /** Offset of the heading line's first character. */
+  start: number;
+  /** Offset just past the heading line (its newline). */
+  contentStart: number;
+}
+
+/** All `## ` heading lines with offsets, fence-aware: a literal `## ` inside
+ *  a fenced code block is content, not a section boundary. */
+function bodyHeadings(body: string): HeadingLine[] {
+  const out: HeadingLine[] = [];
+  let fence: Fence = null;
+  let i = 0;
+  for (;;) {
+    const nl = body.indexOf('\n', i);
+    const end = nl === -1 ? body.length : nl;
+    const line = body.slice(i, end);
+    if (fence === null && line.startsWith('## ')) {
+      out.push({ name: line.slice(3).replace(/[ \t]+$/, ''), start: i, contentStart: nl === -1 ? end : nl + 1 });
+    }
+    fence = fenceAfter(line, fence);
+    if (nl === -1) break;
+    i = nl + 1;
+  }
+  return out;
+}
 
 export function parseBody(body: string): ParsedBody {
   const lines = body.replace(/\r\n/g, '\n').split('\n');
@@ -55,8 +99,16 @@ export function parseBody(body: string): ParsedBody {
   const comments: BodyEntry[] = [];
   const log: BodyEntry[] = [];
   let taskIndex = 0;
+  let fence: Fence = null;
 
   for (const line of lines) {
+    const fenced = fence !== null || FENCE_OPEN_RE.test(line);
+    fence = fenceAfter(line, fence);
+    if (fenced) {
+      // Fenced code is literal text; only Description keeps it, as content.
+      if (section === 'Description') descLines.push(line);
+      continue;
+    }
     const h = HEADING_RE.exec(line);
     if (h) {
       section = h[1]!;
@@ -99,18 +151,20 @@ export function parseBody(body: string): ParsedBody {
 /** Append a full `- …` line to a `## <name>` section, creating the section at
  *  the end of the body when missing. Append-only sections stay append-only. */
 export function appendToSection(body: string, name: string, line: string): string {
-  const headingRe = new RegExp(`(^|\\n)(## ${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*)\\n`);
-  const m = headingRe.exec(body);
-  if (!m) {
+  const headings = bodyHeadings(body);
+  const me = headings.findIndex((h) => h.name === name);
+  if (me === -1) {
     const base = body.trimEnd();
     return (base === '' ? '' : base + '\n\n') + `## ${name}\n${line}\n`;
   }
-  const sectionStart = m.index + m[0].length;
-  const nextHeading = body.indexOf('\n## ', sectionStart);
-  const sectionEnd = nextHeading === -1 ? body.length : nextHeading;
+  const sectionStart = headings[me]!.contentStart;
+  const next = headings[me + 1];
+  // Keep the blank line ahead of the next heading with the tail, as before.
+  const sectionEnd = next === undefined ? body.length : next.start - 1;
   const section = body.slice(sectionStart, sectionEnd).trimEnd();
+  const head = body.slice(0, sectionStart);
   const rebuilt = (section === '' ? line : section + '\n' + line) + '\n';
-  return body.slice(0, sectionStart) + rebuilt + body.slice(sectionEnd);
+  return head + (head.endsWith('\n') ? '' : '\n') + rebuilt + body.slice(sectionEnd);
 }
 
 /** Replace the content of a `## <name>` section wholesale. A missing section
@@ -118,40 +172,41 @@ export function appendToSection(body: string, name: string, line: string): strin
  *  "before-log" tucks it ahead of `## Log` so the audit trail stays last).
  *  Empty content removes the section, heading included. */
 export function setSection(body: string, name: string, content: string, position: 'start' | 'before-log' | 'end' = 'end'): string {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const headingRe = new RegExp(`(^|\\n)## ${escaped}[ \\t]*\\n`);
   const clean = content.replace(/\r\n/g, '\n').trim();
-  const m = headingRe.exec(body);
-  if (!m) {
+  const headings = bodyHeadings(body);
+  const me = headings.findIndex((h) => h.name === name);
+  if (me === -1) {
     if (clean === '') return body;
     const block = `## ${name}\n${clean}\n`;
     const base = body.trim();
     if (base === '') return block;
     if (position === 'start') return `${block}\n${base}\n`;
     if (position === 'before-log') {
-      const log = /(^|\n)## Log[ \t]*\n/.exec(body);
-      if (log) {
-        const at = log.index + log[1]!.length;
-        return body.slice(0, at) + block + '\n' + body.slice(at);
-      }
+      const log = headings.find((h) => h.name === 'Log');
+      if (log) return body.slice(0, log.start) + block + '\n' + body.slice(log.start);
     }
     return `${base}\n\n${block}`;
   }
-  const headingStart = m.index + m[1]!.length;
-  const sectionStart = m.index + m[0].length;
-  const nextHeading = body.indexOf('\n## ', sectionStart);
-  const sectionEnd = nextHeading === -1 ? body.length : nextHeading;
+  const headingStart = headings[me]!.start;
+  const sectionStart = headings[me]!.contentStart;
+  const next = headings[me + 1];
+  const sectionEnd = next === undefined ? body.length : next.start - 1;
   if (clean === '') {
     return (body.slice(0, headingStart) + body.slice(sectionEnd)).replace(/\n{3,}/g, '\n\n').replace(/^\n+/, '');
   }
-  return body.slice(0, sectionStart) + clean + '\n' + body.slice(sectionEnd);
+  const head = body.slice(0, sectionStart);
+  return head + (head.endsWith('\n') ? '' : '\n') + clean + '\n' + body.slice(sectionEnd);
 }
 
 /** Set the checked state of the Nth task item (global 0-based ordinal). */
 export function setChecklistItem(body: string, index: number, checked: boolean): string | null {
   const lines = body.replace(/\r\n/g, '\n').split('\n');
   let n = 0;
+  let fence: Fence = null;
   for (let i = 0; i < lines.length; i++) {
+    const fenced = fence !== null;
+    fence = fenceAfter(lines[i]!, fence);
+    if (fenced) continue; // a task-looking line inside a fence is content
     const m = TASK_RE.exec(lines[i]!);
     if (!m) continue;
     if (n === index) {
@@ -172,7 +227,11 @@ export function removeAttachmentLine(body: string, index: number): string | null
   const lines = body.replace(/\r\n/g, '\n').split('\n');
   let section: string | null = null;
   let n = 0;
+  let fence: Fence = null;
   for (let i = 0; i < lines.length; i++) {
+    const fenced = fence !== null;
+    fence = fenceAfter(lines[i]!, fence);
+    if (fenced) continue;
     const h = HEADING_RE.exec(lines[i]!);
     if (h) {
       section = h[1]!;

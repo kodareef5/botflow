@@ -28,6 +28,7 @@ export const RULE_SEVERITY: Record<string, Severity> = {
   'dangling-dep': 'error',
   'dep-cycle': 'error',
   'board-path-missing': 'error',
+  'board-path-escape': 'error',
   'board-cycle': 'error',
   'id-scheme-mismatch': 'error',
   'wip-breach': 'warning',

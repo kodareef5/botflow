@@ -41,8 +41,23 @@ export function nowDateTime(): string {
   return new Date().toISOString().slice(0, 16).replace('T', ' ');
 }
 
+/** One-line-ify text interpolated into structured markdown lines (log/comment
+ *  entries, blocked reasons): every run of whitespace or C0/DEL control chars
+ *  collapses to a single space, so a `\n- 2020-01-01 alice: …` cannot smuggle
+ *  a forged entry into the line structure parseBody reads back. */
+export function sanitizeInline(text: string): string {
+  return text.replace(/[\s\x00-\x1f\x7f]+/g, ' ').trim();
+}
+
+/** Make a url safe for the `- [label](url)` attachment line: whitespace and
+ *  control chars are stripped (never valid in a url), and `)` is
+ *  percent-encoded so the link syntax cannot be closed early. */
+export function sanitizeUrl(url: string): string {
+  return url.replace(/[\s\x00-\x1f\x7f]+/g, '').replace(/\)/g, '%29');
+}
+
 /** Stamp a log entry onto a card and bump `updated` (SPEC §12 discipline). */
 export function logMutation(card: Card, actor: string, message: string): void {
-  card.body = appendLogLine(card.body, `${nowDateTime()} ${actor}: ${message}`);
+  card.body = appendLogLine(card.body, `${nowDateTime()} ${sanitizeInline(actor)}: ${sanitizeInline(message)}`);
   card.updated = nowDate();
 }

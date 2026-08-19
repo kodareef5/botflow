@@ -131,29 +131,50 @@ export function analyzeBoard(board: LoadedBoard, lookup: ChildLookup): BoardAnal
   // Pass 3: dependency cycles (SPEC §10). A dep cycle makes every member
   // permanently non-ready with no visible reason: that is an error, not a
   // curiosity. Each cycle is reported once, on one member, listing the loop.
+  // Iterative DFS: a recursive walk overflows the call stack on dep chains
+  // of tens of thousands of cards.
   const color = new Map<string, 1 | 2>(); // 1 = in current path, 2 = done
   const path: string[] = [];
   const seenCycles = new Set<string>();
-  const visit = (id: string): void => {
+  const reportCycle = (dep: string): void => {
+    const cycle = path.slice(path.indexOf(dep));
+    const key = [...cycle].sort().join('>');
+    if (!seenCycles.has(key)) {
+      seenCycles.add(key);
+      findings.push(finding('dep-cycle', cycle[0]!, `dependency cycle: ${[...cycle, dep].join(' → ')}`));
+    }
+  };
+  const stack: { id: string; deps: string[]; next: number }[] = [];
+  const push = (id: string): void => {
     color.set(id, 1);
     path.push(id);
-    for (const dep of byId.get(id)!.deps) {
-      if (!byId.has(dep)) continue; // dangling-dep already reported
-      const state = color.get(dep);
-      if (state === undefined) visit(dep);
-      else if (state === 1) {
-        const cycle = path.slice(path.indexOf(dep));
-        const key = [...cycle].sort().join('>');
-        if (!seenCycles.has(key)) {
-          seenCycles.add(key);
-          findings.push(finding('dep-cycle', cycle[0]!, `dependency cycle: ${[...cycle, dep].join(' → ')}`));
+    stack.push({ id, deps: byId.get(id)!.deps, next: 0 });
+  };
+  for (const card of board.cards) {
+    if (color.has(card.id)) continue;
+    push(card.id);
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1]!;
+      let descend: string | null = null;
+      while (frame.next < frame.deps.length) {
+        const dep = frame.deps[frame.next++]!;
+        if (!byId.has(dep)) continue; // dangling-dep already reported
+        const state = color.get(dep);
+        if (state === undefined) {
+          descend = dep;
+          break;
         }
+        if (state === 1) reportCycle(dep);
+      }
+      if (descend !== null) {
+        push(descend);
+      } else {
+        stack.pop();
+        path.pop();
+        color.set(frame.id, 2);
       }
     }
-    path.pop();
-    color.set(id, 2);
-  };
-  for (const card of board.cards) if (!color.has(card.id)) visit(card.id);
+  }
 
   // Weighted progress (SPEC §7).
   let units = 0;
