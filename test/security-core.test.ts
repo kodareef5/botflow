@@ -21,7 +21,7 @@ import { UsageError, opAdd, opAttach, opBlock, opChecklistAdd, opComment, opDesc
 import { logMutation, sanitizeActor, sanitizeInline, serializeCard } from '../src/core/write.ts';
 import { YamlError, parseYaml } from '../src/core/yaml.ts';
 import {
-  absentPasswordHash, hashPassword, parseBasic, roleAllows, scopeAllows, validUsername, verifyPassword,
+  absentPasswordHash, hashPassword, parseBasic, roleAllows, scopeAllows, unfurlTarget, validUsername, verifyPassword,
 } from '../worker/src/security.ts';
 
 function bareCard(over: Partial<Card> = {}): Card {
@@ -572,4 +572,44 @@ test('priority is validated where it is written, not just where it is read', () 
   assert.throws(() => opEdit(card, { priority: 'p4' }, 'a'), /p0, p1, p2 or p3/);
   opEdit(card, { priority: null }, 'a');
   assert.equal(card.priority, null, 'clearing still works');
+});
+
+test('unfurl refuses every address that is not publicly routable', () => {
+  // Unfurling lets a write-role member make the worker fetch an address of
+  // their choosing. This matrix is the guard: the WHATWG parser normalises
+  // decimal, octal, hex and short-form IPv4 to dotted quad, so those collapse
+  // into the same check, but IPv4-mapped IPv6 arrives in hex and has to be
+  // decoded before it can be judged.
+  const refused = [
+    'http://127.0.0.1/', 'http://2130706433/', 'http://0177.0.0.1/', 'http://0x7f000001/', 'http://127.1/',
+    'http://[::1]/', 'http://[::]/', 'http://[::ffff:127.0.0.1]/', 'http://[::ffff:7f00:1]/',
+    'http://169.254.169.254/latest/meta-data/',   // cloud instance metadata: the prize
+    'http://10.0.0.1/', 'http://192.168.1.1/', 'http://172.16.0.1/', 'http://172.31.255.255/',
+    'http://100.64.0.1/', 'http://[fc00::1]/', 'http://[fd12:3456::1]/', 'http://[fe80::1]/',
+    'http://localhost/', 'http://LOCALHOST/', 'http://api.localhost/', 'http://box.local/',
+    'http://svc.internal/', 'http://printer.home.arpa/',
+    'http://user:pass@example.com/', 'http://:pw@example.com/',
+    'file:///etc/passwd', 'javascript:alert(1)', 'data:text/html,<script>x</script>',
+    'ftp://example.com/', 'http://0.0.0.0/', 'http://224.0.0.1/', 'http://255.255.255.255/',
+    'http://999.1.1.1/', '', 'not a url', null, 42, `http://example.com/${'a'.repeat(3000)}`,
+  ];
+  for (const target of refused) {
+    const verdict = unfurlTarget(target);
+    assert.equal(verdict.ok, false, `${JSON.stringify(target)} must not be fetchable`);
+  }
+
+  // And it must not be so strict that it refuses the public internet.
+  for (const target of [
+    'https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'http://example.com/',
+    'https://172.32.0.1/', 'https://8.8.8.8/', 'https://[2606:4700::1111]/',
+  ]) {
+    assert.equal(unfurlTarget(target).ok, true, `${target} is ordinary and public`);
+  }
+
+  // The loopback escape exists only so the suite can point at a fixture
+  // server, and must never be reachable without asking for it.
+  assert.equal(unfurlTarget('http://127.0.0.1:8899/watch').ok, false);
+  assert.equal(unfurlTarget('http://127.0.0.1:8899/watch', true).ok, true);
+  // Even then, a scheme that is not http(s) stays refused.
+  assert.equal(unfurlTarget('file:///etc/passwd', true).ok, false);
 });

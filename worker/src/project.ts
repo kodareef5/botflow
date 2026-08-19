@@ -12,6 +12,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { analyzeSingle, type ExternalChild } from '../../src/core/analyze.ts';
 import { boardFromDocuments, validateBoardDocuments, type BoardDocument } from '../../src/core/docs.ts';
 import { boardJson, cardDetailJson, cardJson } from '../../src/core/json.ts';
+import { parseBody } from '../../src/core/body.ts';
 import type { BoardAnalysis } from '../../src/core/analyze.ts';
 import type { BoardNode, Canonical, Card, Lane, LoadedBoard } from '../../src/core/model.ts';
 import { SLUG_RE, defaultRollup, isCanonical } from '../../src/core/model.ts';
@@ -85,6 +86,7 @@ const DDL = `
   CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS cards(id TEXT PRIMARY KEY, file TEXT NOT NULL, text TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, card_id TEXT, detail TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS unfurls(url TEXT PRIMARY KEY, image TEXT, image_hash TEXT, title TEXT, site TEXT, status TEXT NOT NULL, fetched TEXT NOT NULL);
 `;
 
 export class ProjectDO extends DurableObject<ProjectEnv> {
@@ -231,6 +233,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     const tree = { rootAbs: '.', boards: new Map([['.', node]]) };
     const analysis = { boards: new Map([['.', ba]]) };
     const json = boardJson(tree, analysis) as Record<string, unknown>;
+    const previewCache = this.unfurlImages();
     json['lanes'] = board.config.lanes.map((lane) => ({
       id: lane.id,
       name: lane.name,
@@ -240,7 +243,10 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       wip: lane.wip,
       cards: board.cards
         .filter((c) => c.laneId === lane.id)
-        .map((c) => ({ ...cardDetailJson(c, node, ba), childProgress: children.get(c.id)?.progress ?? null })),
+        .map((c) => this.withPreviews(
+          { ...cardDetailJson(c, node, ba), childProgress: children.get(c.id)?.progress ?? null },
+          previewCache,
+        )),
     }));
     return json;
   }
@@ -249,7 +255,80 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     const { board, ba, node } = await this.analyzed();
     const found = board.cards.find((c) => c.id === id);
     if (!found) return null;
-    return cardDetailJson(found, node, ba);
+    return this.withPreviews(cardDetailJson(found, node, ba));
+  }
+
+  // ---- link previews ----
+  // Derived, hosted-only state: an attachment url is not an image, but the
+  // page behind it may advertise one. Dropping this table costs a re-fetch and
+  // nothing else, so it is a cache, not a record.
+
+  /** Every cached picture, keyed by the url that advertised it. */
+  private unfurlImages(): Map<string, string> {
+    const out = new Map<string, string>();
+    for (const row of this.sql.exec("SELECT url, image_hash FROM unfurls WHERE status = 'ok' AND image_hash IS NOT NULL").toArray()) {
+      out.set(row['url'] as string, `/og/${row['image_hash'] as string}?p=${this.selfId()}`);
+    }
+    return out;
+  }
+
+  /** Attach previews in attachment order, so the first previewable attachment
+   *  is the one a viewer falls back to for cover art. */
+  private withPreviews(card: Record<string, unknown>, cached?: Map<string, string>): Record<string, unknown> {
+    const images = cached ?? this.unfurlImages();
+    const parsed = card['parsed'] as { attachments?: { url: string }[] } | undefined;
+    const previews = (parsed?.attachments ?? [])
+      .map((a) => ({ url: a.url, image: images.get(a.url) }))
+      .filter((p): p is { url: string; image: string } => p.image !== undefined);
+    return previews.length > 0 ? { ...card, previews } : card;
+  }
+
+  /** Attachment urls with no verdict yet, for the caller to go and fetch. */
+  pendingUnfurls(limit: number): string[] {
+    const known = new Set(this.sql.exec('SELECT url FROM unfurls').toArray().map((r) => r['url'] as string));
+    const out: string[] = [];
+    for (const row of this.sql.exec('SELECT text FROM cards').toArray()) {
+      for (const a of parseBody(row['text'] as string).attachments) {
+        // Uploads are already ours and self-describing; only foreign urls have
+        // anything to unfurl.
+        if (a.url.startsWith('/') || known.has(a.url)) continue;
+        known.add(a.url);
+        out.push(a.url);
+        if (out.length >= limit) return out;
+      }
+    }
+    return out;
+  }
+
+  /** Record a verdict, including "nothing there": an absent og:image is an
+   *  answer, and re-asking every board load would hammer the far end. */
+  saveUnfurl(
+    url: string,
+    result: { image: string | null; title: string | null; site: string | null } | null,
+    imageHash: string | null = null,
+  ): { ok: true } {
+    this.sql.exec(
+      `INSERT INTO unfurls(url, image, image_hash, title, site, status, fetched) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(url) DO UPDATE SET image = excluded.image, image_hash = excluded.image_hash,
+         title = excluded.title, site = excluded.site, status = excluded.status, fetched = excluded.fetched`,
+      url, result?.image ?? null, imageHash, result?.title ?? null, result?.site ?? null,
+      result === null ? 'error' : result.image === null ? 'none' : 'ok', new Date().toISOString(),
+    );
+    return { ok: true };
+  }
+
+  /** The url a proxied preview hash stands for. Only urls this worker chose to
+   *  fetch are resolvable, so the proxy cannot be pointed anywhere else. */
+  unfurlImageFor(hash: string): string | null {
+    const row = this.sql.exec("SELECT image FROM unfurls WHERE status = 'ok' AND image_hash = ?", hash).toArray()[0];
+    return row ? (row['image'] as string) : null;
+  }
+
+  /** How many unfurls this project has recorded today, so one member cannot
+   *  turn the worker into a fetch amplifier by attaching a thousand links. */
+  unfurlsToday(): number {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    return this.sql.exec('SELECT COUNT(*) AS n FROM unfurls WHERE fetched > ?', since).one()['n'] as number;
   }
 
   /** Structured board.yaml view for the editor UI. */

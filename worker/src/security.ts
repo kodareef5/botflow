@@ -162,3 +162,100 @@ export function parseBasic(header: string): { username: string; password: string
   if (split < 1) return null;
   return { username: decoded.slice(0, split), password: decoded.slice(split + 1) };
 }
+
+// ---- outbound fetch policy (link unfurling) ----
+// Unfurling lets any write-role member make this worker issue a request to an
+// address of their choosing, which is server-side request forgery by
+// construction. These are the guards, kept pure so the refusals can be tested
+// exhaustively without booting workerd.
+
+export const MAX_UNFURL_BYTES = 512 * 1024;
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+export const UNFURL_TIMEOUT_MS = 5_000;
+export const MAX_REDIRECTS = 3;
+const MAX_URL_LENGTH = 2048;
+
+export type UnfurlTarget = { ok: true; url: URL } | { ok: false; reason: string };
+
+/** Expand an IPv6 literal to its eight 16-bit groups, or null if malformed. */
+function ipv6Groups(text: string): number[] | null {
+  const halves = text.split('::');
+  if (halves.length > 2) return null;
+  const parse = (part: string): number[] | null => {
+    if (part === '') return [];
+    const out: number[] = [];
+    for (const piece of part.split(':')) {
+      if (!/^[0-9a-f]{1,4}$/.test(piece)) return null;
+      out.push(Number.parseInt(piece, 16));
+    }
+    return out;
+  };
+  const head = parse(halves[0] ?? '');
+  const tail = halves.length === 2 ? parse(halves[1] ?? '') : [];
+  if (head === null || tail === null) return null;
+  if (halves.length === 1) return head.length === 8 ? head : null;
+  const gap = 8 - head.length - tail.length;
+  if (gap < 1) return null;
+  return [...head, ...Array<number>(gap).fill(0), ...tail];
+}
+
+/** Ranges that must never be reachable from an unfurl: loopback, the private
+ *  blocks, carrier-grade NAT, and link-local, which carries the cloud instance
+ *  metadata endpoint (169.254.169.254) that makes SSRF worth attempting. */
+function privateIpv4(a: number, b: number): boolean {
+  return a === 0 || a === 10 || a === 127
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || (a === 100 && b >= 64 && b <= 127)
+    || (a === 198 && (b === 18 || b === 19))
+    || a >= 224;
+}
+
+function blockedHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  if (host === '' || host === 'localhost' || host.endsWith('.localhost')) return true;
+  // Names that only resolve inside a network, so nothing public can own them.
+  if (host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.home.arpa')) return true;
+
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (v4) {
+    const parts = v4.slice(1, 5).map(Number);
+    if (parts.some((n) => n > 255)) return true;
+    return privateIpv4(parts[0]!, parts[1]!);
+  }
+
+  if (host.startsWith('[') && host.endsWith(']')) {
+    const groups = ipv6Groups(host.slice(1, -1));
+    if (groups === null) return true;
+    const [g0, , , , g4, g5, g6, g7] = groups;
+    if (groups.every((g) => g === 0)) return true;                    // ::
+    if (groups.slice(0, 7).every((g) => g === 0) && g7 === 1) return true; // ::1
+    // ::ffff:a.b.c.d — the parser stores these in hex, so decode and re-judge.
+    if (g4 === 0 && g5 === 0xffff) return privateIpv4(g6! >> 8, g6! & 0xff);
+    if ((g0! & 0xfe00) === 0xfc00) return true;                       // fc00::/7 unique-local
+    if ((g0! & 0xffc0) === 0xfe80) return true;                       // fe80::/10 link-local
+    return false;
+  }
+  return false;
+}
+
+/** Judge a url this deployment is being asked to fetch. `allowPrivate` exists
+ *  only so the test suite can point the worker at a loopback fixture server;
+ *  it is never set on a real deployment. */
+export function unfurlTarget(raw: unknown, allowPrivate = false): UnfurlTarget {
+  if (typeof raw !== 'string' || raw === '') return { ok: false, reason: 'not a url' };
+  if (raw.length > MAX_URL_LENGTH) return { ok: false, reason: 'url is too long' };
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { ok: false, reason: 'not a url' };
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return { ok: false, reason: `${url.protocol} is not fetchable` };
+  // Credentials in a url are a way to reach something that is not public, and
+  // nothing legitimate needs them for a preview.
+  if (url.username !== '' || url.password !== '') return { ok: false, reason: 'url carries credentials' };
+  if (!allowPrivate && blockedHost(url.hostname)) return { ok: false, reason: 'that address is not publicly routable' };
+  return { ok: true, url };
+}

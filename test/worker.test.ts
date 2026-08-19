@@ -5,6 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -48,6 +49,34 @@ async function call(path: string, opts: RequestInit & { token?: string } = {}): 
   return { status: res.status, body: (await res.json().catch(() => ({}))) as Record<string, unknown> };
 }
 
+/** A tiny site that advertises Open Graph art, for the unfurl test. */
+function ogFixture(port: number): { close: () => Promise<void> } {
+  const png = Buffer.from(
+    '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489' +
+    '0000000d4944415478da63fcffff3f0300050001274d0b6f0000000049454e44ae426082', 'hex');
+  const server = createServer((req, res) => {
+    const path = req.url ?? '/';
+    if (path.startsWith('/thumb.png')) {
+      res.writeHead(200, { 'content-type': 'image/png', 'content-length': png.length });
+      return void res.end(png);
+    }
+    if (path.startsWith('/redirect-private')) {
+      // The classic bypass: a public url that sends you somewhere private.
+      res.writeHead(302, { location: 'http://169.254.169.254/latest/meta-data/' });
+      return void res.end();
+    }
+    if (path.startsWith('/no-og')) {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      return void res.end('<html><head><title>bare</title></head><body>x</body></html>');
+    }
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end('<html><head><meta property="og:title" content="A Video"><meta property="og:site_name" content="Fixture">'
+      + '<meta property="og:image" content="/thumb.png"></head><body>hi</body></html>');
+  });
+  server.listen(port, '127.0.0.1');
+  return { close: () => new Promise<void>((done) => server.close(() => done())) };
+}
+
 test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180_000 }, async () => {
   const state = mkdtempSync(join(tmpdir(), 'botflow-worker-'));
   // The shipped wrangler.jsonc deliberately has no R2 binding (uploads are
@@ -72,7 +101,8 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
   // and stalls wrangler mid-startup (found the hard way).
   const child = spawn(
     process.execPath,
-    [WRANGLER, 'dev', '--config', join(state, 'wrangler.json'), '--port', String(PORT), '--persist-to', state, '--var', `SETUP_KEY:${SETUP_KEY}`],
+    [WRANGLER, 'dev', '--config', join(state, 'wrangler.json'), '--port', String(PORT), '--persist-to', state, '--var', `SETUP_KEY:${SETUP_KEY}`,
+      '--var', 'LINK_PREVIEWS:on', '--var', 'UNFURL_ALLOW_PRIVATE:on'],
     { cwd: join(import.meta.dirname, '..'), stdio: 'ignore', env: { ...process.env }, detached: true },
   );
   try {
@@ -264,6 +294,76 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     const boardShape = (await call(`/api/projects/${parent}/board`, { token: admin })).body as { lanes: { id: string }[]; findings: unknown[] };
     assert.deepEqual(boardShape.lanes.map((l) => l.id), ['todo', 'doing', 'needs-qa', 'done']);
     assert.equal(boardShape.findings.filter((f) => (f as { severity: string }).severity === 'error').length, 0, 'reshaped board lints clean');
+
+    // ---- link previews ----
+    // A url is not an image, but the page behind it may advertise one. The
+    // worker fetches it once, server-side, and proxies the picture: a viewer's
+    // browser never contacts the site being previewed, which is what makes
+    // this safe to render on a public share page.
+    const OG_PORT = PORT + 40;
+    const site = ogFixture(OG_PORT);
+    try {
+      const withArt = (await call(`/api/projects/${parent}/cards`, { method: 'POST', token: admin, body: JSON.stringify({ title: 'Watch this' }) })).body['id'] as string;
+      await call(`/api/projects/${parent}/cards/${withArt}/attach`, { method: 'POST', token: admin, body: JSON.stringify({ url: `http://127.0.0.1:${OG_PORT}/watch` }) });
+
+      /** Poll until this card has previews, since unfurling happens after the
+       *  response that triggered it. */
+      const previewOf = async (cid: string): Promise<{ url: string; image: string }[]> => {
+        for (let i = 0; i < 30; i++) {
+          const board = (await call(`/api/projects/${parent}/board`, { token: admin })).body as unknown as
+            { lanes: { cards: { id: string; previews?: { url: string; image: string }[] }[] }[] };
+          const card = board.lanes.flatMap((l) => l.cards).find((c) => c.id === cid);
+          if (card?.previews) return card.previews;
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        return [];
+      };
+      /** Assert a url yields nothing, by racing it against one that works.
+       *  Waiting for an absence would pass just as well if the pipeline were
+       *  merely slow; pairing it with a url that must resolve proves the
+       *  refusal is specific rather than a timeout. */
+      const refuses = async (title: string, bad: string): Promise<void> => {
+        const cid = (await call(`/api/projects/${parent}/cards`, { method: 'POST', token: admin, body: JSON.stringify({ title }) })).body['id'] as string;
+        await call(`/api/projects/${parent}/cards/${cid}/attach`, { method: 'POST', token: admin, body: JSON.stringify({ url: bad }) });
+        await call(`/api/projects/${parent}/cards/${cid}/attach`, { method: 'POST', token: admin, body: JSON.stringify({ url: `http://127.0.0.1:${OG_PORT}/watch?for=${cid}` }) });
+        const got = await previewOf(cid);
+        assert.equal(got.length, 1, `${title}: exactly the good link previewed`);
+        assert.match(got[0]!.url, /\/watch\?for=/, `${title}: and it is the good one`);
+      };
+
+      const previews = await previewOf(withArt);
+      assert.equal(previews.length, 1, 'the page advertised a picture');
+      assert.equal(previews[0]!.url, `http://127.0.0.1:${OG_PORT}/watch`, 'the preview names the link it stands for');
+      assert.match(previews[0]!.image, /^\/og\/[a-f0-9]{64}\?p=/, 'and points at this worker, never at the far site');
+
+      // The proxy serves it unauthenticated, because a share page must render
+      // it, and returns the real bytes.
+      const art = await fetch(U + previews[0]!.image);
+      assert.equal(art.status, 200);
+      assert.equal(art.headers.get('content-type'), 'image/png');
+      assert.equal(art.headers.get('content-security-policy'), 'sandbox');
+      const bytes = new Uint8Array(await art.arrayBuffer());
+      assert.deepEqual([...bytes.slice(0, 4)], [0x89, 0x50, 0x4e, 0x47], 'a real png came back');
+
+      // It resolves only hashes this worker already chose to fetch, so it is
+      // not an open proxy.
+      assert.equal((await fetch(`${U}/og/${'a'.repeat(64)}?p=${parent}`)).status, 404);
+
+      // cover: none outranks a preview. cover is null either way, so coverAuto
+      // is what carries the difference.
+      await call(`/api/projects/${parent}/cards/${withArt}/edit`, { method: 'POST', token: admin, body: JSON.stringify({ cover: 'none' }) });
+      const hidden = (await call(`/api/projects/${parent}/cards/${withArt}`, { token: admin })).body;
+      assert.equal(hidden['cover'], null);
+      assert.equal(hidden['coverAuto'], false, 'suppressed art is not the same as absent art');
+
+      // A page with no og:image advertises nothing, and a public url that
+      // redirects into private space must be refused at the hop rather than
+      // only at the start, which is the usual way past a naive guard.
+      await refuses('Bare page', `http://127.0.0.1:${OG_PORT}/no-og`);
+      await refuses('Redirector', `http://127.0.0.1:${OG_PORT}/redirect-private`);
+    } finally {
+      await site.close();
+    }
 
     // Card authoring: description + checklist tasks through the API.
     await call(`/api/projects/${parent}/cards/002/describe`, { method: 'POST', token: key, body: JSON.stringify({ text: 'Written by an agent.' }) });

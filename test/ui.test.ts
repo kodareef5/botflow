@@ -180,6 +180,20 @@ test('ui: a card can be moved, claimed, closed and blocked from the board', () =
   assert.match(app, /order==='strict'/);
 });
 
+test('ui: a link preview can become cover art without overriding cover: none', () => {
+  const app = scripts.join('\n');
+  // cover is null both when art is suppressed and when there simply is none,
+  // so the decision cannot be made from cover alone.
+  assert.match(app, /function coverOf\(c\)\{/);
+  assert.match(app, /if\(!c\.coverAuto\)return null/, 'cover: none outranks a preview');
+  assert.match(app, /if\(c\.cover\)return c\.cover/, 'an explicit cover still wins');
+  // Card face and modal both go through it, so they cannot disagree.
+  assert.match(app, /coverOf\(c\)\)\)/);
+  // A preview tile stands for its link, so it opens the page, not the picture.
+  assert.match(app, /\{img:v\.image,href:v\.url,kind:'link'\}/);
+  assert.match(app, /data-cover="'\+esc\(t\.img\)/, 'and can still be pinned as the cover');
+});
+
 test('ui: setup asks only for what the deployment needs', () => {
   const app = scripts.join('\n');
   // The setup key exists to stop a stranger claiming a public deployment

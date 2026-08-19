@@ -24,6 +24,11 @@ export function cardJson(card: Card, node: BoardNode, ba: BoardAnalysis): Record
     deps: card.deps,
     blocked: card.blocked,
     cover: card.cover === 'none' ? null : (card.cover ?? parsed.images[0] ?? null),
+    // Whether a viewer may supply art of its own. `cover` alone cannot say:
+    // it is null both when art is suppressed and when none was found, and a
+    // viewer that substituted a picture in the first case would be overriding
+    // an explicit `cover: none`.
+    coverAuto: card.cover === null,
     checklist: parsed.checklist.total > 0 ? parsed.checklist : null,
     comments: parsed.comments.length,
     attachments: parsed.attachments.length,

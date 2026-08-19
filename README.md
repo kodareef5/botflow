@@ -102,6 +102,24 @@ the UI: create spaces and projects, add members, watch boards and activity live.
 > everything is where you left it. Re-issue bot credentials from each member's
 > account afterwards.
 
+### Link previews (opt-in)
+
+Set the `LINK_PREVIEWS` Worker var to `on` and an attached link contributes its Open Graph
+picture as card art: a YouTube url hands over its thumbnail, and so does anything else that
+ships `og:image`. The worker fetches the page once, caches the verdict per project, and
+**proxies the picture from its own origin**, so a viewer's browser never contacts the site
+being previewed — which matters on a public `/s/<token>` share page, where otherwise every
+stranger you send a board to would be reported to whoever hosts the image.
+
+It is off by default because it makes the worker fetch urls that members choose.
+`unfurlTarget` refuses anything that is not publicly routable (loopback, RFC1918,
+link-local including the cloud metadata endpoint, unique-local IPv6, and the decimal/octal/
+hex/IPv4-mapped spellings of all of them), re-checks every redirect hop, caps size and
+time, and only reads `text/html`. What it cannot see is DNS: a public hostname that
+resolves to a private address passes the check. Cloudflare's edge will not route there, so
+a deployed Worker is covered; a self-hosted `workerd` on a LAN is not, which is why you
+turn this on rather than it being assumed.
+
 ### Members, scopes, and roles
 
 Everyone on a board is a member with a username and password. Humans and bots use the same

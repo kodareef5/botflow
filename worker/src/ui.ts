@@ -63,6 +63,8 @@ aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
 .content{flex:1;min-width:0;display:flex;flex-direction:column}
 .phead{display:flex;align-items:center;gap:16px;padding:var(--pane-head-pad);border-bottom:var(--bw) var(--bs) var(--grid);flex-wrap:wrap;background:color-mix(in srgb,var(--surface) 86%,transparent)}
 .phead h2{font:700 15px/1.15 var(--display)}
+.shot .src{position:absolute;left:6px;bottom:6px;background:var(--ink);color:var(--page);opacity:.85;
+  font-size:10px;padding:1px 7px;border-radius:999px;max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .badges .by{opacity:.75;font-style:italic}
 .whoami{font-size:11.5px;color:var(--muted);margin-right:10px;white-space:nowrap}
 .whoami i{font-style:normal;text-transform:uppercase;letter-spacing:.05em;font-size:9.5px;opacity:.7;border:var(--bw) var(--bs) var(--grid);border-radius:999px;padding:1px 5px;margin-left:4px}
@@ -696,6 +698,18 @@ function newCard(lane){
     if(r&&r.id)openCard(r.id,'card');
   });
 }
+// What art this card shows. An explicit cover wins; otherwise a viewer may
+// substitute the first previewable attachment, but only when the card has not
+// suppressed art (cover: none arrives as coverAuto false, since cover itself is
+// null in both cases and cannot tell them apart). No backticks in here: this
+// whole script lives inside a TypeScript template literal.
+function hostOf(u){try{return new URL(u,location.href).hostname.replace(/^www\./,'')}catch{return 'link'}}
+function coverOf(c){
+  if(c.cover)return c.cover;
+  if(!c.coverAuto)return null;
+  const p=(c.previews||[])[0];
+  return p?p.image:null;
+}
 function badge(ic,txt,cls){return '<span class="'+(cls||'')+'">'+ic+(txt!==undefined?' '+txt:'')+'</span>'}
 function cardHtml(b,c){
   const ready=new Set(b.ready||[]);
@@ -713,7 +727,7 @@ function cardHtml(b,c){
   const board=c.type==='board';
   return '<div class="card '+(c.blocked?'blocked':'')+'" data-card="'+esc(c.id)+'" tabindex="0" role="button" aria-label="'+esc(c.id+' '+c.title)+'"'
     +(RO?'':' aria-keyshortcuts="Shift+ArrowLeft Shift+ArrowRight Shift+ArrowUp Shift+ArrowDown"')+'>'
-    +(c.cover?'<img class="art" src="'+esc(c.cover)+'" alt="" loading="lazy">':'')
+    +((cov=>cov?'<img class="art" src="'+esc(cov)+'" alt="" loading="lazy">':'')(coverOf(c)))
     +'<div class="inner"><div class="cid">'+esc(c.id)+'</div><div class="t">'+esc(c.title)+'</div>'
     +'<div class="badges">'+badges.join('')+'</div>'
     +(board?'<div class="subboard"><button data-goto="'+esc(c.child??'')+'" '+(c.child==null||RO?'disabled':'')+'>'+IC.open+' board</button>'
@@ -1229,7 +1243,7 @@ function cardModalHtml(c,tab){
       +'<button class="ghost" data-sharecard title="public read-only link to just this card">↗ share</button>');
   }
   const tabs=[['card','card'],['chat','chat '+((p.comments||[]).length||'')],['activity','activity']];
-  return (c.cover?'<img class="banner" src="'+esc(c.cover)+'" alt="">':'')
+  return ((cov=>cov?'<img class="banner" src="'+esc(cov)+'" alt="">':'')(coverOf(c)))
     +'<div class="inner"><button class="close ghost" data-x aria-label="close card">✕</button>'
     +'<div class="cid">'+esc(c.id)+'</div><h2>'+esc(c.title)+'</h2>'
     +'<div class="metaline">'+meta.join(' ')+'</div>'
@@ -1261,10 +1275,17 @@ function paneCard(c){
       +(linkOk(a.url)?'<a href="'+esc(a.url)+'" target="_blank" rel="noopener">open '+IC.open+'</a>':'<span class="host" style="margin-left:auto">'+esc(a.url)+'</span>')
       +(RO?'':'<button class="ghost" data-detach="'+a.index+'" title="remove">✕</button>')+'</div>';
   }).join(''):'<div class="empty">nothing attached</div>';
-  const imgs=p.images||[];
-  if(imgs.length){
+  // Image attachments, plus any link whose page advertised a picture. A
+  // preview tile opens the page it came from, not the picture: the point of
+  // the thumbnail is to stand for the link.
+  const tiles=(p.images||[]).map(u=>({img:u,href:u,kind:'image'}))
+    .concat((c.previews||[]).map(v=>({img:v.image,href:v.url,kind:'link'})));
+  if(tiles.length){
     out+='<h4>gallery'+(RO?'':' <span class="h-act">'+(c.cover?'<button data-cover="none">hide art</button>':'<button data-cover="auto">auto art</button>')+'</span>')+'</h4><div class="gallery">'
-      +imgs.map(u=>'<div class="shot">'+(linkOk(u)?'<a href="'+esc(u)+'" target="_blank" rel="noopener"><img src="'+esc(u)+'" alt="" loading="lazy"></a>':'<img src="'+esc(u)+'" alt="" loading="lazy">')+(RO?'':'<button class="setcov primary" data-cover="'+esc(u)+'">☆ cover</button>')+'</div>').join('')+'</div>';
+      +tiles.map(t=>'<div class="shot">'
+        +(linkOk(t.href)?'<a href="'+esc(t.href)+'" target="_blank" rel="noopener"><img src="'+esc(t.img)+'" alt="" loading="lazy"></a>':'<img src="'+esc(t.img)+'" alt="" loading="lazy">')
+        +(t.kind==='link'?'<span class="src" title="'+esc(t.href)+'">'+esc(hostOf(t.href))+'</span>':'')
+        +(RO?'':'<button class="setcov primary" data-cover="'+esc(t.img)+'">☆ cover</button>')+'</div>').join('')+'</div>';
   }
   const kv=[];
   if(c.created)kv.push('<span><b>created</b> '+esc(c.created)+'</span>');

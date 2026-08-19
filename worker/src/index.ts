@@ -17,6 +17,7 @@ import { RegistryDO, type Identity, type OrgTree, type ProjectNode } from './reg
 import { ABOUT_HTML } from './about.ts';
 import { DEMO, type OrgImport, type ProjectImport } from './demo.ts';
 import { roleAllows, setupAccess, validRole, validScopeKind, validUsername } from './security.ts';
+import { fetchImage, fetchOg } from './unfurl.ts';
 import { uiHtml } from './ui.ts';
 
 export { ProjectDO, RegistryDO };
@@ -31,6 +32,15 @@ export interface Env {
    *  served from /files/. Without it everything else works and the UI hides
    *  upload affordances. Bind a bucket as ATTACHMENTS to enable. */
   ATTACHMENTS?: R2Bucket;
+  /** Link previews are off unless this is "on". They make the worker fetch
+   *  urls that members choose, and while unfurlTarget refuses anything that
+   *  is not publicly routable, a hostname can still resolve to a private
+   *  address after that check. Cloudflare's edge will not route there; a
+   *  self-hosted workerd on a LAN might, so the operator opts in. */
+  LINK_PREVIEWS?: string;
+  /** Test-only: lets the suite point an unfurl at a loopback fixture server.
+   *  Never set on a real deployment. */
+  UNFURL_ALLOW_PRIVATE?: string;
 }
 
 // Uploaded files the browser may render inline; anything else downloads.
@@ -57,6 +67,17 @@ async function listUploadManifest(bucket: R2Bucket): Promise<{ key: string; size
     cursor = batch.cursor;
   }
 }
+
+const sha256hex = async (text: string): Promise<string> => {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+};
+
+/** How many links one project may unfurl in a day. */
+const UNFURL_DAILY_CAP = 200;
+/** How many to resolve per board read, so a backlog drains over several loads
+ *  instead of stalling one. */
+const UNFURL_BATCH = 3;
 
 const json = (value: unknown, status = 200): Response =>
   new Response(JSON.stringify(value, null, 2), { status, headers: { 'content-type': 'application/json' } });
@@ -294,7 +315,7 @@ function validateOrgImportPayload(value: unknown): string | null {
 }
 
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     // Who is asking, for the failed-credential throttle. Cloudflare sets
     // cf-connecting-ip itself and it cannot be spoofed; behind another proxy
@@ -325,6 +346,32 @@ export default {
       // Uploaded attachments: the random key segment is the capability, like
       // share tokens; objects render in <img> tags and on public card pages,
       // where auth headers never travel.
+      // Preview art, proxied. The browser never talks to the site being
+      // previewed, which matters most on a public share page: otherwise every
+      // stranger you send a board link to is reported to whoever hosts the
+      // image. The hash resolves only against urls already in a project's
+      // unfurl cache, so this cannot be used as an open proxy.
+      const ogMatch = /^\/og\/([a-f0-9]{64})$/.exec(url.pathname);
+      if (req.method === 'GET' && ogMatch) {
+        const cached = await caches.default.match(req);
+        if (cached) return cached;
+        const pid = url.searchParams.get('p') ?? '';
+        if (!/^p-[a-z0-9]+$/.test(pid)) return json({ error: 'not found' }, 404);
+        const source = await project(pid).unfurlImageFor(ogMatch[1]!);
+        if (source === null) return json({ error: 'not found' }, 404);
+        const image = await fetchImage(source, env.UNFURL_ALLOW_PRIVATE === 'on');
+        if (image === null) return json({ error: 'not found' }, 404);
+        const out = new Response(image.body, {
+          headers: {
+            'content-type': image.type,
+            'x-content-type-options': 'nosniff',
+            'content-security-policy': 'sandbox',
+            'cache-control': 'public, max-age=86400',
+          },
+        });
+        ctx.waitUntil(caches.default.put(req, out.clone()));
+        return out;
+      }
       if (req.method === 'GET' && url.pathname.startsWith('/files/')) {
         if (!env.ATTACHMENTS) return json({ error: 'uploads are not enabled on this deployment' }, 404);
         const key = decodeURIComponent(url.pathname.slice('/files/'.length));
@@ -529,6 +576,7 @@ export default {
           aggregate: toRollup(orgDist, orgDone, orgUnits),
           spaces,
           uploads: env.ATTACHMENTS !== undefined,
+          previews: env.LINK_PREVIEWS === 'on',
           me: {
             username: identity.username,
             display: identity.display,
@@ -938,7 +986,28 @@ export default {
         const cleanupFailures = await finishDeleteCleanup(pid, removed.ids, removed.parent);
         return json({ deleted: { project: pid, projects: removed.ids.length }, cleanupFailures });
       }
-      if (req.method === 'GET' && (rest === '' || rest === '/board')) return json(await stub.board());
+      /** Resolve a few of this project's un-previewed links, after the response. */
+      const drainUnfurls = (): void => {
+        if (env.LINK_PREVIEWS !== 'on') return;
+        ctx.waitUntil((async () => {
+          try {
+            if ((await stub.unfurlsToday()) >= UNFURL_DAILY_CAP) return;
+            const allowPrivate = env.UNFURL_ALLOW_PRIVATE === 'on';
+            for (const link of await stub.pendingUnfurls(UNFURL_BATCH)) {
+              const og = await fetchOg(link, allowPrivate);
+              await stub.saveUnfurl(link, og, og?.image ? await sha256hex(og.image) : null);
+            }
+          } catch {
+            // A preview is decoration: never let one break the request that
+            // happened to trigger it.
+          }
+        })());
+      };
+      if (req.method === 'GET' && (rest === '' || rest === '/board')) {
+        const body = await stub.board();
+        drainUnfurls();
+        return json(body);
+      }
       if (req.method === 'GET' && rest === '/config') return json(await stub.boardConfig());
       if (req.method === 'PUT' && rest === '/config') {
         // Board shape is workflow policy: admins reshape it, agents work it.
@@ -1072,6 +1141,7 @@ export default {
           }
           const res = await stub.action(action, cid, body, actor);
           if ('error' in res) return json(res, 'conflict' in res ? 409 : 400);
+          if (action === 'attach') drainUnfurls();
           if (uploadedUrl !== null) await env.ATTACHMENTS!.delete(uploadedUrl.slice('/files/'.length)).catch(() => {});
           return json(res);
         }
