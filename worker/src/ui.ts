@@ -1708,24 +1708,27 @@ function renderSettings(main){
   $('#custcol').oninput=e=>applyTheme({...THEME,accent:'custom',custom:e.target.value});
   $('#custcol').onchange=e=>save({...THEME,accent:'custom',custom:e.target.value});
   main.querySelector('.settings').onclick=async e=>{
-    const dp=e.target.closest('[data-delproj]');
+    // closest() can walk beyond the element whose click we handle. <html>
+    // carries theme data attributes too, so bound every delegated lookup to
+    // this settings panel before deciding that a control was clicked.
+    const panel=e.currentTarget;
+    const within=selector=>{const node=e.target.closest(selector);return node&&panel.contains(node)?node:null};
+    const dp=within('[data-delproj]');
     if(dp){const n=dp.dataset.name,c=Number(dp.dataset.count);
       confirmModal('Delete project',"Permanently deletes '"+esc(n)+"'"+(c>1?' and its '+(c-1)+' nested project(s)':'')
         +': boards, cards, keys, share links, and uploaded files. No undo, and uploads are not inside the JSON export: back the bucket up separately if they matter.',
         'delete forever',async()=>{await api('/api/projects/'+dp.dataset.delproj,{method:'DELETE'});await start()});return}
-    const dsp=e.target.closest('[data-delspace]');
+    const dsp=within('[data-delspace]');
     if(dsp){const n=dsp.dataset.name,c=Number(dsp.dataset.count);
       confirmModal('Delete space',"Permanently deletes the space '"+esc(n)+"' and all "+c+" project(s) inside it: boards, cards, keys, share links, and uploaded files. No undo, and uploads are not inside the JSON export: back the bucket up separately if they matter.",
         'delete forever',async()=>{await api('/api/spaces/'+dsp.dataset.delspace,{method:'DELETE'});await start()});return}
-    const dsh=e.target.closest('[data-delsh]');
+    const dsh=within('[data-delsh]');
     if(dsh){await api('/api/shares/'+dsh.dataset.delsh,{method:'DELETE'});renderSettings(main);return}
-    if(e.target.closest('#custpill'))return; // the color input handles itself
-    // <html> carries data-style too; name the tile class so delegation cannot
-    // escape this panel and treat every ordinary settings click as a theme pick.
-    const tile=e.target.closest('.stile[data-style]');
-    const pill=e.target.closest('[data-accent]');
-    const mode=e.target.closest('[data-mode]');
-    const density=e.target.closest('[data-density]');
+    if(within('#custpill'))return; // the color input handles itself
+    const tile=within('.stile[data-style]');
+    const pill=within('[data-accent]');
+    const mode=within('[data-mode]');
+    const density=within('[data-density]');
     if(!tile&&!pill&&!mode&&!density)return;
     const next={...THEME};
     if(tile){next.style=tile.dataset.style;const ns=THEMES.find(s=>s.id===next.style);

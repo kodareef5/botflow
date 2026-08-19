@@ -268,13 +268,21 @@ test('ui: ordinary settings clicks cannot masquerade as theme choices', () => {
   const start = app.indexOf("main.querySelector('.settings').onclick");
   const handler = app.slice(start, app.indexOf('\n  };', start));
   assert.ok(start !== -1, 'settings click delegation is present');
-  // <html> also carries data-style so the active theme can drive CSS. A bare
-  // closest('[data-style]') walks out of settings, finds <html>, and turns a
-  // click in any input or account control into a save + full settings render.
-  assert.match(handler, /closest\('\.stile\[data-style\]'\)/,
-    'only an actual style tile may trigger a theme save');
-  assert.doesNotMatch(handler, /closest\('\[data-style\]'\)/,
-    'delegation must not escape to the document theme attribute');
+  // <html> carries both data-style and data-density so the active theme can
+  // drive CSS. closest() may walk out of settings and find either attribute,
+  // turning an ordinary click into a save + full settings render. Every
+  // delegated lookup must therefore be bounded by the panel.
+  assert.match(handler, /const panel=e\.currentTarget/);
+  assert.match(handler, /panel\.contains\(node\)/,
+    'delegated matches outside settings are rejected');
+  for (const selector of [
+    "'.stile[data-style]'",
+    "'[data-accent]'",
+    "'[data-mode]'",
+    "'[data-density]'",
+  ]) assert.ok(handler.includes(`within(${selector})`), `${selector} is panel-bounded`);
+  assert.doesNotMatch(handler, /const (?:tile|pill|mode|density)=e\.target\.closest/,
+    'theme control lookup cannot bypass the panel boundary');
 });
 
 test('ui: the member directory consumes the flat identity scope contract', () => {
