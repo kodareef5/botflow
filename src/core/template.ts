@@ -4,7 +4,7 @@
 // a history-free copy into a fresh repo.
 
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { UsageError } from './mutate.ts';
@@ -31,10 +31,15 @@ export function parseSource(spec: string): { src: string; branch: string | null 
 
 export function instantiate(spec: string, destDir: string, name?: string): InstantiateResult {
   const { src, branch } = parseSource(spec);
+  // A source like "-u/tmp/x.sh" would be consumed by git clone as an option.
+  if (src.startsWith('-')) throw new UsageError(`template source must not start with "-": ${spec}`);
   const dest = resolve(destDir);
   const warnings: string[] = [];
 
-  if (existsSync(dest) && readdirSync(dest).length > 0) throw new UsageError(`destination ${dest} exists and is not empty`);
+  if (existsSync(dest)) {
+    if (!statSync(dest).isDirectory()) throw new UsageError(`destination ${dest} exists and is not a directory`);
+    if (readdirSync(dest).length > 0) throw new UsageError(`destination ${dest} exists and is not empty`);
+  }
 
   const localPlainDir = existsSync(src) && !existsSync(join(src, '.git'));
   if (localPlainDir) {
@@ -43,7 +48,8 @@ export function instantiate(spec: string, destDir: string, name?: string): Insta
     cpSync(src, dest, { recursive: true, filter: (p) => !p.split('/').includes('.git') });
   } else {
     // git handles URLs and local repo paths alike; shallow = history-free.
-    const args = ['clone', '--depth', '1', ...(branch !== null ? ['--branch', branch] : []), src, dest];
+    // `--` keeps a dash-leading source from being parsed as an option.
+    const args = ['clone', '--depth', '1', ...(branch !== null ? ['--branch', branch] : []), '--', src, dest];
     const res = git(args);
     if (!res.ok) throw new UsageError(`git clone failed: ${res.err}`);
     rmSync(join(dest, '.git'), { recursive: true, force: true });

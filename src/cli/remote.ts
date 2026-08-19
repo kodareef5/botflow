@@ -8,15 +8,17 @@
 // and every import lands in the audit log. Push captures its snapshot under
 // the board lock (one local instant). Pull is a validated, crash-safe
 // snapshot apply: the whole remote snapshot validates before any write, the
-// dirty-tree gate and the apply run under the board lock, and every write is
-// temp+rename; the set is not atomic, so an interrupted pull leaves valid
-// files that a re-run converges.
+// dirty-tree gate and the apply run under the board lock, every write/delete
+// target is checked for symlink escapes before the first change, and every
+// write is temp+rename; the set is not atomic, so an interrupted pull leaves
+// valid files that a re-run converges.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 
 import { validateBoardDocuments } from '../core/docs.ts';
+import { emitScalar } from '../core/emit.ts';
 import { readBoardDocuments } from '../core/load.ts';
 import { atomicWrite, withBoardLock } from '../core/mutate.ts';
 import { UsageError } from '../core/ops.ts';
@@ -28,10 +30,28 @@ export interface RemoteConfig {
 }
 
 const REMOTE_FILE = 'remote.yaml';
+const CALL_TIMEOUT_MS = 30_000;
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+/** The token is sent to whatever URL the committed remote.yaml names, so a
+ *  plaintext URL would leak BOTFLOW_TOKEN to anyone who can commit. https is
+ *  required; http stays allowed for loopback hosts (the local dev manager). */
+function assertRemoteUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new UsageError(`remote url "${url}" is not a valid URL`);
+  }
+  if (parsed.protocol === 'https:') return;
+  if (parsed.protocol === 'http:' && LOOPBACK_HOSTS.has(parsed.hostname)) return;
+  throw new UsageError(`remote url must use https:// (http:// is allowed only for loopback hosts): ${url}`);
+}
 
 export function remoteAdd(root: string, url: string, project: string): void {
   const clean = url.replace(/\/+$/, '');
-  writeFileSync(join(root, REMOTE_FILE), `url: ${clean}\nproject: ${project}\n`);
+  assertRemoteUrl(clean);
+  writeFileSync(join(root, REMOTE_FILE), `url: ${emitScalar(clean)}\nproject: ${emitScalar(project)}\n`);
 }
 
 export function loadRemote(root: string): RemoteConfig {
@@ -44,19 +64,24 @@ export function loadRemote(root: string): RemoteConfig {
   return { url: data.url.replace(/\/+$/, ''), project: data.project };
 }
 
-async function call(remote: RemoteConfig, token: string, path: string, init?: RequestInit): Promise<unknown> {
+async function call(remote: RemoteConfig, token: string, path: string, init?: RequestInit, timeoutMs = CALL_TIMEOUT_MS): Promise<unknown> {
+  // Enforced on every request, not just in `remote add`: the committed file
+  // may be hand-edited (or committed hostile) afterwards.
+  assertRemoteUrl(remote.url);
   const res = await fetch(`${remote.url}/api/projects/${remote.project}${path}`, {
     ...init,
+    signal: AbortSignal.timeout(timeoutMs),
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...(init?.headers ?? {}) },
   }).catch((err: Error) => {
-    throw new UsageError(`cannot reach ${remote.url}: ${err.message}`);
+    const why = err.name === 'TimeoutError' ? `timed out after ${timeoutMs / 1000}s` : err.message;
+    throw new UsageError(`cannot reach ${remote.url}: ${why}`);
   });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) throw new UsageError(`remote ${res.status}: ${String(body['error'] ?? 'request failed')}`);
   return body;
 }
 
-export async function push(root: string, token: string, actor: string): Promise<{ imported: number; findings: number }> {
+export async function push(root: string, token: string, actor: string, timeoutMs?: number): Promise<{ imported: number; findings: number }> {
   // Capture the snapshot under the board lock so it represents one local
   // instant, then release before any network I/O.
   const { configText, cards } = withBoardLock(root, () => readBoardDocuments(root));
@@ -65,25 +90,59 @@ export async function push(root: string, token: string, actor: string): Promise<
   return (await call(remote, token, '/import', {
     method: 'PUT',
     body: JSON.stringify({ config: configText, cards, actor }),
-  })) as { imported: number; findings: number };
+  }, timeoutMs)) as { imported: number; findings: number };
 }
 
 /** Files pull would replace or delete (board.yaml, cards/**) that git has
  *  uncommitted changes for. Deliberately scoped: remote.yaml and other board
- *  metadata are not pull's blast radius. Outside a git repo, or without git,
- *  there is nothing to guard. */
+ *  metadata are not pull's blast radius. Missing git and non-repos are
+ *  tolerated (there is nothing to guard with); any OTHER git failure fails
+ *  closed, because pulling blind could destroy dirty cards. */
 function dirtyBoardFiles(root: string): string[] {
   const res = spawnSync('git', ['status', '--porcelain', '--', 'board.yaml', 'cards'], { cwd: root, encoding: 'utf8' });
-  if (res.error || res.status !== 0) return [];
+  if (res.error) {
+    if ((res.error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw new UsageError(`refusing pull: cannot check for uncommitted board changes: ${res.error.message}`);
+  }
+  if (res.status !== 0) {
+    const detail = (res.stderr || res.stdout || '').trim();
+    if (/not a git repository/.test(detail)) return [];
+    throw new UsageError(
+      `refusing pull: cannot check for uncommitted board changes: git status failed: ${detail || `exit ${res.status}`}\nresolve the git problem first, or re-run with --force`,
+    );
+  }
   return res.stdout
     .split('\n')
     .filter((line) => line.trim() !== '')
     .map((line) => line.slice(3));
 }
 
-export async function pull(root: string, token: string, force = false): Promise<{ written: number; removed: number }> {
+/** Every path pull is about to write or delete must resolve through real
+ *  directories and stay inside the real board root: a committed symlink
+ *  (e.g. `cards -> ../elsewhere`) must not turn the apply loose on other
+ *  directories. Runs before the first write or delete. */
+function assertContainedTargets(root: string, relPaths: string[]): void {
+  if (lstatSync(root).isSymbolicLink()) throw new UsageError(`refusing pull: board root ${root} is a symlink`);
+  const rootReal = realpathSync(root);
+  for (const rel of relPaths) {
+    const abs = join(root, rel);
+    for (let dir = dirname(abs); dir !== root && dir.startsWith(root + sep); dir = dirname(dir)) {
+      if (existsSync(dir) && lstatSync(dir).isSymbolicLink()) {
+        throw new UsageError(`refusing pull: ${rel} passes through symlinked directory ${dir}`);
+      }
+    }
+    let anchor = abs;
+    while (!existsSync(anchor) && anchor !== root) anchor = dirname(anchor);
+    const real = realpathSync(anchor);
+    if (real !== rootReal && !real.startsWith(rootReal + sep)) {
+      throw new UsageError(`refusing pull: ${rel} resolves outside the board`);
+    }
+  }
+}
+
+export async function pull(root: string, token: string, force = false, timeoutMs?: number): Promise<{ written: number; removed: number }> {
   const remote = loadRemote(root);
-  const data = (await call(remote, token, '/export')) as { config: unknown; cards: unknown };
+  const data = (await call(remote, token, '/export', undefined, timeoutMs)) as { config: unknown; cards: unknown };
 
   // Gate 1: the entire snapshot must validate before a single file changes.
   const validation = validateBoardDocuments(data.config, data.cards);
@@ -108,6 +167,19 @@ export async function pull(root: string, token: string, force = false): Promise<
         );
       }
     }
+    // Gate 3: symlink containment. Compute the deletion set up front so every
+    // write and delete target is checked before the first change happens.
+    const remotePaths = new Set(docs.map((c) => c.path));
+    const cardsDir = join(root, 'cards');
+    const stale: string[] = [];
+    if (existsSync(cardsDir) && statSync(cardsDir).isDirectory()) {
+      for (const rel of readdirSync(cardsDir, { recursive: true, encoding: 'utf8' }).filter((f) => f.endsWith('.md'))) {
+        const path = `cards/${rel.split(sep).join('/')}`;
+        if (!remotePaths.has(path)) stale.push(path);
+      }
+    }
+    assertContainedTargets(root, ['board.yaml', ...remotePaths, ...stale]);
+
     atomicWrite(join(root, 'board.yaml'), data.config as string);
     let written = 0;
     for (const doc of docs) {
@@ -116,18 +188,7 @@ export async function pull(root: string, token: string, force = false): Promise<
       atomicWrite(target, doc.text);
       written++;
     }
-    const cardsDir = join(root, 'cards');
-    let removed = 0;
-    const remotePaths = new Set(docs.map((c) => c.path));
-    if (existsSync(cardsDir) && statSync(cardsDir).isDirectory()) {
-      for (const rel of readdirSync(cardsDir, { recursive: true, encoding: 'utf8' }).filter((f) => f.endsWith('.md'))) {
-        const path = `cards/${rel.split(sep).join('/')}`;
-        if (!remotePaths.has(path)) {
-          rmSync(join(root, path));
-          removed++;
-        }
-      }
-    }
-    return { written, removed };
+    for (const path of stale) rmSync(join(root, path));
+    return { written, removed: stale.length };
   });
 }
