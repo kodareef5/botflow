@@ -39,7 +39,7 @@ Repo convention: the board root is `.botflow/` at the repo root. Tools resolve t
 
 A **child board reference** (`board:` field, §5) takes one of two forms:
 
-- a **relative path** from the referencing board's root, resolving to a board root as: if `<path>/board.yaml` exists, `<path>` is the root; else if `<path>/.botflow/board.yaml` exists, `<path>/.botflow` is the root; else the reference is dangling (lint `board-path-missing`);
+- a **relative path** from the referencing board's root, resolving to a board root as: if `<path>/board.yaml` exists, `<path>` is the root; else if `<path>/.botflow/board.yaml` exists, `<path>/.botflow` is the root; else the reference is dangling (lint `board-path-missing`). The path MUST stay inside the project: an absolute path, or one whose `..` segments climb above the referencing board's root, is lint error `board-path-escape`, and tools MUST refuse to write such a value onto a card;
 - **`project:<id>`**: a hosted-manager project reference. Only a botflow manager can resolve it (its Durable Objects roll the child project up exactly like the file engine); on the filesystem it is inert and lints as info `hosted-ref`, the card falling back to its own lane.
 
 ## 4. `board.yaml`
@@ -172,13 +172,13 @@ One card = one file, so edits to different cards never conflict in git. Same-car
 botflow documents (board.yaml and card frontmatter) use a deliberately small YAML subset. Conforming parsers MUST accept exactly this; anything else is lint error `yaml-error`.
 
 Supported:
-- **Mappings**: `key: value`; nesting by 2-space indentation. Keys are plain scalars (`[A-Za-z0-9_-]+`).
+- **Mappings**: `key: value`; nesting by 2-space indentation, bounded at 100 levels deep (deeper is a parse error, not a crash). Keys are plain scalars (`[A-Za-z0-9_-]+`). The one inline mapping form is `{}`, the empty map.
 - **Sequences**: block form (`- item`, including `- key: v` starting an inline map whose further keys sit 2 spaces deeper), and flow form `[a, b, c]` for scalar items only.
 - **Scalars**: plain, `"double-quoted"` (escapes: `\\`, `\"`, `\n`, `\t`), `'single-quoted'` (escape: `''`). Plain scalars type as: `true`/`false` → bool, `null`/empty → null, `-?(0|[1-9][0-9]*)` → int, anything else → string. Digit tokens with leading zeros (`042`) are **strings**: this keeps zero-padded card ids intact. Date-like plain scalars (`2026-08-16`, ISO datetimes) are strings: there is no date type. The key/value separator is the **first** `: ` on the line, so plain values may contain colons; a value containing ` #` (which would start a comment) MUST be quoted. Anything ambiguous MUST be quoted.
 - **Comments**: `#` at line start or preceded by whitespace, to end of line.
 - Blank lines anywhere; `\r\n` normalized to `\n`.
 
-Not supported (parse error): anchors/aliases (`&`, `*`), tags (`!`), block scalars (`|`, `>`), flow mappings (`{…}`), multi-document markers, merge keys (`<<`), complex keys, tab indentation, floats (quote them if you need them).
+Not supported (parse error): anchors/aliases (`&`, `*`), tags (`!`), block scalars (`|`, `>`), flow mappings (`{…}`) other than the empty map `{}`, multi-document markers, merge keys (`<<`), complex keys, tab indentation, floats (quote them if you need them).
 
 **Frontmatter framing** (outside the YAML grammar): a card file MUST begin with `---\n`, followed by subset-YAML lines, closed by a line consisting of `---`; the remainder is the body. A file without frontmatter is lint error `frontmatter-missing`.
 
@@ -195,6 +195,7 @@ Not supported (parse error): anchors/aliases (`&`, `*`), tags (`!`), block scala
 | `dangling-dep` | error | Dep references a nonexistent card id. |
 | `dep-cycle` | error | Dependency cycle (`deps` closes a loop): every member is permanently non-ready. Reported once per cycle, naming the loop. |
 | `board-path-missing` | error | Board-card path doesn't resolve (§3). |
+| `board-path-escape` | error | Board-card path is absolute or escapes the project root (§3). |
 | `board-cycle` | error | Board reference cycle. |
 | `id-scheme-mismatch` | error | Card id doesn't match the board's `ids` scheme. |
 | `wip-breach` | warning | Lane exceeds its `wip`. |
@@ -223,13 +224,15 @@ Expected files record, per board: lint findings (rule ids + card ids), per-card 
 
 - **Claim is a coordination primitive, not a shortcut.** A claim MUST succeed only when the card is claimable by the actor: its local canonical state (lane canonical, or `blocked` when the flag is set) is `todo`, every dep resolves to a card whose local canonical state is `done` or `archive`, and `assignee` is empty or already the actor. Success = set `assignee` to the actor and move the card to a `doing`-canonical lane (first substate if any), appending a Log entry: one atomic rewrite. A claim of a card the actor already holds in `doing` is an idempotent no-op. Anything else MUST fail with a conflict that names the reason (`assigned`, `blocked`, `not-ready`, `deps`) and MUST NOT modify the card; two actors racing to claim the same card get exactly one winner. Tools MAY offer an explicit force override for human operators; hosted APIs MUST restrict that override to admin identities and record its use. A forced claim logs that it was forced. Board-cards never appear in `ready` (§5); claiming one explicitly is judged by its own lane, because rollup state is a view, not a lock.
 - Every mutation appends a Log line; never rewrite existing Log lines. Comments append to `## Comments` and bump `updated` without a Log line (discourse isn't audit); checklist toggles and attachment changes DO log.
+- **Single-line fields stay single-line.** Actor names, log messages, comment text, blocked reasons, and attachment labels/urls are interpolated into structured markdown lines; tools MUST collapse whitespace/control characters (newlines included) to a single space in those values, so a crafted value cannot forge extra entries or sections. Attachment urls additionally percent-encode `)` so the link syntax cannot be closed early.
+- Section-aware body edits (set/append section, checklist toggles, attachment removal) MUST ignore lines inside fenced code blocks: a literal `## ` or `- [ ]` inside a fence is content, not structure.
 - **Same-tree concurrency.** git covers branch races (§8); two processes in one worktree are the tool's job. A mutating tool MUST serialize its load-mutate-write cycle against other processes (e.g. a short-lived `board.lock` file with stale-owner reaping), MUST allocate seq ids inside that critical section, and SHOULD write files crash-safely (temp file + rename). Lock files are derived state: never committed, safe to delete when their owner is gone.
 - Preserve unknown frontmatter keys and all body content outside the section being edited.
 - Only bump `updated` on meaningful change.
 - `prime`: every conforming CLI SHOULD offer a command that prints the board's shape, rules, ready work, and the tool's own usage, so an agent can be taught with one line in AGENTS.md.
 - Derived stores (indexes, caches) MUST be rebuildable from files alone and MUST NOT be committed.
 - **Board reshaping.** A tool that edits `board.yaml` over live cards MUST leave the board conformant: cards stranded by a removed lane or substate migrate to a surviving lane (same canonical state unless the operator chose a target), and every migration appends a Log line on the moved card.
-- **Snapshot sync contract.** When a file-truth board syncs with a hosted copy, the repo documents are truth and sync is whole-board snapshot, last write wins. The hosted side is that snapshot **plus a manager overlay**: hosted-native children (project-reference cards the repo snapshot does not carry) survive a push rather than being severed. Both directions MUST validate the entire snapshot before persisting any of it (fatal findings: `yaml-error`, `frontmatter-missing`, `schema`, `dup-id`; unsafe or duplicate paths), and a pull that would remove local files SHOULD refuse over uncommitted changes without an explicit force. Applying a snapshot is a **validated, crash-safe apply**, not an atomic set-replacement: individual writes are crash-safe, an interruption leaves only valid documents, and re-running the sync converges.
+- **Snapshot sync contract.** When a file-truth board syncs with a hosted copy, the repo documents are truth and sync is whole-board snapshot, last write wins. The hosted side is that snapshot **plus a manager overlay**: hosted-native children (project-reference cards the repo snapshot does not carry) survive a push rather than being severed. Both directions MUST validate the entire snapshot before persisting any of it (fatal findings: `yaml-error`, `frontmatter-missing`, `schema`, `dup-id`; unsafe or duplicate paths), and a pull that would remove local files SHOULD refuse over uncommitted changes without an explicit force. Applying a snapshot is a **validated, crash-safe apply**, not an atomic set-replacement: individual writes are crash-safe, an interruption leaves only valid documents, and re-running the sync converges. Sync MUST NOT follow symlinks: a push skips non-regular files when reading documents, and a pull MUST refuse when the board root or any write/delete target passes through a symlink.
 
 ## 13. Future (non-normative)
 
