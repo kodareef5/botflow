@@ -66,17 +66,21 @@ usage: botflow <command> [args]
   ready [--json]                        unblocked todo cards
   lint [--json]                         check the board; exit 1 on errors
   card add <title> [--lane l] [--labels a,b] [--priority p0-p3] [--deps 1,2]
-           [--type board --board-path <dir>] [--assignee name]
+           [--type board --board-path <dir>] [--assignee name] [--delegate agent]
+           [--start YYYY-MM-DD] [--due YYYY-MM-DD] [--estimate n] [--evergreen]
   card show <id> [--json]
   card mv <id> <lane[.substate]> [--force]
-  card claim <id> [--force]             take a ready unassigned card into doing;
+  card claim <id> [--delegate] [--force] take a ready card into doing as assignee
+                                        or, with --delegate, as executing agent;
                                         conflicts (assigned/blocked/not-ready/deps)
                                         refuse unless --force
   card close <id> [--reason r]          move to done, clear blocked flag
   card block <id> --reason <r>          set the blocked flag
   card unblock <id>
   card edit <id> [--title t] [--labels a,b] [--priority p|none]
-           [--assignee name|none] [--deps 1,2] [--board-path <dir>]
+           [--assignee name|none] [--delegate name|none] [--deps 1,2]
+           [--start date|none] [--due date|none] [--estimate n|none]
+           [--evergreen true|false] [--board-path <dir>]
            [--cover <url>|none|auto]
   card comment <id> <text…>             append to the Comments section
   card describe <id> <text…>            set the Description (empty clears)
@@ -329,6 +333,11 @@ function runCard(argv: string[]): number {
         priority: { type: 'string' },
         deps: { type: 'string' },
         assignee: { type: 'string' },
+        delegate: { type: 'string' },
+        start: { type: 'string' },
+        due: { type: 'string' },
+        estimate: { type: 'string' },
+        evergreen: { type: 'boolean', default: false },
       });
       const title = positionals.join(' ').trim();
       if (title === '') throw new UsageError('usage: botflow card add <title> [flags]');
@@ -343,6 +352,11 @@ function runCard(argv: string[]): number {
         priority: values['priority'] as string | undefined,
         deps: csv(values['deps'] as string | undefined),
         assignee: values['assignee'] as string | undefined,
+        delegate: values['delegate'] as string | undefined,
+        start: values['start'] as string | undefined,
+        due: values['due'] as string | undefined,
+        estimate: values['estimate'] === undefined ? undefined : Number(values['estimate']),
+        evergreen: values['evergreen'] as boolean,
         actor: getActor(values),
       });
       const pos = card.substate === null ? card.laneId : `${card.laneId}.${card.substate}`;
@@ -378,24 +392,30 @@ function runCard(argv: string[]): number {
     }
     case 'claim':
     case 'close': {
-      const { values, positionals } = parse(rest, { ...COMMON, reason: { type: 'string' }, force: { type: 'boolean', default: false } });
+      const { values, positionals } = parse(rest, {
+        ...COMMON,
+        reason: { type: 'string' },
+        force: { type: 'boolean', default: false },
+        delegate: { type: 'boolean', default: false },
+      });
       const id = positionals[0];
       if (!id) throw new UsageError(`usage: botflow card ${sub} <id>`);
       const root = getRoot(values);
       const actor = getActor(values);
       const res =
         sub === 'claim'
-          ? claimCard(root, id, actor, values['force'] as boolean)
+          ? claimCard(root, id, actor, values['force'] as boolean, values['delegate'] === true ? 'delegate' : 'assign')
           : closeCard(root, id, actor, values['reason'] as string | undefined);
       if (res.alreadyYours) {
         values['json']
-          ? emitJson({ id: res.card.id, from: res.from, to: res.to, assignee: res.card.assignee, alreadyYours: true, warnings: [] })
+          ? emitJson({ id: res.card.id, from: res.from, to: res.to, assignee: res.card.assignee, delegate: res.card.delegate, alreadyYours: true, warnings: [] })
           : out(`= ${res.card.id} already yours (${res.to})`);
         return 0;
       }
+      const holder = values['delegate'] === true ? res.card.delegate : res.card.assignee;
       values['json']
-        ? emitJson({ id: res.card.id, from: res.from, to: res.to, assignee: res.card.assignee, warnings: res.warnings })
-        : out(`✓ ${res.card.id} ${res.from} → ${res.to}${sub === 'claim' ? ` (@${res.card.assignee})` : ''}${res.warnings.map((w) => `\n⚠ ${w}`).join('')}`);
+        ? emitJson({ id: res.card.id, from: res.from, to: res.to, assignee: res.card.assignee, delegate: res.card.delegate, warnings: res.warnings })
+        : out(`✓ ${res.card.id} ${res.from} → ${res.to}${sub === 'claim' ? ` (@${holder})` : ''}${res.warnings.map((w) => `\n⚠ ${w}`).join('')}`);
       return 0;
     }
     case 'block': {
@@ -422,7 +442,12 @@ function runCard(argv: string[]): number {
         labels: { type: 'string' },
         priority: { type: 'string' },
         assignee: { type: 'string' },
+        delegate: { type: 'string' },
         deps: { type: 'string' },
+        start: { type: 'string' },
+        due: { type: 'string' },
+        estimate: { type: 'string' },
+        evergreen: { type: 'string' },
         'board-path': { type: 'string' },
         cover: { type: 'string' },
       });
@@ -434,7 +459,19 @@ function runCard(argv: string[]): number {
       if (values['labels'] !== undefined) patch.labels = csv(values['labels'] as string)!;
       if (values['priority'] !== undefined) patch.priority = noneable(values['priority'] as string);
       if (values['assignee'] !== undefined) patch.assignee = noneable(values['assignee'] as string);
+      if (values['delegate'] !== undefined) patch.delegate = noneable(values['delegate'] as string);
       if (values['deps'] !== undefined) patch.deps = csv(values['deps'] as string)!;
+      if (values['start'] !== undefined) patch.start = noneable(values['start'] as string);
+      if (values['due'] !== undefined) patch.due = noneable(values['due'] as string);
+      if (values['estimate'] !== undefined) {
+        const value = values['estimate'] as string;
+        patch.estimate = value === 'none' ? null : Number(value);
+      }
+      if (values['evergreen'] !== undefined) {
+        const value = values['evergreen'];
+        if (value !== 'true' && value !== 'false') throw new UsageError('--evergreen must be true or false');
+        patch.evergreen = value === 'true';
+      }
       if (values['board-path'] !== undefined) patch.boardPath = values['board-path'] as string;
       if (values['cover'] !== undefined) {
         const c = values['cover'] as string;

@@ -102,9 +102,14 @@ Frontmatter keys:
 | `type` | `task` \| `board` | no (default `task`) | |
 | `board` | relative path | iff `type: board` | Child board reference (§3). |
 | `labels` | list of strings | no | |
-| `assignee` | string | no | Freeform actor name. Claiming (§12) sets it. |
+| `assignee` | string | no | Accountable human/owner. A normal claim (§12) sets it. Existing v0 cards that used this as the executing actor remain valid. |
+| `delegate` | string | no | Agent currently executing the card. A delegate-mode claim (§12) sets it without replacing the accountable assignee. |
 | `priority` | `p0`–`p3` | no | |
 | `deps` | list of card ids | no | Same-board dependencies. A **task** card is **ready** when its effective canonical state (§6) is `todo` and every dep's effective state is `done` or `archive`. Board-cards are containers, not worker tasks: they are never ready and never appear in the work queue, which keeps `ready` and claimability (§12) consistent even when a board-card's lane drifts from its rollup. (Cross-board deps are out of scope for v0.) |
+| `start` | date string | no | Planned start, `YYYY-MM-DD` or an ISO UTC datetime ending in `Z`. Stored and compared in UTC; no implicit local timezone. |
+| `due` | date string | no | Due date/time in the same form as `start`. A date-only value means the end of that UTC date for overdue checks. |
+| `estimate` | positive int | no | Board-local effort points. It is deliberately unitless; tools may sum it but MUST NOT reinterpret it as elapsed time. |
+| `evergreen` | bool | no (default `false`) | Suppresses stale-card aging signals for intentionally long-lived reference work. It does not suppress time metrics. |
 | `cover` | url \| `none` | no | Card art. Viewers show the image atop the card; when absent they MAY fall back to the first image attachment; `none` suppresses art entirely. |
 | `blocked` | string | no | Blocked **flag** with a reason. Presence overrides projection (§6). |
 | `created` | date string | no | `YYYY-MM-DD` or ISO datetime; stored as a plain string. |
@@ -149,6 +154,29 @@ A `blocked` flag on a done/archive card is inert (lint warning `blocked-in-done`
 
 Cards in a substated lane SHOULD carry a substate (`doing.review`). A bare lane id where substates exist is lint warning `bare-substate-lane` and is treated as the **first** substate.
 
+### 6a. Derived time and flow metrics
+
+Tools MAY replay the append-only Log to derive metrics; no derived value is stored in
+frontmatter. Date-only entries are interpreted at `00:00 UTC` for elapsed-day math.
+Durations are whole elapsed UTC days, rounded down, because historic v0 logs may have
+day-only precision.
+
+- **Current/cumulative lane time:** creation and every `moved <from> → <to>` or
+  `migrated <from> → <to>` entry define intervals. Lane totals include re-entry.
+- **Stalled:** a card whose effective state is `doing` and whose last Log activity is
+  at least 3 days old. `evergreen` suppresses the signal.
+- **Aging:** only `doing`/`blocked` cards age visually, at 7/14/28 idle days;
+  `evergreen` suppresses the visual level.
+- **Cycle time:** first entry into a `doing`-canonical lane through first completion.
+  **Lead time:** `created` (or its creation entry) through first completion.
+- **Blocked duration:** accumulated intervals from `blocked:` Log entries through
+  `unblocked`/completion, including the open interval of a currently blocked card.
+- **Throughput:** first completions grouped by UTC date. **Cumulative flow:** end-of-day
+  card counts reconstructed from the same creation and transition entries.
+
+Incomplete historic logs produce `null` for a duration whose start or end cannot be
+proven; tools MUST NOT invent precision.
+
 ## 7. Nesting & rollup
 
 **Distribution.** `dist(B)` counts B's cards by canonical state. A task card contributes its `canonical(c)`. A board-card contributes its **effective state** (below): it counts as exactly one card in the parent; child internals never leak upward.
@@ -168,6 +196,14 @@ The board-card's frontmatter `lane` remains authoritative for its **position** (
 **Progress.** `progress(B) = weight_done / weight_total` over countable cards, where a task card has weight 1 (1 if `done`, else 0 toward done) and a board-card has weight 1 scaled by `progress(K)` (a child 3⁄4 done contributes 0.75). A childless (countable=0) board-card contributes 1 if its effective state is `done`, else 0. `progress` of a board with no countable cards is `null`.
 
 This metric is named **structural progress**, and tools SHOULD present it as such. Every card on a board is one unit of that board's structure: a 500-card child board still fills exactly one parent unit (by its own fraction), the same as a sibling one-line task. That is deliberate: it preserves encapsulation (a parent needs no knowledge of child size) and makes the number mean "how much of this board's own shape is finished", not "how many leaf tasks exist beneath it". Anyone needing leaf-weighted numbers can walk the tree themselves; per-card `weight:` is a possible future extension (§13), not part of this version.
+
+**Effort projection.** Estimates do not change structural progress. Tools additionally
+MAY report `effort_progress(B) = estimate_done / estimate_total`, considering only
+countable cards that carry `estimate`. A done task contributes its full estimate; an
+unfinished task contributes zero; a board-card contributes its estimate scaled by its
+resolved child's structural progress (or one/zero from its effective state when the
+child is unresolved). The result is `null` when no countable card is estimated. Tools
+MUST label this as estimated effort, not elapsed time, and SHOULD expose per-lane sums.
 
 **Recursion** is depth-first. Implementations MUST detect reference cycles and MUST NOT loop: the reference that closes a cycle resolves to nothing, so its board-card falls back to `canonical(c)` (rule 1) and lint reports error `board-cycle`; references upstream of the broken edge roll up over it normally. Aggregate ("rollup") views may render the tree to any depth; canonical distributions are the only cross-level interface.
 
@@ -228,13 +264,14 @@ Each directory under `test/fixtures/` is a board (or, for `invalid/`, a set of b
 - `standard/`: six lanes + specialty `needs-qa` (→ doing), wip limit, a blocked flag, a deps chain exercising **ready**. → `expected.json`
 - `substates/`: strict-ordered `doing` substates, incl. a bare-lane warning case. → `expected.json`
 - `nested/`: a parent whose cards include two board-cards (one all-done child, one mixed child with a blocked card); exercises rollup, drift, progress. → `expected.json`
+- `card-features/`: scheduling, estimate, Evergreen, and accountable-assignee / executing-delegate fields. → `expected.json`
 - `invalid/`: one board per error class. → `expected.json` (lint findings)
 
 Expected files record, per board: lint findings (rule ids + card ids), per-card canonical states, lane distributions, ready sets, and (where relevant) effective states and progress. A conforming engine must reproduce them exactly.
 
 ## 12. Conventions for tools
 
-- **Claim is a coordination primitive, not a shortcut.** A claim MUST succeed only when the card is claimable by the actor: its local canonical state (lane canonical, or `blocked` when the flag is set) is `todo`, every dep resolves to a card whose local canonical state is `done` or `archive`, and `assignee` is empty or already the actor. Success = set `assignee` to the actor and move the card to a `doing`-canonical lane (first substate if any), appending a Log entry: one atomic rewrite. A claim of a card the actor already holds in `doing` is an idempotent no-op. Anything else MUST fail with a conflict that names the reason (`assigned`, `blocked`, `not-ready`, `deps`) and MUST NOT modify the card; two actors racing to claim the same card get exactly one winner. Tools MAY offer an explicit force override for human operators; hosted APIs MUST restrict that override to admin identities and record its use. A forced claim logs that it was forced. Board-cards never appear in `ready` (§5); claiming one explicitly is judged by its own lane, because rollup state is a view, not a lock.
+- **Claim is a coordination primitive, not a shortcut.** A claim MUST succeed only when the card is claimable by the actor: its local canonical state (lane canonical, or `blocked` when the flag is set) is `todo`, every dep resolves to a card whose local canonical state is `done` or `archive`, and the selected holder field is empty or already the actor. A normal (human/accountability) claim selects `assignee`; an explicit delegate-mode claim selects `delegate` and leaves `assignee` intact. Success sets the selected field and moves the card to a `doing`-canonical lane (first substate if any), appending a Log entry: one atomic rewrite. A claim by the actor already named in the selected field while the card is `doing` is an idempotent no-op. Two actors racing for the same selected role get exactly one winner; assignee and delegate are different roles and may coexist. Anything else MUST fail with a conflict that names the reason (`assigned`, `blocked`, `not-ready`, `deps`) and MUST NOT modify the card. Tools MAY offer an explicit force override for human operators; hosted APIs MUST restrict that override to admin identities and record its use. A forced normal claim clears an existing delegate because the human is taking execution back; a forced delegate claim replaces only the delegate. Board-cards never appear in `ready` (§5); claiming one explicitly is judged by its own lane, because rollup state is a view, not a lock.
 - Every mutation appends a Log line; never rewrite existing Log lines. Comments append to `## Comments` and bump `updated` without a Log line (discourse isn't audit); checklist toggles and attachment changes DO log.
 - **Single-line fields stay single-line.** Actor names, log messages, comment text, blocked reasons, and attachment labels/urls are interpolated into structured markdown lines; tools MUST collapse whitespace/control characters (newlines included) to a single space in those values, so a crafted value cannot forge extra entries or sections. Actor names additionally drop `:`, because an entry splits on the first `": "` and an actor carrying one reads back truncated. Attachment urls additionally percent-encode `)` so the link syntax cannot be closed early.
 - **Multi-line body text stays inside its section.** Free-text written into a section (a description, say) and any caller-chosen section name MUST NOT be able to introduce a `## ` heading: tools MUST escape heading markers in that text, and MUST reject a section name that is not a single plain line. Otherwise a writer can splice a second `## Log` ahead of the real one, and since section-aware appends target the *first* matching heading, every later entry lands in the forged section: the append-only Log becomes attacker-chosen, and anything derived from it (such as a card's creator) reports whatever the forged entry says. `## Log` is never a valid target for a checklist item.
@@ -249,8 +286,7 @@ Expected files record, per board: lint findings (rule ids + card ids), per-card 
 
 ## 13. Future (non-normative)
 
-The card-frontmatter names `due`, `start`, `estimate`, `spent`, `watchers`,
-`relates`, and `weight` are reserved for future botflow semantics. Implementations
+The card-frontmatter names `spent`, `watchers`, `relates`, and `weight` are reserved for future botflow semantics. Implementations
 MUST preserve them as unknown keys today and SHOULD warn before assigning unrelated
 local meanings to them.
 

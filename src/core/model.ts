@@ -97,8 +97,16 @@ export interface Card {
   boardPath: string | null;
   labels: string[];
   assignee: string | null;
+  /** Accountable human and executing agent are distinct roles. */
+  delegate: string | null;
   priority: string | null;
   deps: string[];
+  start: string | null;
+  due: string | null;
+  /** Unitless board-local effort points. */
+  estimate: number | null;
+  /** Suppress stale-card presentation without suppressing metrics. */
+  evergreen: boolean;
   /** Card-art cover: an image url, 'none' to suppress, or null (viewers fall
    *  back to the first image attachment). */
   cover: string | null;

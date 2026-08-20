@@ -5,8 +5,9 @@ import type { Analysis, BoardAnalysis } from './analyze.ts';
 import { lintBoard } from './analyze.ts';
 import { parseBody } from './body.ts';
 import type { BoardNode, Card, Tree } from './model.ts';
+import { boardFlowMetrics, cardFlowMetrics } from './metrics.ts';
 
-export function cardJson(card: Card, node: BoardNode, ba: BoardAnalysis): Record<string, unknown> {
+export function cardJson(card: Card, node: BoardNode, ba: BoardAnalysis, nowValue: number | Date = Date.now()): Record<string, unknown> {
   const parsed = parseBody(card.body);
   return {
     id: card.id,
@@ -20,8 +21,13 @@ export function cardJson(card: Card, node: BoardNode, ba: BoardAnalysis): Record
     child: card.type === 'board' ? (node.childKeyByCard.get(card.id) ?? null) : undefined,
     labels: card.labels,
     assignee: card.assignee,
+    delegate: card.delegate,
     priority: card.priority,
     deps: card.deps,
+    start: card.start,
+    due: card.due,
+    estimate: card.estimate,
+    evergreen: card.evergreen,
     blocked: card.blocked,
     cover: card.cover === 'none' ? null : (card.cover ?? parsed.images[0] ?? null),
     // Whether a viewer may supply art of its own. `cover` alone cannot say:
@@ -41,16 +47,17 @@ export function cardJson(card: Card, node: BoardNode, ba: BoardAnalysis): Record
     author: /^created\b/.test(parsed.log[0]?.text ?? '') ? (parsed.log[0]?.actor ?? null) : null,
     created: card.created,
     updated: card.updated,
+    metrics: cardFlowMetrics(card, node.board, ba.canonical.get(card.id) ?? 'todo', nowValue),
     file: card.file,
   };
 }
 
 /** Detail view: cardJson plus the raw body and its structured parse. */
-export function cardDetailJson(card: Card, node: BoardNode, ba: BoardAnalysis): Record<string, unknown> {
-  return { ...cardJson(card, node, ba), body: card.body, parsed: parseBody(card.body) };
+export function cardDetailJson(card: Card, node: BoardNode, ba: BoardAnalysis, nowValue: number | Date = Date.now()): Record<string, unknown> {
+  return { ...cardJson(card, node, ba, nowValue), body: card.body, parsed: parseBody(card.body) };
 }
 
-export function boardJson(tree: Tree, analysis: Analysis, key = '.'): Record<string, unknown> {
+export function boardJson(tree: Tree, analysis: Analysis, key = '.', nowValue: number | Date = Date.now()): Record<string, unknown> {
   const node = tree.boards.get(key)!;
   const ba = analysis.boards.get(key)!;
   return {
@@ -59,6 +66,7 @@ export function boardJson(tree: Tree, analysis: Analysis, key = '.'): Record<str
     ids: node.board.config.ids,
     cards: node.board.cards.length,
     progress: ba.progress,
+    effort: ba.effort,
     distribution: ba.distribution,
     ready: ba.ready,
     lanes: node.board.config.lanes.map((lane) => ({
@@ -68,8 +76,10 @@ export function boardJson(tree: Tree, analysis: Analysis, key = '.'): Record<str
       substates: lane.substates,
       order: lane.order,
       wip: lane.wip,
-      cards: node.board.cards.filter((c) => c.laneId === lane.id).map((c) => cardJson(c, node, ba)),
+      estimate: node.board.cards.filter((c) => c.laneId === lane.id).reduce((sum, card) => sum + (card.estimate ?? 0), 0),
+      cards: node.board.cards.filter((c) => c.laneId === lane.id).map((c) => cardJson(c, node, ba, nowValue)),
     })),
+    flow: boardFlowMetrics(node.board, nowValue),
     findings: lintBoard(node, ba),
   };
 }
@@ -81,6 +91,7 @@ export function rollupJson(tree: Tree, analysis: Analysis, key = '.'): Record<st
     name: node.board.config.name,
     key,
     progress: ba.progress,
+    effort: ba.effort,
     distribution: ba.distribution,
     boards: node.board.cards
       .filter((c) => c.type === 'board')

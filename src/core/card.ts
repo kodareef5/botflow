@@ -3,9 +3,11 @@
 import type { YamlValue } from './yaml.ts';
 import type { Card, Finding } from './model.ts';
 import { finding } from './model.ts';
+import { validCardDate, validEstimate } from './fields.ts';
 
 const KNOWN_KEYS = new Set([
-  'id', 'title', 'lane', 'type', 'board', 'labels', 'assignee', 'priority', 'deps', 'cover', 'blocked', 'created', 'updated',
+  'id', 'title', 'lane', 'type', 'board', 'labels', 'assignee', 'delegate', 'priority', 'deps',
+  'start', 'due', 'estimate', 'evergreen', 'cover', 'blocked', 'created', 'updated',
 ]);
 
 const PRIORITY_RE = /^p[0-3]$/;
@@ -88,6 +90,34 @@ export function parseCard(value: YamlValue, fileBase: string, file: string, body
     else findings.push(finding('schema', id, `priority must be p0–p3, got ${JSON.stringify(m['priority'])}`));
   }
 
+  const dateField = (key: 'start' | 'due'): string | null => {
+    const value = m[key];
+    if (value === undefined) return null;
+    if (typeof value === 'string' && validCardDate(value)) return value;
+    findings.push(finding('schema', id, `${key} must be YYYY-MM-DD or a UTC ISO datetime, got ${JSON.stringify(value)}`));
+    return null;
+  };
+
+  let estimate: number | null = null;
+  if (m['estimate'] !== undefined) {
+    if (validEstimate(m['estimate'])) estimate = m['estimate'];
+    else findings.push(finding('schema', id, `estimate must be a positive integer, got ${JSON.stringify(m['estimate'])}`));
+  }
+
+  let evergreen = false;
+  if (m['evergreen'] !== undefined) {
+    if (typeof m['evergreen'] === 'boolean') evergreen = m['evergreen'];
+    else findings.push(finding('schema', id, `evergreen must be true or false, got ${JSON.stringify(m['evergreen'])}`));
+  }
+
+  const actorField = (key: 'assignee' | 'delegate'): string | null => {
+    const value = m[key];
+    if (value === undefined) return null;
+    if (typeof value === 'string' && value !== '') return value;
+    findings.push(finding('schema', id, `${key} must be a non-empty string, got ${JSON.stringify(value)}`));
+    return null;
+  };
+
   const extra: Record<string, unknown> = {};
   for (const key of Object.keys(m)) {
     if (!KNOWN_KEYS.has(key)) {
@@ -104,9 +134,14 @@ export function parseCard(value: YamlValue, fileBase: string, file: string, body
     type,
     boardPath,
     labels,
-    assignee: optString(m['assignee']),
+    assignee: actorField('assignee'),
+    delegate: actorField('delegate'),
     priority,
     deps,
+    start: dateField('start'),
+    due: dateField('due'),
+    estimate,
+    evergreen,
     cover: optString(m['cover']),
     blocked: optString(m['blocked']),
     created: optString(m['created']),

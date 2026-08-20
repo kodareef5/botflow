@@ -5,6 +5,7 @@
 import type { BoardConfig, Card, Lane, LoadedBoard } from './model.ts';
 import { addAttachmentLine, appendToSection, parseBody, removeAttachmentLine, setChecklistItem, setSection } from './body.ts';
 import { emitScalar } from './emit.ts';
+import { validCardDate, validEstimate } from './fields.ts';
 import { newHashId, nextSeqId, slugify } from './ids.ts';
 import { logMutation, nowDate, nowDateTime, sanitizeActor, sanitizeBlock, sanitizeInline, sanitizeSectionName, sanitizeUrl } from './write.ts';
 
@@ -134,6 +135,11 @@ export interface AddOptions {
   priority?: string | undefined;
   deps?: string[] | undefined;
   assignee?: string | undefined;
+  delegate?: string | undefined;
+  start?: string | undefined;
+  due?: string | undefined;
+  estimate?: number | undefined;
+  evergreen?: boolean | undefined;
   actor: string;
 }
 
@@ -146,6 +152,24 @@ function checkedPriority(value: string | null | undefined): string | null | unde
   if (value === undefined || value === null || value === '') return value === '' ? null : value;
   if (!PRIORITY_RE.test(value)) throw new UsageError(`priority must be p0, p1, p2 or p3 (got "${value}")`);
   return value;
+}
+
+function checkedDate(value: string | null | undefined, field: 'start' | 'due'): string | null | undefined {
+  if (value === undefined || value === null || value === '') return value === '' ? null : value;
+  if (!validCardDate(value)) throw new UsageError(`${field} must be YYYY-MM-DD or a UTC ISO datetime`);
+  return value;
+}
+
+function checkedEstimate(value: number | null | undefined): number | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (!validEstimate(value)) throw new UsageError('estimate must be a positive integer');
+  return value;
+}
+
+function cleanActorField(value: string | null | undefined): string | null | undefined {
+  if (value === undefined || value === null) return value;
+  const clean = sanitizeActor(value);
+  return clean === '' ? null : clean;
 }
 
 export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
@@ -170,9 +194,14 @@ export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
     type,
     boardPath: type === 'board' ? opts.boardPath! : null,
     labels: opts.labels ?? [],
-    assignee: opts.assignee ?? null,
+    assignee: cleanActorField(opts.assignee) ?? null,
+    delegate: cleanActorField(opts.delegate) ?? null,
     priority: checkedPriority(opts.priority) ?? null,
     deps: opts.deps ?? [],
+    start: checkedDate(opts.start, 'start') ?? null,
+    due: checkedDate(opts.due, 'due') ?? null,
+    estimate: checkedEstimate(opts.estimate) ?? null,
+    evergreen: opts.evergreen === true,
     cover: null,
     blocked: null,
     created: nowDate(),
@@ -239,12 +268,13 @@ function localCanonical(board: LoadedBoard, card: Card): string {
   return card.blocked !== null && !closed ? 'blocked' : laneCanonical;
 }
 
+export type ClaimMode = 'assign' | 'delegate';
 export type Claimability = { ok: true; alreadyYours: boolean } | { ok: false; conflict: ClaimConflict };
 
 /** Claim is a coordination primitive (SPEC §12): it succeeds only for a card
  *  that is ready (todo, unblocked, deps done) and unassigned, or already
  *  assigned to the claiming actor. Everything else is a conflict. */
-export function claimability(board: LoadedBoard, card: Card, actor: string): Claimability {
+export function claimability(board: LoadedBoard, card: Card, actor: string, mode: ClaimMode = 'assign'): Claimability {
   const position = positionLabel({ laneId: card.laneId, substate: card.substate });
   const fail = (message: string, reason: ClaimConflict['reason'], holder: string | null = null): Claimability => ({
     ok: false,
@@ -252,10 +282,12 @@ export function claimability(board: LoadedBoard, card: Card, actor: string): Cla
   });
 
   const state = localCanonical(board, card);
-  if (card.assignee !== null && card.assignee !== actor) {
-    return fail(`already assigned to ${card.assignee} (${position})`, 'assigned', card.assignee);
+  const holder = mode === 'delegate' ? card.delegate : card.assignee;
+  const role = mode === 'delegate' ? 'delegated' : 'assigned';
+  if (holder !== null && holder !== actor) {
+    return fail(`already ${role} to ${holder} (${position})`, 'assigned', holder);
   }
-  if (card.assignee === actor && state === 'doing') return { ok: true, alreadyYours: true };
+  if (holder === actor && state === 'doing') return { ok: true, alreadyYours: true };
   if (state === 'blocked') return fail(`blocked: ${card.blocked}`, 'blocked');
   if (state !== 'todo') return fail(`not ready, it sits in ${position}`, 'not-ready');
   const unmet = card.deps.filter((dep) => {
@@ -268,21 +300,27 @@ export function claimability(board: LoadedBoard, card: Card, actor: string): Cla
   return { ok: true, alreadyYours: false };
 }
 
-export function opClaim(board: LoadedBoard, card: Card, actor: string, force = false): MoveResult {
-  const check = claimability(board, card, actor);
-  if (check.ok && check.alreadyYours) {
+export function opClaim(board: LoadedBoard, card: Card, actor: string, force = false, mode: ClaimMode = 'assign'): MoveResult {
+  const check = claimability(board, card, actor, mode);
+  const reclaimExecution = force && mode === 'assign' && card.delegate !== null;
+  if (check.ok && check.alreadyYours && !reclaimExecution) {
     const at = positionLabel({ laneId: card.laneId, substate: card.substate });
     return { card, from: at, to: at, warnings: [], alreadyYours: true };
   }
   if (!check.ok && !force) throw check.conflict;
-  const forced = !check.ok;
+  const forced = !check.ok || reclaimExecution;
   const lane = laneByCanonical(board.config, 'doing', 'claim into');
   const from = positionLabel({ laneId: card.laneId, substate: card.substate });
-  card.assignee = actor;
+  if (mode === 'delegate') card.delegate = actor;
+  else {
+    card.assignee = actor;
+    if (forced) card.delegate = null;
+  }
   card.laneId = lane.id;
   card.substate = lane.substates.length > 0 ? lane.substates[0]! : null;
   const to = positionLabel({ laneId: card.laneId, substate: card.substate });
-  const verb = forced ? 'claimed (forced)' : 'claimed';
+  const baseVerb = mode === 'delegate' ? 'delegated' : 'claimed';
+  const verb = forced ? `${baseVerb} (forced)` : baseVerb;
   logMutation(card, actor, from === to ? verb : `${verb}, moved ${from} → ${to}`);
   return { card, from, to, warnings: wipWarnings(board, card) };
 }
@@ -294,7 +332,7 @@ export function opClose(board: LoadedBoard, card: Card, actor: string, reason?: 
   card.substate = lane.substates.length > 0 ? lane.substates[lane.substates.length - 1]! : null;
   card.blocked = null;
   const to = positionLabel({ laneId: card.laneId, substate: card.substate });
-  logMutation(card, actor, `closed${reason ? `: ${reason}` : ''}`);
+  logMutation(card, actor, `closed${reason ? `: ${reason}` : ''}, moved ${from} → ${to}`);
   return { card, from, to, warnings: [] };
 }
 
@@ -317,7 +355,12 @@ export interface EditPatch {
   labels?: string[] | undefined;
   priority?: string | null | undefined;
   assignee?: string | null | undefined;
+  delegate?: string | null | undefined;
   deps?: string[] | undefined;
+  start?: string | null | undefined;
+  due?: string | null | undefined;
+  estimate?: number | null | undefined;
+  evergreen?: boolean | undefined;
   boardPath?: string | undefined;
   /** Image url, 'none' to suppress card art, or null to clear (auto fallback). */
   cover?: string | null | undefined;
@@ -338,12 +381,32 @@ export function opEdit(card: Card, patch: EditPatch, actor: string): Card {
     changed.push('priority');
   }
   if (patch.assignee !== undefined) {
-    card.assignee = patch.assignee;
+    card.assignee = cleanActorField(patch.assignee) ?? null;
     changed.push('assignee');
+  }
+  if (patch.delegate !== undefined) {
+    card.delegate = cleanActorField(patch.delegate) ?? null;
+    changed.push('delegate');
   }
   if (patch.deps !== undefined) {
     card.deps = patch.deps;
     changed.push('deps');
+  }
+  if (patch.start !== undefined) {
+    card.start = checkedDate(patch.start, 'start') ?? null;
+    changed.push('start');
+  }
+  if (patch.due !== undefined) {
+    card.due = checkedDate(patch.due, 'due') ?? null;
+    changed.push('due');
+  }
+  if (patch.estimate !== undefined) {
+    card.estimate = checkedEstimate(patch.estimate) ?? null;
+    changed.push('estimate');
+  }
+  if (patch.evergreen !== undefined) {
+    card.evergreen = patch.evergreen;
+    changed.push('evergreen');
   }
   if (patch.boardPath !== undefined) {
     if (card.type !== 'board') throw new UsageError('board path only applies to board-cards');

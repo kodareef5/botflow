@@ -19,6 +19,8 @@ export interface BoardAnalysis {
   ready: string[];
   /** Weighted done fraction over countable cards; null when nothing counts. */
   progress: number | null;
+  /** Optional estimate-weighted projection; never replaces structural progress. */
+  effort: { total: number; completed: number; progress: number | null };
   /** Semantic findings; combine with LoadedBoard.findings for the full lint. */
   findings: Finding[];
 }
@@ -179,20 +181,34 @@ export function analyzeBoard(board: LoadedBoard, lookup: ChildLookup): BoardAnal
   // Weighted progress (SPEC §7).
   let units = 0;
   let doneWeight = 0;
+  let estimateTotal = 0;
+  let estimateDone = 0;
   for (const card of board.cards) {
     const state = canonical.get(card.id)!;
     if (state === 'archive') continue;
     units++;
+    let fraction = 0;
     if (card.type === 'board') {
       const cp = childProgress.get(card.id) ?? null;
-      doneWeight += cp !== null ? cp : state === 'done' ? 1 : 0;
+      fraction = cp !== null ? cp : state === 'done' ? 1 : 0;
+      doneWeight += fraction;
     } else if (state === 'done') {
+      fraction = 1;
       doneWeight++;
+    }
+    if (card.estimate !== null) {
+      estimateTotal += card.estimate;
+      estimateDone += card.estimate * fraction;
     }
   }
   const progress = units === 0 ? null : doneWeight / units;
+  const effort = {
+    total: estimateTotal,
+    completed: estimateDone,
+    progress: estimateTotal === 0 ? null : estimateDone / estimateTotal,
+  };
 
-  return { canonical, distribution, ready, progress, findings };
+  return { canonical, distribution, ready, progress, effort, findings };
 }
 
 export function analyze(tree: Tree): Analysis {

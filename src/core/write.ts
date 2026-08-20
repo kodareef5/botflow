@@ -18,8 +18,13 @@ export function serializeCard(card: Card): string {
   }
   if (card.labels.length > 0) fm['labels'] = card.labels;
   if (card.assignee !== null) fm['assignee'] = card.assignee;
+  if (card.delegate !== null) fm['delegate'] = card.delegate;
   if (card.priority !== null) fm['priority'] = card.priority;
   if (card.deps.length > 0) fm['deps'] = card.deps;
+  if (card.start !== null) fm['start'] = card.start;
+  if (card.due !== null) fm['due'] = card.due;
+  if (card.estimate !== null) fm['estimate'] = card.estimate;
+  if (card.evergreen) fm['evergreen'] = true;
   if (card.cover !== null) fm['cover'] = card.cover;
   if (card.blocked !== null) fm['blocked'] = card.blocked;
   if (card.created !== null) fm['created'] = card.created;

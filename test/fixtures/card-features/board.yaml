@@ -1,0 +1,7 @@
+botflow: 0
+name: card features
+features: [dates, estimates, delegation, aging]
+lanes:
+  - id: todo
+  - id: doing
+  - id: done

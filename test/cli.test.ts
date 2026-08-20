@@ -71,6 +71,52 @@ test('cli: full card lifecycle', () => {
   assert.ok(!file.includes('\nblocked:'), 'blocked flag cleared on close');
 });
 
+test('cli: structured scheduling, effort, Evergreen, and delegation fields round-trip', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'botflow-fields-'));
+  ok(dir, 'init', '--name', 'fields');
+  ok(
+    dir,
+    'card', 'add', 'Scheduled work',
+    '--assignee', 'human-owner',
+    '--delegate', 'agent-a',
+    '--start', '2026-08-20T13:00Z',
+    '--due', '2026-08-24',
+    '--estimate', '8',
+    '--evergreen',
+  );
+  let shown = JSON.parse(ok(dir, 'card', 'show', '001', '--json')) as Record<string, unknown>;
+  assert.equal(shown['assignee'], 'human-owner');
+  assert.equal(shown['delegate'], 'agent-a');
+  assert.equal(shown['start'], '2026-08-20T13:00Z');
+  assert.equal(shown['due'], '2026-08-24');
+  assert.equal(shown['estimate'], 8);
+  assert.equal(shown['evergreen'], true);
+
+  ok(
+    dir,
+    'card', 'edit', '001',
+    '--delegate', 'none',
+    '--start', 'none',
+    '--due', '2026-08-30T18:30:00Z',
+    '--estimate', 'none',
+    '--evergreen', 'false',
+  );
+  shown = JSON.parse(ok(dir, 'card', 'show', '001', '--json')) as Record<string, unknown>;
+  assert.equal(shown['delegate'], null);
+  assert.equal(shown['start'], null);
+  assert.equal(shown['due'], '2026-08-30T18:30:00Z');
+  assert.equal(shown['estimate'], null);
+  assert.equal(shown['evergreen'], false);
+
+  assert.equal(bf(dir, 'card', 'add', 'Bad date', '--due', 'tomorrow').code, 1);
+  assert.equal(bf(dir, 'card', 'add', 'Bad estimate', '--estimate', '1.5').code, 1);
+
+  ok(dir, 'card', 'add', 'Delegate me');
+  const claimed = JSON.parse(ok(dir, 'card', 'claim', '002', '--delegate', '--json')) as Record<string, unknown>;
+  assert.equal(claimed['assignee'], null);
+  assert.equal(claimed['delegate'], 'test-agent');
+});
+
 test('cli: strict substates enforce one step at a time', () => {
   const dir = mkdtempSync(join(tmpdir(), 'botflow-'));
   ok(dir, 'init', '--name', 'strict');
@@ -100,11 +146,11 @@ test('cli: rewrites preserve unknown frontmatter keys and body', () => {
   const cardPath = join(dir, '.botflow', 'cards', '001-custom.md');
   writeFileSync(
     cardPath,
-    ['---', 'id: 001', 'title: Custom card', 'lane: todo', 'estimate: 3d', '---', '## Description', 'Hand-written body.', ''].join('\n'),
+    ['---', 'id: 001', 'title: Custom card', 'lane: todo', 'vendor_estimate: 3d', '---', '## Description', 'Hand-written body.', ''].join('\n'),
   );
   ok(dir, 'card', 'edit', '001', '--title', 'Custom card v2', '--priority', 'p2');
   const rewritten = readFileSync(cardPath, 'utf8');
-  assert.ok(rewritten.includes('estimate: 3d'), 'unknown key preserved');
+  assert.ok(rewritten.includes('vendor_estimate: 3d'), 'unknown key preserved');
   assert.ok(rewritten.includes('Hand-written body.'), 'body preserved');
   assert.ok(rewritten.includes('title: Custom card v2'));
   assert.ok(rewritten.includes('priority: p2'));

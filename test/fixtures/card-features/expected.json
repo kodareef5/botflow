@@ -1,0 +1,22 @@
+{
+  "boards": {
+    ".": {
+      "lint": [],
+      "cards": { "001": "doing" },
+      "distribution": { "wishlist": 0, "todo": 0, "doing": 1, "blocked": 0, "done": 0, "archive": 0 },
+      "ready": [],
+      "progress": 0,
+      "effort": { "total": 5, "completed": 0, "progress": 0 },
+      "fields": {
+        "001": {
+          "assignee": "sam",
+          "delegate": "agent-1",
+          "start": "2026-08-02",
+          "due": "2026-08-20",
+          "estimate": 5,
+          "evergreen": true
+        }
+      }
+    }
+  }
+}

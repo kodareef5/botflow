@@ -36,6 +36,17 @@ export {
 } from './body.ts';
 export { boardJson as coreBoardJson, cardDetailJson, cardJson as coreCardJson, rollupJson as coreRollupJson } from './json.ts';
 export { emitMap, emitScalar } from './emit.ts';
+export { validCardDate, validEstimate } from './fields.ts';
+export {
+  boardFlowMetrics,
+  cardFlowEvents,
+  cardFlowMetrics,
+  metricTime,
+  type BoardFlowMetrics,
+  type CardFlowMetrics,
+  type FlowEvent,
+  type StagnationSignal,
+} from './metrics.ts';
 export { appendLogLine, logMutation, nowDate, nowDateTime, sanitizeInline, sanitizeUrl, serializeCard } from './write.ts';
 export { newHashId, nextSeqId, slugify } from './ids.ts';
 export { boardFromDocuments, parseCardDocument, singleBoardTree, type BoardDocument } from './docs.ts';
@@ -57,6 +68,7 @@ export {
   type AddOptions,
   type EditPatch,
   type MoveResult,
+  type ClaimMode,
   type Position,
 } from './ops.ts';
 export {

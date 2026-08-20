@@ -76,6 +76,40 @@ test('a todo card pre-assigned to the actor is claimable by them, by nobody else
   assert.equal(res.card.laneId, 'doing');
 });
 
+test('delegate claim preserves the accountable assignee and has its own race', () => {
+  const b = board([card('001', { lane: 'todo', assignee: 'human-owner' })]);
+  const res = opClaim(b, b.cards[0]!, 'agent-a', false, 'delegate');
+  assert.equal(res.card.assignee, 'human-owner');
+  assert.equal(res.card.delegate, 'agent-a');
+  assert.equal(res.card.laneId, 'doing');
+  assert.match(res.card.body, /delegated, moved todo → doing/);
+  assert.equal(claimability(b, b.cards[0]!, 'agent-a', 'delegate').ok, true, 'delegate re-claim is idempotent');
+  const conflict = claimability(b, b.cards[0]!, 'agent-b', 'delegate');
+  assert.equal(conflict.ok, false);
+  assert.equal((conflict as { ok: false; conflict: ClaimConflict }).conflict.holder, 'agent-a');
+});
+
+test('forced human claim clears execution delegation while forced delegation keeps ownership', () => {
+  const b = board([card('001', { lane: 'doing', assignee: 'human-a', delegate: 'agent-a' })]);
+  opClaim(b, b.cards[0]!, 'agent-b', true, 'delegate');
+  assert.equal(b.cards[0]!.assignee, 'human-a');
+  assert.equal(b.cards[0]!.delegate, 'agent-b');
+  assert.match(b.cards[0]!.body, /delegated \(forced\)/);
+
+  opClaim(b, b.cards[0]!, 'human-b', true, 'assign');
+  assert.equal(b.cards[0]!.assignee, 'human-b');
+  assert.equal(b.cards[0]!.delegate, null);
+});
+
+test('an existing assignee can force-take execution back from a delegate', () => {
+  const b = board([card('001', { lane: 'doing', assignee: 'human-a', delegate: 'agent-a' })]);
+  const res = opClaim(b, b.cards[0]!, 'human-a', true, 'assign');
+  assert.equal(res.alreadyYours, undefined);
+  assert.equal(res.card.assignee, 'human-a');
+  assert.equal(res.card.delegate, null);
+  assert.match(res.card.body, /claimed \(forced\)/);
+});
+
 test('wishlist and done cards are "not-ready" conflicts', () => {
   const b = board([card('001', { lane: 'wishlist' }), card('002', { lane: 'done' })]);
   assert.equal(conflictOf(b, '001', 'a').reason, 'not-ready');

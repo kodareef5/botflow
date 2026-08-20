@@ -61,10 +61,18 @@ test('mcp: handshake, tools/list, lifecycle via tools/call', async () => {
       assert.ok(names.includes(expected), `tool ${expected}`);
     }
 
-    const added = await callTool('card_add', { title: 'From MCP', labels: ['mcp'], priority: 'p1' });
+    const added = await callTool('card_add', {
+      title: 'From MCP', labels: ['mcp'], priority: 'p1', start: '2026-08-20',
+      due: '2026-08-24T12:30Z', estimate: 5, evergreen: true,
+    });
     assert.equal(added.isError, false);
     const { id } = JSON.parse(added.text) as { id: string };
     assert.equal(id, '001');
+    const scheduled = JSON.parse((await callTool('card_show', { id })).text) as Record<string, unknown>;
+    assert.equal(scheduled['start'], '2026-08-20');
+    assert.equal(scheduled['due'], '2026-08-24T12:30Z');
+    assert.equal(scheduled['estimate'], 5);
+    assert.equal(scheduled['evergreen'], true);
 
     const claim = await callTool('card_claim', { id });
     assert.equal(claim.isError, false);
@@ -83,6 +91,14 @@ test('mcp: handshake, tools/list, lifecycle via tools/call', async () => {
     const bad = await callTool('card_move', { id: '999', to: 'doing' });
     assert.equal(bad.isError, true);
     assert.match(bad.text, /no card/);
+
+    const delegated = await callTool('card_add', { title: 'Delegated from MCP' });
+    const delegatedId = (JSON.parse(delegated.text) as { id: string }).id;
+    const delegateClaim = await callTool('card_claim', { id: delegatedId, delegate: true });
+    assert.equal(delegateClaim.isError, false);
+    const delegateResult = JSON.parse(delegateClaim.text) as { assignee: string | null; delegate: string | null };
+    assert.equal(delegateResult.assignee, null);
+    assert.equal(delegateResult.delegate, 'mcp-agent');
 
     const unknown = (await request('nope/nothing')) as { error: { code: number } };
     assert.equal(unknown.error.code, -32601);

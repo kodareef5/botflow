@@ -31,6 +31,7 @@ import {
   opUnblock,
   type AddOptions,
   type EditPatch,
+  type ClaimMode,
   type MoveResult,
 } from './ops.ts';
 
@@ -161,9 +162,9 @@ export function moveCard(root: string, id: string, spec: string, actor: string, 
   });
 }
 
-export function claimCard(root: string, id: string, actor: string, force = false): MoveResult {
+export function claimCard(root: string, id: string, actor: string, force = false, mode: ClaimMode = 'assign'): MoveResult {
   return mutateCard(root, (board) => {
-    const res = opClaim(board, getCard(board, id), actor, force);
+    const res = opClaim(board, getCard(board, id), actor, force, mode);
     if (!res.alreadyYours) writeCard(root, res.card);
     return res;
   });

@@ -553,11 +553,12 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           return { id, from: res.from, to: res.to, warnings: res.warnings };
         }
         case 'claim': {
-          const res = opClaim(board, card, actor, args['force'] === true);
-          if (res.alreadyYours) return { id, at: res.to, assignee: card.assignee, alreadyYours: true };
+          const mode = args['delegate'] === true ? 'delegate' : 'assign';
+          const res = opClaim(board, card, actor, args['force'] === true, mode);
+          if (res.alreadyYours) return { id, at: res.to, assignee: card.assignee, delegate: card.delegate, alreadyYours: true };
           this.persistCard(card);
           this.event(actor, 'claim', id, `${res.from} → ${res.to}${args['force'] === true ? ' (forced)' : ''}`);
-          return { id, from: res.from, to: res.to, assignee: card.assignee, warnings: res.warnings };
+          return { id, from: res.from, to: res.to, assignee: card.assignee, delegate: card.delegate, warnings: res.warnings };
         }
         case 'close': {
           const reason = typeof args['reason'] === 'string' ? (args['reason'] as string) : undefined;
@@ -616,7 +617,24 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           if ('labels' in args && Array.isArray(args['labels'])) patch.labels = (args['labels'] as unknown[]).map(String);
           if ('priority' in args) patch.priority = args['priority'] === null ? null : String(args['priority']);
           if ('assignee' in args) patch.assignee = args['assignee'] === null ? null : String(args['assignee']);
+          if ('delegate' in args) patch.delegate = args['delegate'] === null ? null : String(args['delegate']);
           if ('deps' in args && Array.isArray(args['deps'])) patch.deps = (args['deps'] as unknown[]).map(String);
+          if ('start' in args) {
+            if (args['start'] !== null && typeof args['start'] !== 'string') throw new UsageError('start must be a string or null');
+            patch.start = args['start'];
+          }
+          if ('due' in args) {
+            if (args['due'] !== null && typeof args['due'] !== 'string') throw new UsageError('due must be a string or null');
+            patch.due = args['due'];
+          }
+          if ('estimate' in args) {
+            if (args['estimate'] !== null && typeof args['estimate'] !== 'number') throw new UsageError('estimate must be a number or null');
+            patch.estimate = args['estimate'];
+          }
+          if ('evergreen' in args) {
+            if (typeof args['evergreen'] !== 'boolean') throw new UsageError('evergreen must be a boolean');
+            patch.evergreen = args['evergreen'];
+          }
           if ('cover' in args) patch.cover = args['cover'] === null ? null : String(args['cover']);
           opEdit(card, patch, actor);
           this.persistCard(card);

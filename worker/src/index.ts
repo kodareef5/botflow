@@ -1068,6 +1068,11 @@ export default {
         for (const field of ['labels', 'deps']) {
           if (body[field] !== undefined && !Array.isArray(body[field])) return json({ error: `${field} must be a list` }, 400);
         }
+        for (const field of ['lane', 'priority', 'assignee', 'delegate', 'start', 'due']) {
+          if (body[field] !== undefined && typeof body[field] !== 'string') return json({ error: `${field} must be a string` }, 400);
+        }
+        if (body['estimate'] !== undefined && typeof body['estimate'] !== 'number') return json({ error: 'estimate must be a number' }, 400);
+        if (body['evergreen'] !== undefined && typeof body['evergreen'] !== 'boolean') return json({ error: 'evergreen must be a boolean' }, 400);
         // project: refs must point at projects nested beneath this board; the
         // DO enforces this at resolution time too, this is the friendly error.
         if (typeof body['board'] === 'string' && body['board'].startsWith('project:')) {
@@ -1086,6 +1091,11 @@ export default {
             priority: typeof body['priority'] === 'string' ? (body['priority'] as string) : undefined,
             deps: Array.isArray(body['deps']) ? (body['deps'] as unknown[]).map(String) : undefined,
             assignee: typeof body['assignee'] === 'string' ? (body['assignee'] as string) : undefined,
+            delegate: typeof body['delegate'] === 'string' ? (body['delegate'] as string) : undefined,
+            start: typeof body['start'] === 'string' ? (body['start'] as string) : undefined,
+            due: typeof body['due'] === 'string' ? (body['due'] as string) : undefined,
+            estimate: body['estimate'] as number | undefined,
+            evergreen: body['evergreen'] as boolean | undefined,
           },
           actor,
         );
@@ -1147,7 +1157,8 @@ export default {
             const att = detail?.parsed?.attachments?.find((a) => a.index === Number(body['index']));
             if (att && att.url.startsWith(`/files/${pid}/${cid}/`)) uploadedUrl = att.url;
           }
-          const res = await stub.action(action, cid, body, actor);
+          const actionArgs = action === 'claim' ? { ...body, delegate: identity.kind === 'bot' } : body;
+          const res = await stub.action(action, cid, actionArgs, actor);
           if ('error' in res) return json(res, 'conflict' in res ? 409 : 400);
           if (action === 'attach') drainUnfurls();
           if (uploadedUrl !== null) await env.ATTACHMENTS!.delete(uploadedUrl.slice('/files/'.length)).catch(() => {});

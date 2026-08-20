@@ -45,6 +45,7 @@ interface Tool {
 
 const str = { type: 'string' } as const;
 const bool = { type: 'boolean' } as const;
+const positiveInt = { type: 'integer', minimum: 1 } as const;
 const strList = { type: 'array', items: { type: 'string' } } as const;
 
 function schema(required: string[], props: Json): Json {
@@ -72,6 +73,13 @@ function buildTools(root: string, defaultActor: string): Tool[] {
     if (v === undefined) return undefined;
     if (typeof v !== 'string' || !PRIORITIES.includes(v)) {
       throw new UsageError(`invalid priority: expected one of ${PRIORITIES.join(', ')}`);
+    }
+    return v;
+  };
+  const positiveIntOf = (v: unknown, name: string): number | undefined => {
+    if (v === undefined) return undefined;
+    if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 1) {
+      throw new UsageError(`invalid ${name}: expected a positive integer`);
     }
     return v;
   };
@@ -142,7 +150,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       inputSchema: schema(['title'], {
         title: str, lane: str, type: { type: 'string', enum: ['task', 'board'] }, board_path: str,
         labels: strList, priority: { type: 'string', enum: PRIORITIES }, deps: strList,
-        assignee: str, actor: str,
+        assignee: str, delegate: str, start: str, due: str, estimate: positiveInt, evergreen: bool, actor: str,
       }),
       run: (args) => {
         const card = addCard(root, {
@@ -154,6 +162,11 @@ function buildTools(root: string, defaultActor: string): Tool[] {
           priority: priorityOf(args['priority']),
           deps: list(args['deps'], 'deps'),
           assignee: args['assignee'] === undefined ? undefined : strOf(args['assignee'], 'assignee'),
+          delegate: args['delegate'] === undefined ? undefined : strOf(args['delegate'], 'delegate'),
+          start: args['start'] === undefined ? undefined : strOf(args['start'], 'start'),
+          due: args['due'] === undefined ? undefined : strOf(args['due'], 'due'),
+          estimate: positiveIntOf(args['estimate'], 'estimate'),
+          evergreen: args['evergreen'] === true,
           actor: actorOf(args),
         });
         return { id: card.id, file: card.file, lane: card.laneId };
@@ -171,12 +184,12 @@ function buildTools(root: string, defaultActor: string): Tool[] {
     {
       name: 'card_claim',
       description:
-        'Atomically claim a card: succeeds only if it is ready (todo, unblocked, deps done) and unassigned, then sets assignee to the actor and moves it into doing. Anything else is a conflict error; force overrides.',
-      inputSchema: schema(['id'], { id: str, actor: str, force: bool }),
+        'Atomically claim a ready card and move it into doing. By default sets accountable assignee; delegate:true sets the executing agent without replacing assignee. Same-role races have one winner; force overrides.',
+      inputSchema: schema(['id'], { id: str, actor: str, force: bool, delegate: bool }),
       run: (args) => {
-        const res = claimCard(root, strOf(args['id'], 'id'), actorOf(args), args['force'] === true);
-        if (res.alreadyYours) return { id: res.card.id, at: res.to, assignee: res.card.assignee, alreadyYours: true };
-        return { id: res.card.id, from: res.from, to: res.to, assignee: res.card.assignee, warnings: res.warnings };
+        const res = claimCard(root, strOf(args['id'], 'id'), actorOf(args), args['force'] === true, args['delegate'] === true ? 'delegate' : 'assign');
+        if (res.alreadyYours) return { id: res.card.id, at: res.to, assignee: res.card.assignee, delegate: res.card.delegate, alreadyYours: true };
+        return { id: res.card.id, from: res.from, to: res.to, assignee: res.card.assignee, delegate: res.card.delegate, warnings: res.warnings };
       },
     },
     {
@@ -208,10 +221,12 @@ function buildTools(root: string, defaultActor: string): Tool[] {
     },
     {
       name: 'card_edit',
-      description: 'Edit card fields. Pass null priority/assignee to clear them.',
+      description: 'Edit card fields. Pass null for nullable fields to clear them.',
       inputSchema: schema(['id'], {
         id: str, title: str, labels: strList, priority: { type: ['string', 'null'], enum: [...PRIORITIES, null] },
-        assignee: { type: ['string', 'null'] }, deps: strList, board_path: str,
+        assignee: { type: ['string', 'null'] }, delegate: { type: ['string', 'null'] }, deps: strList,
+        start: { type: ['string', 'null'] }, due: { type: ['string', 'null'] },
+        estimate: { type: ['integer', 'null'], minimum: 1 }, evergreen: bool, board_path: str,
         cover: { type: ['string', 'null'] }, actor: str,
       }),
       run: (args) => {
@@ -220,7 +235,15 @@ function buildTools(root: string, defaultActor: string): Tool[] {
         if ('labels' in args) patch.labels = list(args['labels'], 'labels') ?? [];
         if ('priority' in args) patch.priority = args['priority'] === null ? null : priorityOf(args['priority']) ?? null;
         if ('assignee' in args) patch.assignee = args['assignee'] === null ? null : strOf(args['assignee'], 'assignee');
+        if ('delegate' in args) patch.delegate = args['delegate'] === null ? null : strOf(args['delegate'], 'delegate');
         if ('deps' in args) patch.deps = list(args['deps'], 'deps') ?? [];
+        if ('start' in args) patch.start = args['start'] === null ? null : strOf(args['start'], 'start');
+        if ('due' in args) patch.due = args['due'] === null ? null : strOf(args['due'], 'due');
+        if ('estimate' in args) patch.estimate = args['estimate'] === null ? null : positiveIntOf(args['estimate'], 'estimate')!;
+        if ('evergreen' in args) {
+          if (typeof args['evergreen'] !== 'boolean') throw new UsageError('invalid evergreen: expected a boolean');
+          patch.evergreen = args['evergreen'];
+        }
         if ('board_path' in args) patch.boardPath = opt(args['board_path']);
         if ('cover' in args) patch.cover = args['cover'] === null ? null : strOf(args['cover'], 'cover');
         const card = editCard(root, strOf(args['id'], 'id'), patch, actorOf(args));

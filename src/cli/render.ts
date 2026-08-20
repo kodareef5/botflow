@@ -6,12 +6,14 @@ import type { Card, Finding, Lane } from '../core/model.ts';
 import { CANONICAL_STATES } from '../core/model.ts';
 import { lintBoard } from '../core/analyze.ts';
 import { parseBody } from '../core/body.ts';
+import { cardFlowMetrics } from '../core/metrics.ts';
 
 export const pct = (p: number | null): string => (p === null ? '·' : `${Math.round(p * 100)}%`);
 
-function cardAnnotations(card: Card, node: BoardNode, ba: BoardAnalysis, readySet: Set<string>): string {
+function cardAnnotations(card: Card, node: BoardNode, ba: BoardAnalysis, readySet: Set<string>, now: number): string {
   const parts: string[] = [];
   const parsed = parseBody(card.body);
+  const metrics = cardFlowMetrics(card, node.board, ba.canonical.get(card.id) ?? 'todo', now);
   if (parsed.checklist.total > 0) parts.push(`✓${parsed.checklist.done}/${parsed.checklist.total}`);
   if (parsed.comments.length > 0) parts.push(`🗨${parsed.comments.length}`);
   if (card.type === 'board') {
@@ -20,39 +22,45 @@ function cardAnnotations(card: Card, node: BoardNode, ba: BoardAnalysis, readySe
     parts.push(`[${ba.canonical.get(card.id)}]`);
   }
   if (card.assignee) parts.push(`@${card.assignee}`);
+  if (card.delegate) parts.push(`delegate @${card.delegate}`);
   if (card.priority) parts.push(card.priority);
+  if (card.estimate !== null) parts.push(`est ${card.estimate}`);
+  if (card.due !== null && metrics.due !== null) parts.push(`due ${card.due} (${metrics.due.status})`);
   if (card.labels.length > 0) parts.push(card.labels.map((l) => `#${l}`).join(' '));
   if (card.blocked) parts.push(`⛔ ${card.blocked}`);
   if (card.deps.length > 0) parts.push(`deps→${card.deps.join(',')}`);
+  if (metrics.stagnation.dots > 0) parts.push(`${'●'.repeat(metrics.stagnation.dots)} ${metrics.stagnation.days}d in lane`);
+  if (metrics.stalled) parts.push(`⚠ stalled ${metrics.idleDays}d`);
   if (readySet.has(card.id)) parts.push('▶ ready');
   return parts.length > 0 ? '  ' + parts.join(' · ') : '';
 }
 
-function laneHeader(lane: Lane, count: number): string {
+function laneHeader(lane: Lane, count: number, estimate: number): string {
   const wip = lane.wip !== null ? `${count}/${lane.wip}${count > lane.wip ? ' WIP breach!' : ''}` : String(count);
   const sub = lane.substates.length > 0 ? ` [${lane.substates.join(' → ')}${lane.order === 'strict' ? ', strict' : ''}]` : '';
   const canon = lane.canonical === lane.id ? '' : ` (→${lane.canonical})`;
-  return `━━ ${lane.name}${canon}${sub} · ${wip}`;
+  return `━━ ${lane.name}${canon}${sub} · ${wip}${estimate > 0 ? ` · est ${estimate}` : ''}`;
 }
 
 export function renderBoard(tree: Tree, analysis: Analysis): string {
   const node = tree.boards.get('.')!;
   const ba = analysis.boards.get('.')!;
   const readySet = new Set(ba.ready);
+  const now = Date.now();
   const lines: string[] = [];
   const findings = lintBoard(node, ba);
   const errors = findings.filter((f) => f.severity === 'error').length;
   const warnings = findings.filter((f) => f.severity === 'warning').length;
 
-  lines.push(`▤ ${node.board.config.name} · ${node.board.cards.length} cards · progress ${pct(ba.progress)}`);
+  lines.push(`▤ ${node.board.config.name} · ${node.board.cards.length} cards · structural ${pct(ba.progress)}${ba.effort.progress === null ? '' : ` · effort ${pct(ba.effort.progress)}`}`);
   if (errors + warnings > 0) lines.push(`  lint: ${errors} error(s), ${warnings} warning(s), run \`botflow lint\``);
   lines.push('');
 
   const known = new Set(node.board.config.lanes.map((l) => l.id));
   for (const lane of node.board.config.lanes) {
     const laneCards = node.board.cards.filter((c) => c.laneId === lane.id);
-    lines.push(laneHeader(lane, laneCards.length));
-    const emit = (card: Card) => lines.push(`  ${card.id}  ${card.title}${cardAnnotations(card, node, ba, readySet)}`);
+    lines.push(laneHeader(lane, laneCards.length, laneCards.reduce((sum, card) => sum + (card.estimate ?? 0), 0)));
+    const emit = (card: Card) => lines.push(`  ${card.id}  ${card.title}${cardAnnotations(card, node, ba, readySet, now)}`);
     if (lane.substates.length > 0) {
       for (const sub of lane.substates) {
         const subCards = laneCards.filter((c) => c.substate === sub || (sub === lane.substates[0] && c.substate === null));
@@ -122,13 +130,28 @@ export function renderCard(card: Card, node: BoardNode, ba: BoardAnalysis): stri
   lines.push(`  lane: ${pos} · state: ${ba.canonical.get(card.id)}${card.type === 'board' ? ` · board ⇒ ${card.boardPath}` : ''}`);
   const meta: string[] = [];
   if (card.assignee) meta.push(`assignee ${card.assignee}`);
+  if (card.delegate) meta.push(`delegate ${card.delegate}`);
   if (card.priority) meta.push(card.priority);
+  if (card.estimate !== null) meta.push(`estimate ${card.estimate}`);
+  if (card.start) meta.push(`start ${card.start}`);
+  if (card.due) meta.push(`due ${card.due}`);
+  if (card.evergreen) meta.push('evergreen');
   if (card.labels.length > 0) meta.push(`labels ${card.labels.join(',')}`);
   if (card.deps.length > 0) meta.push(`deps ${card.deps.join(',')}`);
   if (card.blocked) meta.push(`BLOCKED: ${card.blocked}`);
   if (card.created) meta.push(`created ${card.created}`);
   if (card.updated) meta.push(`updated ${card.updated}`);
   if (meta.length > 0) lines.push(`  ${meta.join(' · ')}`);
+  const metrics = cardFlowMetrics(card, node.board, ba.canonical.get(card.id) ?? 'todo');
+  const flow = [
+    metrics.currentLaneDays === null ? null : `current lane ${metrics.currentLaneDays}d`,
+    metrics.cumulativeLaneDays === null ? null : `cumulative lane ${metrics.cumulativeLaneDays}d`,
+    metrics.cycleDays === null ? null : `cycle ${metrics.cycleDays}d`,
+    metrics.leadDays === null ? null : `lead ${metrics.leadDays}d`,
+    metrics.blockedDays !== null && metrics.blockedDays > 0 ? `blocked ${metrics.blockedDays}d` : null,
+    metrics.stalled ? `STALLED ${metrics.idleDays}d` : null,
+  ].filter((item): item is string => item !== null);
+  if (flow.length > 0) lines.push(`  flow: ${flow.join(' · ')}`);
   lines.push(`  file: ${card.file}`);
   if (card.body.trim() !== '') {
     lines.push('');
@@ -156,6 +179,7 @@ export function renderPrime(tree: Tree, analysis: Analysis, root: string): strin
   lines.push('');
   lines.push(`## State: ${node.board.cards.length} cards · progress ${pct(ba.progress)}`);
   lines.push(`- distribution: ${distLine(ba) || 'empty'}`);
+  if (ba.effort.progress !== null) lines.push(`- estimated effort: ${ba.effort.completed}/${ba.effort.total} (${pct(ba.effort.progress)})`);
   const findings = lintBoard(node, ba);
   const errors = findings.filter((f) => f.severity === 'error');
   if (errors.length > 0) lines.push(`- ⚠ ${errors.length} lint error(s): run \`botflow lint\` and fix before other work`);

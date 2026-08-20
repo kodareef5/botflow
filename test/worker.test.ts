@@ -13,10 +13,31 @@ import process from 'node:process';
 
 import { setupAccess } from '../worker/src/security.ts';
 
-const PORT = 8901 + Math.floor(Math.random() * 90);
-const U = `http://127.0.0.1:${PORT}`;
+let U = '';
 const SETUP_KEY = 'test-setup-key';
 const WRANGLER = join(import.meta.dirname, '..', 'node_modules', 'wrangler', 'bin', 'wrangler.js');
+
+async function freePort(): Promise<number> {
+  // Keep this range disjoint from stress.test.ts's Wrangler range: Node runs
+  // test files concurrently, and a check-then-spawn port probe cannot reserve
+  // a port across processes.
+  const first = Math.floor(Math.random() * 90);
+  for (let offset = 0; offset < 90; offset++) {
+    const port = 8901 + ((first + offset) % 90);
+    const server = createServer();
+    const available = await new Promise<boolean>((resolve, reject) => {
+      server.once('error', (error: NodeJS.ErrnoException) => {
+        if (error.code === 'EADDRINUSE') resolve(false);
+        else reject(error);
+      });
+      server.listen(port, '127.0.0.1', () => resolve(true));
+    });
+    if (!available) continue;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    return port;
+  }
+  throw new Error('no test port available');
+}
 
 async function stopWorker(child: ReturnType<typeof spawn>, state: string): Promise<void> {
   const signalGroup = (signal: NodeJS.Signals): void => {
@@ -78,6 +99,8 @@ function ogFixture(port: number): { close: () => Promise<void> } {
 }
 
 test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180_000 }, async () => {
+  const port = await freePort();
+  U = `http://127.0.0.1:${port}`;
   const state = mkdtempSync(join(tmpdir(), 'botflow-worker-'));
   // The shipped wrangler.jsonc deliberately has no R2 binding (uploads are
   // opt-in); this run gets one via a generated config so the upload path is
@@ -101,7 +124,7 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
   // and stalls wrangler mid-startup (found the hard way).
   const child = spawn(
     process.execPath,
-    [WRANGLER, 'dev', '--config', join(state, 'wrangler.json'), '--port', String(PORT), '--persist-to', state, '--var', `SETUP_KEY:${SETUP_KEY}`,
+    [WRANGLER, 'dev', '--config', join(state, 'wrangler.json'), '--port', String(port), '--persist-to', state, '--var', `SETUP_KEY:${SETUP_KEY}`,
       '--var', 'LINK_PREVIEWS:on', '--var', 'UNFURL_ALLOW_PRIVATE:on'],
     { cwd: join(import.meta.dirname, '..'), stdio: 'ignore', env: { ...process.env }, detached: true },
   );
@@ -163,6 +186,38 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     const sibA = (await call('/api/projects', { method: 'POST', token: admin, body: JSON.stringify({ space: space2, name: 'sib-a' }) })).body['id'] as string;
     const sibB = (await call('/api/projects', { method: 'POST', token: admin, body: JSON.stringify({ space: space2, name: 'sib-b' }) })).body['id'] as string;
 
+    // Structured card fields keep their JSON types across the hosted API and
+    // invalid types fail instead of being silently coerced.
+    const scheduledCreate = await call(`/api/projects/${sibA}/cards`, {
+      method: 'POST', token: admin, body: JSON.stringify({
+        title: 'Scheduled API card', start: '2026-08-20', due: '2026-08-24T12:30Z',
+        estimate: 5, evergreen: true, assignee: 'root', delegate: 'agent-a',
+      }),
+    });
+    assert.equal(scheduledCreate.status, 200);
+    const scheduledId = scheduledCreate.body['id'] as string;
+    let scheduled = (await call(`/api/projects/${sibA}/cards/${scheduledId}`, { token: admin })).body;
+    assert.equal(scheduled['start'], '2026-08-20');
+    assert.equal(scheduled['due'], '2026-08-24T12:30Z');
+    assert.equal(scheduled['estimate'], 5);
+    assert.equal(scheduled['evergreen'], true);
+    assert.equal(scheduled['assignee'], 'root');
+    assert.equal(scheduled['delegate'], 'agent-a');
+    const scheduledEdit = await call(`/api/projects/${sibA}/cards/${scheduledId}/edit`, {
+      method: 'POST', token: admin, body: JSON.stringify({ start: null, estimate: null, evergreen: false }),
+    });
+    assert.equal(scheduledEdit.status, 200);
+    scheduled = (await call(`/api/projects/${sibA}/cards/${scheduledId}`, { token: admin })).body;
+    assert.equal(scheduled['start'], null);
+    assert.equal(scheduled['estimate'], null);
+    assert.equal(scheduled['evergreen'], false);
+    assert.equal((await call(`/api/projects/${sibA}/cards`, {
+      method: 'POST', token: admin, body: JSON.stringify({ title: 'Bad types', estimate: true }),
+    })).status, 400);
+    assert.equal((await call(`/api/projects/${sibA}/cards/${scheduledId}/edit`, {
+      method: 'POST', token: admin, body: JSON.stringify({ evergreen: 'yes' }),
+    })).status, 400);
+
     // A sub-project whose parent card cannot be created must not survive as
     // a registry orphan: the create compensates and fails whole.
     const badLane = await call('/api/projects', { method: 'POST', token: admin, body: JSON.stringify({ parent, name: 'ghost', lane: 'no-such-lane' }) });
@@ -188,23 +243,25 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     const claimed = await call(`/api/projects/${parent}/cards/${own}/claim`, { method: 'POST', token: key, body: JSON.stringify({ actor: 'imposter' }) });
     assert.equal(claimed.status, 200, 'ready unassigned card claims fine');
     const forged = await call(`/api/projects/${parent}/cards/${own}`, { token: admin });
-    assert.equal(forged.body['assignee'], 'alpha-agent', 'assignee bound to the member username, not the request body');
+    assert.equal(forged.body['delegate'], 'alpha-agent', 'bot delegate bound to the member username, not the request body');
+    assert.equal(forged.body['assignee'], null, 'bot claim does not impersonate an accountable human');
     assert.equal(forged.body['author'], 'alpha-agent', 'the card records who created it');
     const events = (await call(`/api/projects/${parent}/events?limit=10`, { token: admin })).body as unknown as { actor: string }[];
     assert.ok(events.filter((e) => e.actor === 'alpha-agent').length >= 2, 'audit records the member username');
     assert.equal(events.some((e) => e.actor === 'imposter'), false, 'forged actor never recorded');
     assert.equal(events.some((e) => e.actor === 'admin'), false, 'nor the one smuggled in at create time');
 
-    // Claim is conditional: re-claim by the holder is a no-op, a rival gets a
-    // structured 409, force overrides.
+    // Claim is conditional: re-claim by the same role holder is a no-op. The
+    // human ownership role is separate, but the card is already doing, so a
+    // non-forced owner claim still gets a structured 409; force takes it back.
     const again = await call(`/api/projects/${parent}/cards/${own}/claim`, { method: 'POST', token: key, body: JSON.stringify({}) });
     assert.equal(again.status, 200);
     assert.equal(again.body['alreadyYours'], true, 're-claim by holder is idempotent');
     const lost = await call(`/api/projects/${parent}/cards/${own}/claim`, { method: 'POST', token: admin, body: JSON.stringify({}) });
     assert.equal(lost.status, 409, 'claiming a held card conflicts');
     const conflict = lost.body['conflict'] as { reason: string; holder: string };
-    assert.equal(conflict.reason, 'assigned');
-    assert.equal(conflict.holder, 'alpha-agent');
+    assert.equal(conflict.reason, 'not-ready');
+    assert.equal(conflict.holder, null);
     const agentForce = await call(`/api/projects/${parent}/cards/${own}/claim`, { method: 'POST', token: key, body: JSON.stringify({ force: true }) });
     assert.equal(agentForce.status, 403, 'force is an owner-only override');
     const agentForceMove = await call(`/api/projects/${parent}/cards/${own}/move`, { method: 'POST', token: key, body: JSON.stringify({ to: 'done', force: true }) });
@@ -356,7 +413,7 @@ vendor:
     // worker fetches it once, server-side, and proxies the picture: a viewer's
     // browser never contacts the site being previewed, which is what makes
     // this safe to render on a public share page.
-    const OG_PORT = PORT + 40;
+    const OG_PORT = await freePort();
     const site = ogFixture(OG_PORT);
     try {
       const withArt = (await call(`/api/projects/${parent}/cards`, { method: 'POST', token: admin, body: JSON.stringify({ title: 'Watch this' }) })).body['id'] as string;
@@ -881,7 +938,7 @@ test('recovery on a deployment that was never set up leaves a working company', 
   // The failure this pins down: recovery used to create an owner without an
   // org row, so /api/org answered 500 and /api/setup refused forever with
   // "already initialized". That state has no way out.
-  const port = PORT + 1;
+  const port = await freePort();
   const state = mkdtempSync(join(tmpdir(), 'botflow-recover-'));
   const child = spawn(
     process.execPath,

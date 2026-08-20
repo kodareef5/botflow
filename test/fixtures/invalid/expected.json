@@ -1,5 +1,17 @@
 {
   "cases": {
+    "bad-card-date": [
+      {
+        "rule": "schema",
+        "ref": "001"
+      }
+    ],
+    "bad-estimate": [
+      {
+        "rule": "schema",
+        "ref": "001"
+      }
+    ],
     "dup-id": [
       {
         "rule": "dup-id",

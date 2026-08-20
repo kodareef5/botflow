@@ -10,7 +10,7 @@ import { emitMap, emitScalar } from './emit.ts';
 /** Capability names understood by this reader. Later feature phases add to
  *  this registry as their semantics become real; declarations are optional,
  *  but an unknown declaration deliberately makes a board read-only. */
-export const SUPPORTED_BOARD_FEATURES = new Set<string>();
+export const SUPPORTED_BOARD_FEATURES = new Set(['dates', 'estimates', 'delegation', 'aging']);
 
 /** Serialize a BoardConfig back to board.yaml text. Defaults are omitted so
  *  the file stays as small as a hand-written one; parse(emit(c)) === c. */
