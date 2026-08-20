@@ -2,7 +2,7 @@
 // trees with cycle detection (SPEC §3, §7).
 
 import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
-import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { boardFromDocuments, type BoardDocument } from './docs.ts';
 import type { BoardNode, LoadedBoard, Tree } from './model.ts';
@@ -69,6 +69,7 @@ export function loadBoard(rootAbs: string): LoadedBoard {
 /** Load a board and, recursively, every board its board-cards reference. */
 export function loadTree(rootDir: string): Tree {
   const rootAbs = resolveBoardRoot(rootDir) ?? resolve(rootDir);
+  const workspaceAbs = basename(rootAbs) === '.botflow' ? dirname(rootAbs) : rootAbs;
   const boards = new Map<string, BoardNode>();
   const byAbs = new Map<string, BoardNode>();
   const stack = new Set<string>();
@@ -94,11 +95,11 @@ export function loadTree(rootDir: string): Tree {
         continue;
       }
       const targetAbs = resolve(abs, card.boardPath);
-      const relToRoot = relative(rootAbs, targetAbs);
-      if (isAbsolute(card.boardPath) || relToRoot === '..' || relToRoot.startsWith(`..${sep}`) || isAbsolute(relToRoot)) {
+      const relToWorkspace = relative(workspaceAbs, targetAbs);
+      if (isAbsolute(card.boardPath) || relToWorkspace === '..' || relToWorkspace.startsWith(`..${sep}`) || isAbsolute(relToWorkspace)) {
         // A child-board reference is relative to the referencing board and
-        // must stay inside the tree (SPEC §3); never walk out of the project.
-        node.board.findings.push(finding('board-path-escape', card.id, `board path "${card.boardPath}" escapes the project root`));
+        // must stay inside the workspace (SPEC §3); never walk above it.
+        node.board.findings.push(finding('board-path-escape', card.id, `board path "${card.boardPath}" escapes the workspace`));
         node.childKeyByCard.set(card.id, null);
         continue;
       }
@@ -135,8 +136,8 @@ export function loadTree(rootDir: string): Tree {
           const parsed = parseCardReference(value);
           if (parsed?.boardRef === null || parsed === null || parsed.boardRef.startsWith('project:')) continue;
           const targetAbs = resolve(node.board.rootAbs, parsed.boardRef);
-          const relToRoot = relative(rootAbs, targetAbs);
-          if (isAbsolute(parsed.boardRef) || relToRoot === '..' || relToRoot.startsWith(`..${sep}`) || isAbsolute(relToRoot)) continue;
+          const relToWorkspace = relative(workspaceAbs, targetAbs);
+          if (isAbsolute(parsed.boardRef) || relToWorkspace === '..' || relToWorkspace.startsWith(`..${sep}`) || isAbsolute(relToWorkspace)) continue;
           const targetRoot = resolveBoardRoot(targetAbs);
           if (targetRoot !== null && !byAbs.has(targetRoot)) {
             visit(targetRoot);

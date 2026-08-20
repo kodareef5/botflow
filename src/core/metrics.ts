@@ -21,6 +21,28 @@ export interface FlowEvent {
   lane: string;
 }
 
+export interface CardFlowProjection {
+  entries: TimedEntry[];
+  events: FlowEvent[];
+}
+
+/** Request-scoped cache used by board projection. `builds` is intentionally
+ * observable so deterministic tests can enforce the one-parse-per-card
+ * contract without timing fragile microbenchmarks. */
+export class FlowProjectionCache {
+  readonly #values = new Map<Card, CardFlowProjection>();
+  builds = 0;
+
+  get(card: Card, board: LoadedBoard, parsedLog?: BodyEntry[]): CardFlowProjection {
+    const cached = this.#values.get(card);
+    if (cached !== undefined) return cached;
+    const projection = cardFlowProjection(card, board, parsedLog);
+    this.#values.set(card, projection);
+    this.builds++;
+    return projection;
+  }
+}
+
 export interface StagnationSignal {
   days: number;
   dots: number;
@@ -70,11 +92,15 @@ function laneState(board: LoadedBoard, lane: string): Canonical {
   return board.config.lanes.find((item) => item.id === lane)?.canonical ?? 'todo';
 }
 
-function timedLog(card: Card): TimedEntry[] {
-  return parseBody(card.body).log
+function timedEntries(log: BodyEntry[]): TimedEntry[] {
+  return log
     .map((entry, order) => ({ ...entry, at: metricTime(entry.when) ?? Number.NaN, order }))
     .filter((entry) => !Number.isNaN(entry.at))
     .sort((a, b) => a.at - b.at || a.order - b.order);
+}
+
+function timedLog(card: Card): TimedEntry[] {
+  return timedEntries(parseBody(card.body).log);
 }
 
 function initialPosition(entries: TimedEntry[]): { lane: string; at: number } | null {
@@ -101,8 +127,7 @@ function transition(text: string): { from: string; to: string } | null {
 /** Replay only states and lane positions the Log proves. Current frontmatter
  *  is intentionally not spliced into an incomplete historic tail: doing so
  *  would manufacture transition dates and violate SPEC §6a's null rule. */
-export function cardFlowEvents(card: Card, board: LoadedBoard): FlowEvent[] {
-  const entries = timedLog(card);
+function replayFlowEvents(card: Card, board: LoadedBoard, entries: TimedEntry[]): FlowEvent[] {
   const initial = initialPosition(entries);
   const out: FlowEvent[] = [];
   let lane = initial?.lane ?? card.laneId;
@@ -144,6 +169,15 @@ export function cardFlowEvents(card: Card, board: LoadedBoard): FlowEvent[] {
   return out.sort((a, b) => a.at - b.at);
 }
 
+export function cardFlowProjection(card: Card, board: LoadedBoard, parsedLog?: BodyEntry[]): CardFlowProjection {
+  const entries = parsedLog === undefined ? timedLog(card) : timedEntries(parsedLog);
+  return { entries, events: replayFlowEvents(card, board, entries) };
+}
+
+export function cardFlowEvents(card: Card, board: LoadedBoard): FlowEvent[] {
+  return cardFlowProjection(card, board).events;
+}
+
 function stagnation(days: number | null): StagnationSignal {
   if (days === null || days < 1) return { days: days ?? 0, dots: 0, tone: 'none' };
   if (days < 3) return { days, dots: 1, tone: 'grey' };
@@ -166,10 +200,15 @@ function dueMetric(card: Card, state: Canonical, now: number): CardFlowMetrics['
   return { status: days < 0 ? 'overdue' : days === 0 ? 'today' : days <= 3 ? 'soon' : 'upcoming', days };
 }
 
-export function cardFlowMetrics(card: Card, board: LoadedBoard, current: Canonical, nowValue: number | Date = Date.now()): CardFlowMetrics {
+export function cardFlowMetrics(
+  card: Card,
+  board: LoadedBoard,
+  current: Canonical,
+  nowValue: number | Date = Date.now(),
+  projection: CardFlowProjection = cardFlowProjection(card, board),
+): CardFlowMetrics {
   const now = typeof nowValue === 'number' ? nowValue : nowValue.getTime();
-  const entries = timedLog(card);
-  const events = cardFlowEvents(card, board);
+  const { entries, events } = projection;
   const last = entries.filter((entry) => !(entry.actor === 'botflow' && (/^reminder \d+m for due /.test(entry.text) || entry.text === 'snooze expired'))).at(-1);
   const lastAt = last?.at ?? null;
   const idleDays = lastAt === null ? null : wholeDays(lastAt, now);
@@ -263,21 +302,22 @@ export function boardFlowMetrics(
   board: LoadedBoard,
   nowValue: number | Date = Date.now(),
   days = 30,
+  cache: FlowProjectionCache = new FlowProjectionCache(),
 ): BoardFlowMetrics {
   const now = typeof nowValue === 'number' ? nowValue : nowValue.getTime();
   const count = Math.max(1, Math.min(366, Math.trunc(days) || 30));
   const today = Math.floor(now / DAY_MS) * DAY_MS;
-  const histories = board.cards.map((card) => ({ card, events: cardFlowEvents(card, board) }));
+  const histories = board.cards.map((card) => ({ card, projection: cache.get(card, board) }));
   const blockerDays: Record<string, number> = {};
   for (const card of board.cards) {
     const laneState = board.config.lanes.find((lane) => lane.id === card.laneId)?.canonical ?? 'todo';
     const state = card.blocked !== null && laneState !== 'done' && laneState !== 'archive' ? 'blocked' : laneState;
-    for (const [id, value] of Object.entries(cardFlowMetrics(card, board, state, now).blockerDays)) {
+    for (const [id, value] of Object.entries(cardFlowMetrics(card, board, state, now, cache.get(card, board)).blockerDays)) {
       blockerDays[id] = (blockerDays[id] ?? 0) + value;
     }
   }
   const throughputByDay = new Map<string, number>();
-  for (const { events } of histories) {
+  for (const { projection: { events } } of histories) {
     const done = events.find((event) => event.state === 'done');
     if (!done) continue;
     const date = new Date(done.at).toISOString().slice(0, 10);
@@ -291,7 +331,7 @@ export function boardFlowMetrics(
     const cutoff = offset === 0 ? now : start + DAY_MS - 1;
     const date = new Date(start).toISOString().slice(0, 10);
     const distribution = emptyDistribution();
-    for (const { events } of histories) {
+    for (const { projection: { events } } of histories) {
       const state = stateAt(events, cutoff);
       if (state !== null) distribution[state]++;
     }

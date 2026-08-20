@@ -1,7 +1,7 @@
 ---
 id: 059
 title: Harden CARD-FEATURES after independent review
-lane: doing
+lane: done
 assignee: codex
 priority: p0
 created: 2026-08-20
@@ -16,3 +16,5 @@ updated: 2026-08-20
 - 2026-08-20 12:17 codex: Hosted safety tranche complete: public page/feed reads are projection-only; alarm failures back off; transferred reminders schedule on both halves; ancestor refs are state-opaque/fail-closed; scoped feeds filter before their bound; capability view touches are throttled; webhook batches lease atomically before await with stable crash recovery; terminal history uses tested cutoffs; email bridge bot identity is explicit; IPv4/IPv6 special-use SSRF vectors expanded. Full gate: 249/249 tests and both TypeScript checks pass.
 - 2026-08-20 12:36 codex: Interaction tranche complete: explicit settings view prevents fake-project refreshes; member scopes normalize safely; relation overlay and board controls preserve node identity; Hill/checklist/tab/dialog keyboard paths hardened; standalone viewer dialog/a11y parity added. Full suite 257/257 and both TypeScript checks pass before commit.
 - 2026-08-20 12:57 mac: Operator tranche complete: project activity, webhook delivery, and email outbox histories use stable older/newer cursor pages; owners have full one-time-secret bot-key lifecycle with atomic replacement; cross-board relation link/unlink is available through filesystem, CLI, MCP, hosted API, and manager with target-first retry convergence and scope-oracle protection. Full suite 260/260 and both TypeScript checks pass.
+- 2026-08-20 13:15 mac: Final evidence tranche complete: cached rule queries use one immutable analysis; card flow parsing is shared across per-card and board metrics; ordinary manager/public polls omit unused 30-day series; repository workspace paths allow the documented ../worker rollup without permitting escapes; the release report maps every independent finding to regressions and states filesystem durability honestly. Full gate: 264/264 tests and both TypeScript checks pass.
+- 2026-08-20 13:15 mac: closed: All four independent-review reports are dispositioned; accepted defects are fixed with regression coverage; performance, compatibility, migration, security, accessibility, and durability evidence is documented; full 264-test and typecheck gates pass; ready for owner review., moved doing → done

@@ -817,7 +817,8 @@ function renderMain(){
     catch(err){toast(err.message)}finally{if(document.contains(automate))automate.disabled=false}
   };
   const layoutCtl=$('#boardlayout');if(layoutCtl)layoutCtl.onchange=()=>{
-    LAYOUT=layoutCtl.value;localStorage.setItem('bf_layout',LAYOUT);syncViewControls(BOARD);paintBoard();
+    LAYOUT=layoutCtl.value;localStorage.setItem('bf_layout',LAYOUT);syncViewControls(BOARD);
+    if(LAYOUT==='metrics'&&BOARD&&!BOARD.flow)refreshBoard();else paintBoard();
   };
   const axisCtl=$('#axisctl');if(axisCtl)axisCtl.onchange=()=>{
     if(LAYOUT==='grouped'){GROUP_AXIS=axisCtl.value;localStorage.setItem('bf_group_axis',GROUP_AXIS)}
@@ -1636,7 +1637,8 @@ function boardHtml(b){
     +'<div id="bcols" data-layout="'+esc(LAYOUT)+'">'+body+'</div>';
 }
 async function refreshBoard(quiet){
-  let b;try{b=await api('/api/projects/'+SEL+'/board')}catch(err){if(!quiet)$('#view').innerHTML='<div class="err">'+esc(err.message)+'</div>';return}
+  const flow=LAYOUT==='metrics'?'1':'0';
+  let b;try{b=await api('/api/projects/'+SEL+'/board?flow='+flow)}catch(err){if(!quiet)$('#view').innerHTML='<div class="err">'+esc(err.message)+'</div>';return}
   if(quiet&&JSON.stringify(b)===JSON.stringify(BOARD))return;
   BOARD=b;
   renderBoardButtons();
@@ -1956,11 +1958,11 @@ async function publicStart(){
   try{applyTheme(await api('/api/theme'))}catch{}
   if(PUBCARD)return publicCardStart();
   let b;
-  try{b=await api('/api/public/'+PUB+'/board')}catch(err){return publicDead(err.message)}
+  try{b=await api('/api/public/'+PUB+'/board?flow='+(LAYOUT==='metrics'?'1':'0'))}catch(err){return publicDead(err.message)}
   renderPublic(b);
   setInterval(async()=>{
     if(MODAL)return;
-    try{const nb=await api('/api/public/'+PUB+'/board');if(JSON.stringify(nb)!==JSON.stringify(BOARD))renderPublic(nb)}catch{}
+    try{const nb=await api('/api/public/'+PUB+'/board?flow='+(LAYOUT==='metrics'?'1':'0'));if(JSON.stringify(nb)!==JSON.stringify(BOARD))renderPublic(nb)}catch{}
   },4000);
 }
 // A card-scoped link renders that one card as the whole page: same card
@@ -2000,7 +2002,7 @@ function renderPublic(b){
       +'<div class="pubfoot">shared with botflow: git-native kanban for AI agents. <a href="/about">learn more</a></div>';
     $('#view').onclick=boardClicks;
     $('#view').onkeydown=boardKeys;
-    $('#boardlayout').onchange=e=>{LAYOUT=e.target.value;localStorage.setItem('bf_layout',LAYOUT);syncViewControls(BOARD);paintBoard()};
+    $('#boardlayout').onchange=e=>{LAYOUT=e.target.value;localStorage.setItem('bf_layout',LAYOUT);syncViewControls(BOARD);if(LAYOUT==='metrics'&&!BOARD.flow)api('/api/public/'+PUB+'/board?flow=1').then(renderPublic).catch(err=>toast(err.message));else paintBoard()};
     $('#axisctl').onchange=e=>{if(LAYOUT==='grouped'){GROUP_AXIS=e.target.value;localStorage.setItem('bf_group_axis',GROUP_AXIS)}else{SWIM_AXIS=e.target.value;localStorage.setItem('bf_swim_axis',SWIM_AXIS)}paintBoard()};
   }
   $('#hmeter').innerHTML='<div class="track"><div class="fill" style="width:'+Math.round((b.progress||0)*100)+'%"></div></div><b>'+pct(b.progress)+'</b>';

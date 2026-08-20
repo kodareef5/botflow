@@ -204,6 +204,10 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     const space2 = (await call('/api/spaces', { method: 'POST', token: admin, body: JSON.stringify({ name: 'ops' }) })).body['id'] as string;
     const sibA = (await call('/api/projects', { method: 'POST', token: admin, body: JSON.stringify({ space: space2, name: 'sib-a' }) })).body['id'] as string;
     const sibB = (await call('/api/projects', { method: 'POST', token: admin, body: JSON.stringify({ space: space2, name: 'sib-b' }) })).body['id'] as string;
+    const compactBoard = (await call(`/api/projects/${parent}/board?flow=0`, { token: admin })).body;
+    const metricsBoard = (await call(`/api/projects/${parent}/board?flow=1`, { token: admin })).body;
+    assert.equal(Object.hasOwn(compactBoard, 'flow'), false, 'ordinary board polling can omit board-series metrics');
+    assert.equal(Object.hasOwn(metricsBoard, 'flow'), true, 'metrics clients retain the compatible full projection');
 
     // Structured card fields keep their JSON types across the hosted API and
     // invalid types fail instead of being silently coerced.
@@ -1272,7 +1276,9 @@ vendor:
     // Share link + export/import round trip as a restore.
     const share = (await call(`/api/projects/${parent}/shares`, { method: 'POST', token: admin, body: JSON.stringify({ label: 'peek' }) })).body['token'] as string;
     const publicEventBefore = ((await call(`/api/projects/${parent}/events?limit=1`, { token: admin })).body as unknown as { seq: number }[])[0]?.seq;
-    assert.equal((await call(`/api/public/${share}/board`)).status, 200, 'direct share url remains usable');
+    const compactPublicBoard = await call(`/api/public/${share}/board?flow=0`);
+    assert.equal(compactPublicBoard.status, 200, 'direct share url remains usable');
+    assert.equal(Object.hasOwn(compactPublicBoard.body, 'flow'), false, 'public polling can omit board-series metrics too');
     const firstShareView = ((await call('/api/org/shares', { token: admin })).body as unknown as { token: string; lastViewed: string | null }[])
       .find((item) => item.token === share)?.lastViewed;
     assert.ok(firstShareView, 'first capability read records coarse access metadata');

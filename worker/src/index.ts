@@ -532,7 +532,7 @@ export default {
         // of the board does not exist through it.
         if (rest === '' || rest === '/board') {
           if (share.cardId !== null) return json({ error: 'this link shares a single card' }, 404);
-          return json(await stub.publicBoard());
+          return json(await stub.publicBoard(url.searchParams.get('flow') !== '0'));
         }
         const cardMatch = /^\/cards\/([^/]+)$/.exec(rest);
         if (cardMatch) {
@@ -1190,7 +1190,7 @@ export default {
         })());
       };
       if (req.method === 'GET' && (rest === '' || rest === '/board')) {
-        const body = await stub.board();
+        const body = await stub.board(url.searchParams.get('flow') !== '0');
         drainUnfurls();
         return json(body);
       }

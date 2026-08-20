@@ -390,7 +390,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
     },
     {
       name: 'card_bulk',
-      description: 'Atomically move, close, or label a set of cards; any invalid member rejects the complete batch.',
+      description: 'Prevalidate and then move, close, or label a set of cards; any invalid member rejects the complete batch.',
       inputSchema: schema(['ids', 'action'], {
         ids: strList, action: { type: 'string', enum: ['move', 'close', 'label'] }, to: str, force: bool,
         reason: str, wip_reason: str, add_labels: strList, remove_labels: strList, actor: str,

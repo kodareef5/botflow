@@ -68,6 +68,17 @@ test('ui: project and integration histories have bounded cursor pages in both di
     'older webhook pages reuse one dialog and retain their newer-page stack');
 });
 
+test('ui: ordinary board polls omit flow series until the metrics view needs them', () => {
+  const app = scripts.join('\n');
+  assert.match(app, /const flow=LAYOUT==='metrics'\?'1':'0'/,
+    'the authenticated poll derives its payload shape from the active view');
+  assert.match(app, /\/board\?flow='\+flow/);
+  assert.match(app, /LAYOUT==='metrics'&&BOARD&&!BOARD\.flow\)refreshBoard\(\)/,
+    'switching to metrics fetches the omitted series');
+  assert.match(app, /\/api\/public\/'\+PUB\+'\/board\?flow='/,
+    'public polling uses the same metrics-only contract');
+});
+
 // ---- a minimal DOM for the reconciler ----
 type Attr = { name: string; value: string };
 class MiniNode {

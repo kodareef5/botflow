@@ -112,15 +112,16 @@ export function positionLabel(p: Position): string {
 }
 
 /** A child-board reference is a RELATIVE path from the referencing board's
- *  root (SPEC §3) that must not escape it: reject absolute paths and any
- *  path that climbs above the board root, so bad values never reach disk.
+ *  root (SPEC §3) that must not escape its workspace. A conventional
+ *  <repo>/.botflow root gets one parent segment of workspace allowance;
+ *  a bare board gets none. Reject bad values before they reach disk.
  *  `project:` refs are hosted-manager handles, not filesystem paths. */
-export function validateBoardPath(boardPath: string): void {
+export function validateBoardPath(boardPath: string, parentAllowance = 0): void {
   if (boardPath.startsWith('project:')) return;
   if (/^([\\/]|[A-Za-z]:[\\/])/.test(boardPath)) {
     throw new UsageError(`board path "${boardPath}" must be relative, not absolute`);
   }
-  let depth = 0;
+  let depth = Math.max(0, Math.trunc(parentAllowance));
   for (const seg of boardPath.split(/[\\/]+/)) {
     if (seg === '' || seg === '.') continue;
     if (seg !== '..') {
@@ -130,6 +131,10 @@ export function validateBoardPath(boardPath: string): void {
     depth--;
     if (depth < 0) throw new UsageError(`board path "${boardPath}" escapes the board root`);
   }
+}
+
+function boardPathParentAllowance(board?: LoadedBoard): number {
+  return board !== undefined && /(?:^|[\\/])\.botflow$/.test(board.rootAbs) ? 1 : 0;
 }
 
 interface WipDecision {
@@ -320,16 +325,58 @@ function checkedRelations(values: CardRelation[], ownId?: string): CardRelation[
   return out;
 }
 
-function ruleFilterMatches(board: LoadedBoard, card: Card, rule: AutomationRule, actor: string, nowValue: number | Date): boolean {
+export interface RuleEvaluationStats {
+  analyses: number;
+  queries: number;
+}
+
+interface RuleQueryContext {
+  tree: ReturnType<typeof singleBoardTree>;
+  analysis: ReturnType<typeof analyze>;
+  matchesByFilter: Map<string, Set<string>>;
+}
+
+function prepareRuleQueries(
+  board: LoadedBoard,
+  card: Card,
+  nowValue: number | Date,
+  stats?: RuleEvaluationStats,
+): RuleQueryContext {
+  const found = board.cards.some((candidate) => candidate.id === card.id);
+  const snapshot = cloneCard(card);
+  const shadow = {
+    ...board,
+    cards: found
+      ? board.cards.map((candidate) => candidate.id === card.id ? snapshot : candidate)
+      : [...board.cards, snapshot],
+  };
+  const tree = singleBoardTree(shadow);
+  const analysis = analyze(tree, nowValue);
+  if (stats) stats.analyses++;
+  return { tree, analysis, matchesByFilter: new Map() };
+}
+
+function ruleFilterMatches(
+  board: LoadedBoard,
+  card: Card,
+  rule: AutomationRule,
+  actor: string,
+  nowValue: number | Date,
+  context: RuleQueryContext,
+  stats?: RuleEvaluationStats,
+): boolean {
   if (!rule.filterValid) return false;
   const filterId = rule.filter;
   if (filterId === null) return true;
   const filter = board.config.savedFilters.find((candidate) => candidate.id === filterId);
   if (filter === undefined) return false;
-  const shadow = board.cards.includes(card) ? board : { ...board, cards: [...board.cards, card] };
-  const tree = singleBoardTree(shadow);
-  const analysis = analyze(tree, nowValue);
-  return queryCards(tree, analysis, filter.query, { actor, now: nowValue }).some((match) => match.card.id === card.id);
+  let matches = context.matchesByFilter.get(filterId);
+  if (matches === undefined) {
+    matches = new Set(queryCards(context.tree, context.analysis, filter.query, { actor, now: nowValue }).map((match) => match.card.id));
+    context.matchesByFilter.set(filterId, matches);
+    if (stats) stats.queries++;
+  }
+  return matches.has(card.id);
 }
 
 /** Apply safe, non-recursive board rules after one primary event. */
@@ -339,12 +386,27 @@ export function applyAutomationRules(
   event: AutomationRuleEvent,
   actor: string,
   nowValue: number | Date = Date.now(),
+  stats?: RuleEvaluationStats,
 ): string[] {
   const applied: string[] = [];
+  // Filters observe one immutable post-primary/pre-rule snapshot. Rule
+  // actions still apply in definition order, but an earlier action cannot
+  // make a later filter suddenly select the card (or force N analyses).
+  const hasFilteredRule = board.config.rules.some((rule) =>
+    rule.event === event
+    && (event !== 'enter' || rule.lane === card.laneId)
+    && rule.filter !== null
+    && rule.filterValid,
+  );
+  const queries = hasFilteredRule ? prepareRuleQueries(board, card, nowValue, stats) : null;
   for (const rule of board.config.rules) {
     if (rule.event !== event) continue;
     if (event === 'enter' && rule.lane !== card.laneId) continue;
-    if (!ruleFilterMatches(board, card, rule, actor, nowValue)) continue;
+    if (rule.filter !== null) {
+      if (queries === null || !ruleFilterMatches(board, card, rule, actor, nowValue, queries, stats)) continue;
+    } else if (!rule.filterValid) {
+      continue;
+    }
     if (applied.length >= 16) throw new UsageError('automation event matches more than 16 rules');
     switch (rule.action) {
       case 'label': {
@@ -391,7 +453,7 @@ export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
   const type = opts.type ?? 'task';
   if (type === 'board') {
     if (!opts.boardPath) throw new UsageError('a board-card needs a board path');
-    validateBoardPath(opts.boardPath);
+    validateBoardPath(opts.boardPath, boardPathParentAllowance(board));
   }
 
   const spec = opts.lane ?? template?.lane ?? (config.lanes.find((l) => l.canonical === 'todo') ?? config.lanes[0])?.id;
@@ -762,7 +824,7 @@ export function opEdit(card: Card, patch: EditPatch, actor: string, board?: Load
   const relations = patch.relations === undefined ? undefined : checkedRelations(patch.relations, card.id);
   if (patch.boardPath !== undefined) {
     if (card.type !== 'board') throw new UsageError('board path only applies to board-cards');
-    validateBoardPath(patch.boardPath);
+    validateBoardPath(patch.boardPath, boardPathParentAllowance(board));
   }
 
   const changed: string[] = [];
@@ -1142,7 +1204,7 @@ export interface PromoteOptions {
 }
 
 /** Promote an unchecked checklist item into a related card. The caller
- * persists both returned cards in one transaction/lock. */
+ * prevalidates both returned cards and persists them under one lock. */
 export function opPromote(
   board: LoadedBoard,
   source: Card,
@@ -1191,7 +1253,7 @@ function dedupeRelations(relations: CardRelation[]): CardRelation[] {
 
 /** Merge a duplicate into its canonical card without deleting either audit
  * trail. All validation precedes mutation; wrappers persist returned cards
- * transactionally. */
+ * under one lock with a crash-safe write per file. */
 export function opMergeDuplicates(
   board: LoadedBoard,
   duplicateId: string,
@@ -1400,7 +1462,7 @@ export interface ButtonOptions {
   now?: number | Date | undefined;
 }
 
-/** Resolve and execute one declarative button as a bounded atomic bulk op. */
+/** Resolve and execute one declarative button as one bounded, prevalidated bulk op. */
 export function opButton(
   board: LoadedBoard,
   buttonId: string,
@@ -1516,7 +1578,7 @@ export function opTransferCard(
   target.substate = position.substate;
   target.file = `cards/${id}-${slugify(source.title)}.md`;
   target.boardPath = source.boardPath === null ? null : options.rewriteBoardPath(source.boardPath);
-  if (target.boardPath !== null) validateBoardPath(target.boardPath);
+  if (target.boardPath !== null) validateBoardPath(target.boardPath, boardPathParentAllowance(targetBoard));
   target.deps = checkedCardReferences(source.deps.map(options.rewriteReference), 'deps');
   target.relations = checkedRelations(source.relations.map((relation) => ({
     ...relation,

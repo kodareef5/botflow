@@ -143,6 +143,31 @@ test('loadTree flags absolute and parent-escaping board paths instead of walking
   }
 });
 
+test('a conventional repo board may roll up a sibling project inside its workspace', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'botflow-workspace-'));
+  const root = join(workspace, '.botflow');
+  const worker = join(workspace, 'worker', '.botflow');
+  try {
+    mkdirSync(join(root, 'cards'), { recursive: true });
+    mkdirSync(join(worker, 'cards'), { recursive: true });
+    writeFileSync(join(root, 'board.yaml'), 'botflow: 0\nname: root\n');
+    writeFileSync(join(worker, 'board.yaml'), 'botflow: 0\nname: worker\n');
+    writeFileSync(join(root, 'cards', '001-worker.md'),
+      '---\nid: 001\ntitle: worker\nlane: todo\ntype: board\nboard: ../worker\n---\n');
+    writeFileSync(join(root, 'cards', '002-outside.md'),
+      '---\nid: 002\ntitle: outside\nlane: todo\ntype: board\nboard: ../../outside\n---\n');
+
+    const tree = loadTree(workspace);
+    const node = tree.boards.get('.')!;
+    assert.equal(node.childKeyByCard.get('001'), '../worker/.botflow');
+    assert.equal(node.board.findings.some((finding) => finding.ref === '001'), false);
+    assert.equal(node.board.findings.find((finding) => finding.ref === '002')?.rule, 'board-path-escape');
+    assert.equal(tree.boards.size, 2, 'the in-workspace sibling is loaded but the escape is not');
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test('opAdd and opEdit reject absolute/parent-escaping board paths', () => {
   const b = boardFromDocuments('botflow: 0\nname: t\n', []);
   for (const bad of ['/etc', 'C:\\windows', '../../outside', 'a/../../b', '..']) {
@@ -164,6 +189,8 @@ test('validateBoardPath unit cases', () => {
   assert.throws(() => validateBoardPath('../x'), /escapes/);
   assert.doesNotThrow(() => validateBoardPath('worker/.botflow'));
   assert.doesNotThrow(() => validateBoardPath('project:hosted'));
+  assert.doesNotThrow(() => validateBoardPath('../worker', 1));
+  assert.throws(() => validateBoardPath('../../outside', 1), /escapes/);
 });
 
 // ── 3. Newline/control-char injection ───────────────────────────────────────

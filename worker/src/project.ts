@@ -1317,28 +1317,19 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
   }
 
   /** Build the full viewer shape without running mutable automation. */
-  private async boardProjection(): Promise<Record<string, unknown>> {
-    const { board, ba, node, children } = await this.analyzed();
+  private async boardProjection(includeFlow = true): Promise<Record<string, unknown>> {
+    const { ba, node, children } = await this.analyzed();
     const tree = { rootAbs: '.', boards: new Map([['.', node]]) };
     const analysis = { boards: new Map([['.', ba]]) };
-    const json = boardJson(tree, analysis) as Record<string, unknown>;
+    const json = boardJson(tree, analysis, '.', Date.now(), { includeFlow, detail: true }) as Record<string, unknown>;
     const previewCache = this.unfurlImages();
-    json['lanes'] = board.config.lanes.map((lane) => ({
-      id: lane.id,
-      name: lane.name,
-      canonical: lane.canonical,
-      substates: lane.substates,
-      order: lane.order,
-      wip: lane.wip,
-      wipMode: lane.wipMode,
-      subscribers: board.config.subscriptions.filter((item) => item.lane === lane.id).map((item) => item.watcher),
-      estimate: board.cards.filter((c) => c.laneId === lane.id).reduce((sum, card) => sum + (card.estimate ?? 0), 0),
-      cards: board.cards
-        .filter((c) => c.laneId === lane.id)
-        .map((c) => this.withPreviews(
-          { ...cardDetailJson(c, node, ba), childProgress: children.get(c.id)?.progress ?? null },
-          previewCache,
-        )),
+    const lanes = json['lanes'] as { cards: Record<string, unknown>[] }[];
+    json['lanes'] = lanes.map((lane) => ({
+      ...lane,
+      cards: lane.cards.map((card) => this.withPreviews(
+        { ...card, childProgress: children.get(String(card['id']))?.progress ?? null },
+        previewCache,
+      )),
     }));
     return json;
   }
@@ -1346,21 +1337,21 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
   /** Authenticated board reads are one of the hosted lazy-automation
    * boundaries. A broken hand-authored board must remain inspectable: defer
    * the failed pass and still return its projection. */
-  async board(): Promise<Record<string, unknown>> {
+  async board(includeFlow = true): Promise<Record<string, unknown>> {
     try {
       this.runAutomationPass();
     } catch (error) {
       this.deferAlarmAfterFailure(error);
       this.rescheduleAlarm();
     }
-    return this.boardProjection();
+    return this.boardProjection(includeFlow);
   }
 
   /** Public page capabilities are observational. Polling one may touch coarse
    * share-access metadata in RegistryDO, but cannot mutate cards, events, or
    * integration queues in this project. */
-  async publicBoard(): Promise<Record<string, unknown>> {
-    return this.boardProjection();
+  async publicBoard(includeFlow = true): Promise<Record<string, unknown>> {
+    return this.boardProjection(includeFlow);
   }
 
   async card(id: string): Promise<Record<string, unknown> | null> {

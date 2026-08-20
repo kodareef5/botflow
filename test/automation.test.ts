@@ -9,6 +9,7 @@ import { cardFlowMetrics, metricTime } from '../src/core/metrics.ts';
 import {
   ClaimConflict,
   UsageError,
+  applyAutomationRules,
   claimability,
   opAutomationPass,
   opBlock,
@@ -196,6 +197,42 @@ rules:
     value: reviewed
 `, [doc('001', ['lane: todo'])]);
   assert.throws(() => opRemoveFilter(referenced.config, 'bugs'), /referenced by rule "scoped-close"/);
+});
+
+test('filtered rules share one immutable analysis and one query per saved filter', () => {
+  const repeated = Array.from({ length: 8 }, (_, index) => `
+  - id: todo-${index}
+    event: close
+    filter: todo
+    action: label
+    value: todo-${index}`).join('');
+  const board = boardFromDocuments(`botflow: 0
+name: cached rules
+features: [automation]
+filters:
+  - id: todo
+    query: state:todo
+  - id: newly-labelled
+    query: label:first-rule
+rules:
+  - id: first
+    event: close
+    action: label
+    value: first-rule
+${repeated}
+  - id: snapshot-proof
+    event: close
+    filter: newly-labelled
+    action: label
+    value: must-not-appear
+`, [doc('001', ['lane: todo'])]);
+  const stats = { analyses: 0, queries: 0 };
+  const applied = applyAutomationRules(board, board.cards[0]!, 'close', 'sam', NOW, stats);
+  assert.equal(stats.analyses, 1, 'all filtered rules share one analyzed snapshot');
+  assert.equal(stats.queries, 2, 'each distinct saved filter is queried once');
+  assert.equal(applied.length, 9);
+  assert.equal(board.cards[0]!.labels.includes('must-not-appear'), false,
+    'an earlier action cannot alter a later filter snapshot');
 });
 
 test('automation pass applies due reminders, snooze expiry, and lazy sweeps once', () => {

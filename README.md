@@ -200,7 +200,7 @@ automation:
 cannot move until unblocked, and blocked duration is aggregated by blocker id. Buttons
 are declarative move/close/label operations—never code or network calls—and board
 buttons are capped at 100 filtered cards. Rules can only label, unlabel, assign,
-delegate, or comment; they run in the primary transaction without recursion.
+delegate, or comment; they run in the primary mutation without recursion.
 
 The CLI runs automation lazily before its work-discovery reads. Hosted projects do the
 same on board fetch and schedule the next due action with a Durable Object alarm. The

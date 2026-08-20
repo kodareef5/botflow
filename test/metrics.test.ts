@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { analyze, analyzeSingle } from '../src/core/analyze.ts';
 import { boardFromDocuments, singleBoardTree } from '../src/core/docs.ts';
 import { boardJson } from '../src/core/json.ts';
-import { boardFlowMetrics, cardFlowEvents, cardFlowMetrics, metricTime } from '../src/core/metrics.ts';
+import { boardFlowMetrics, cardFlowEvents, cardFlowMetrics, FlowProjectionCache, metricTime } from '../src/core/metrics.ts';
 
 const CONFIG = `botflow: 0
 name: flow history
@@ -255,4 +255,37 @@ test('shared board JSON exposes card metrics, flow history, effort, and lane sum
   assert.equal(card.metrics.due.status, 'soon');
   assert.equal(json.flow.throughput.length, 30);
   assert.equal(json.flow.cumulativeFlow.length, 30);
+
+  const pollingJson = boardJson(tree, analysis, '.', metricTime('2026-08-20')!, { includeFlow: false });
+  assert.equal(pollingJson['flow'], undefined, 'ordinary polling can omit board-series metrics');
+  assert.equal(Object.hasOwn(JSON.parse(JSON.stringify(pollingJson)), 'flow'), false,
+    'the omitted series does not consume response bytes');
+});
+
+test('a large projection builds each card flow history once', () => {
+  const cardCount = 400;
+  const entriesPerCard = 80;
+  const docs = Array.from({ length: cardCount }, (_, cardIndex) => {
+    const id = String(cardIndex + 1).padStart(3, '0');
+    const log = Array.from({ length: entriesPerCard }, (_, entryIndex) => {
+      const at = new Date(Date.UTC(2026, 0, 1, 0, entryIndex)).toISOString().slice(0, 16).replace('T', ' ');
+      return entryIndex === 0 ? `${at} agent: created in todo` : `${at} agent: commented: history ${entryIndex}`;
+    });
+    return document(id, 'todo', '2026-01-01', log);
+  });
+  const started = Date.now();
+  const board = boardFromDocuments(CONFIG, docs);
+  const analysis = analyzeSingle(board);
+  const cache = new FlowProjectionCache();
+  const now = metricTime('2026-08-20')!;
+
+  for (const card of board.cards) {
+    cardFlowMetrics(card, board, analysis.canonical.get(card.id)!, now, cache.get(card, board));
+  }
+  boardFlowMetrics(board, now, 30, cache);
+
+  assert.equal(cache.builds, cardCount,
+    'per-card and board-series metrics reuse one parsed flow projection per card');
+  assert.ok(Date.now() - started < 10_000,
+    'the 400-card/80-entry smoke fixture completes within a generous ceiling');
 });

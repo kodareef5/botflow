@@ -1,8 +1,9 @@
 # CARD-FEATURES independent-review hardening plan
 
-Status: in progress locally on `worker/.botflow` card `059`.
+Status: complete locally on `worker/.botflow` card `059`; awaiting owner review.
 
-Base: `1d6e255` plus the nine unpushed CARD-FEATURES commits. This program remains
+Feature base: `1d6e255`, the tip of the nine unpushed CARD-FEATURES commits. The
+independent-review hardening series begins at `45f3b41`. This program remains
 local until the user reviews the finished commit series. The user-owned `.gitignore`
 change and untracked `coverart.patch` are outside the program and must remain untouched.
 
@@ -481,7 +482,7 @@ repository, and make both dogfood boards lint clean.
 | Accessibility | manager and local-viewer keyboard paths, dialog focus, tablist keys, focus-visible rules, meaningful read-only semantics |
 | Performance | one flow parse per card, one rule analysis per mutation, ordinary poll omits unused board series |
 
-## Planned local commit series
+## Completed local commit series
 
 Commits stay cohesive and independently testable; no commit includes `.gitignore` or
 `coverart.patch`.
@@ -499,9 +500,6 @@ Commits stay cohesive and independently testable; no commit includes `.gitignore
    supported cross-board authoring portions of B2.
 8. **Finish release evidence and documentation** — performance checks, accepted-risk
    decisions, traceability, dogfood lint, final review report, and full gate.
-
-Commit boundaries may split when a migration or fixture needs an isolated review, but
-they will not be collapsed into one opaque change.
 
 ## Final review gate
 
