@@ -488,9 +488,34 @@ test('ui: compact cards and editors expose structured presentation data', () => 
     'c.coverColor', 'metrics.agingLevel', 'metrics.dueChanges', 'function dueFace(c)', 'lane.estimate',
     'function customFormFields(', 'function customPayload(', 'data-labeldef', 'data-fielddef',
   ]) assert.ok(page.includes(needle) || app.includes(needle), `structured card UI missing: ${needle}`);
-  assert.match(app, /items\.slice\(0,10\)\.join\(''\)/, 'lowest-priority badges degrade away instead of overflowing forever');
+  assert.match(app, /const shown=items\.slice\(0,10\);shown\.splice\(tagIndex,0,\.\.\.cardTagBadges\(c\)\)/,
+    'non-tag badges remain bounded without consuming the configured tag allowance');
   assert.match(app, /checklistPreview\.slice\(0,2\)/, 'only a compact unfinished checklist preview reaches the face');
   assert.match(app, /ME\.kind==='bot'\?c\.delegate:c\.assignee/, 'bot ownership follows delegation rather than overwriting accountability');
+});
+
+test('ui: card tag limit renders an exact accessible overflow summary', () => {
+  const app = scripts.join('\n');
+  const start = app.indexOf('function labelBadge(');
+  const end = app.indexOf('function blockerOf(', start);
+  assert.ok(start !== -1 && end > start, 'card tag rendering helpers found');
+  const context: Record<string, unknown> = {
+    THEME: { cardTagLimit: 2 },
+    esc: (value: unknown) => String(value),
+  };
+  runInNewContext(`${app.slice(start, end)};rendered=cardTagBadges({labelDetails:[
+    {id:'Group/one',group:'Group',value:'one',color:null},
+    {id:'Group/two',group:'Group',value:'two',color:null},
+    {id:'Group/three',group:'Group',value:'three',color:null},
+    {id:'plain',group:null,value:'plain',color:null}
+  ]}).join('')`, context);
+  const rendered = context['rendered'] as string;
+  assert.equal((rendered.match(/class="lbl"/g) ?? []).length, 2);
+  assert.match(rendered, /class="moretags"/);
+  assert.match(rendered, /title="#three, #plain"/);
+  assert.match(rendered, />\+2 more<\/span>/);
+  assert.match(app, /id="cardtaglimit"/);
+  assert.match(app, /How many tags each card shows before \+N more\./);
 });
 
 test('ui: alternate views share card data, supported axes mutate their source field, and Hill dots stay manual', () => {

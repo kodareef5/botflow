@@ -5,6 +5,7 @@
 
 import { DurableObject } from 'cloudflare:workers';
 
+import { DEFAULT_CARD_TAG_LIMIT, validCardTagLimit } from '../../src/ui/card-face.ts';
 import { DEFAULT_THEME, validTheme, type ThemeChoice } from './themes.ts';
 import {
   absentPasswordHash,
@@ -141,6 +142,20 @@ export interface CompanyRestorePlan {
   legacyKeysDetail?: string;
 }
 
+export interface OrgPrefs {
+  gateShares: boolean;
+  cardTagLimit: number;
+}
+
+function restoredPrefs(value: Record<string, unknown>): OrgPrefs {
+  return {
+    gateShares: value['gateShares'] === true,
+    cardTagLimit: value['cardTagLimit'] === undefined
+      ? DEFAULT_CARD_TAG_LIMIT
+      : validCardTagLimit(value['cardTagLimit']),
+  };
+}
+
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** How long a verified basic-auth credential stays cached in DO memory. A bot
  *  polling a board would otherwise pay a full PBKDF2 derivation every request. */
@@ -255,19 +270,24 @@ export class RegistryDO extends DurableObject {
 
   // ---- prefs (small org-wide switches) ----
 
-  getPrefs(): { gateShares: boolean } {
+  getPrefs(): OrgPrefs {
     const row = this.sql.exec("SELECT value FROM settings WHERE key = 'prefs'").toArray()[0];
-    if (!row) return { gateShares: false };
+    if (!row) return { gateShares: false, cardTagLimit: DEFAULT_CARD_TAG_LIMIT };
     try {
-      const parsed = JSON.parse(row['value'] as string) as { gateShares?: unknown };
-      return { gateShares: parsed.gateShares === true };
+      return restoredPrefs(JSON.parse(row['value'] as string) as Record<string, unknown>);
     } catch {
-      return { gateShares: false };
+      return { gateShares: false, cardTagLimit: DEFAULT_CARD_TAG_LIMIT };
     }
   }
 
-  setPrefs(prefs: { gateShares?: unknown }): { gateShares: boolean } {
-    const next = { gateShares: prefs.gateShares === true };
+  setPrefs(prefs: { gateShares?: unknown; cardTagLimit?: unknown }): OrgPrefs {
+    const current = this.getPrefs();
+    const next = {
+      gateShares: typeof prefs.gateShares === 'boolean' ? prefs.gateShares : current.gateShares,
+      cardTagLimit: prefs.cardTagLimit === undefined
+        ? current.cardTagLimit
+        : validCardTagLimit(prefs.cardTagLimit),
+    };
     this.sql.exec(
       "INSERT INTO settings(key, value) VALUES ('prefs', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
       JSON.stringify(next),
@@ -585,7 +605,7 @@ export class RegistryDO extends DurableObject {
         if (plan.prefs !== undefined) {
           this.sql.exec(
             "INSERT INTO settings(key, value) VALUES ('prefs', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            JSON.stringify({ gateShares: plan.prefs['gateShares'] === true }),
+            JSON.stringify(restoredPrefs(plan.prefs)),
           );
         }
 

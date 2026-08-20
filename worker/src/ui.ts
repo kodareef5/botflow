@@ -5,6 +5,7 @@
 // chat, activity) with checklists, attachments, galleries, and cover art,
 // all stored in the card's markdown body (file-format truth).
 
+import { DEFAULT_CARD_TAG_LIMIT, MAX_CARD_TAG_LIMIT } from '../../src/ui/card-face.ts';
 import { STYLES } from './themes.ts';
 
 const CSS = `
@@ -146,6 +147,7 @@ aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
 .badges .due-overdue,.badges .due-today{color:var(--st-blocked);font-weight:650}
 .badges .due-soon{color:#c47317;font-weight:650}
 .badges .lbl{box-shadow:inset 3px 0 0 var(--lc)}
+.badges .moretags{color:var(--muted);border-style:dashed}
 .badges .fieldface b{font-weight:600;color:var(--muted)}
 .previewtasks{margin-top:6px;padding-top:5px;border-top:1px dashed var(--grid);font-size:11px;color:var(--ink2);display:flex;flex-direction:column;gap:2px}
 .previewtasks span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -400,8 +402,10 @@ html[data-style="blockparty"] .meter .track,html[data-style="blockparty"] .strip
 .accpill{display:inline-flex;align-items:center;gap:6px;border:var(--bw) var(--bs) var(--grid);border-radius:999px;padding:4px 11px;cursor:pointer;font-size:12px;background:var(--surface);box-shadow:none}
 .accpill.on{outline:2px solid var(--acc);outline-offset:1px;background:var(--surface2)}
 .accpill .sw{width:12px;height:12px;border-radius:50%}
-.setting-pair{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:24px;max-width:760px;margin:5px 0 20px}
+.setting-pair{display:grid;grid-template-columns:repeat(3,minmax(180px,1fr));gap:24px;max-width:960px;margin:5px 0 20px}
 .setting-group{min-width:0}
+.limitctl{display:flex;align-items:center;gap:9px;margin-top:9px;font-size:12px;color:var(--ink2)}
+.limitctl input{width:70px}
 .segsel{display:flex;gap:7px;margin-top:9px;flex-wrap:wrap}
 .segsel button{min-width:88px;text-align:left}
 .segsel button span{display:block;font-weight:650;text-transform:capitalize}
@@ -487,13 +491,14 @@ function contrastInk(hex){
 function applyTheme(t){
   const st=THEMES.find(s=>s.id===t.style)||THEMES[0];
   const density=t.density==='compact'?'compact':'relaxed';
+  const cardTagLimit=Number.isInteger(t.cardTagLimit)&&t.cardTagLimit>=0&&t.cardTagLimit<=${MAX_CARD_TAG_LIMIT}?t.cardTagLimit:${DEFAULT_CARD_TAG_LIMIT};
   const modeChoice=t.mode==='light'||t.mode==='dark'?t.mode:'system';
   const mode=modeChoice==='system'?(mq.matches?'dark':'light'):modeChoice;
   const p=st[mode],d=st.densities[density];
   let a,accent;
   if(t.accent==='custom'&&t.custom){accent='custom';a={acc:t.custom,accInk:contrastInk(t.custom)}}
   else{const found=st.accents.find(x=>x.id===t.accent)||st.accents[0];accent=found.id;a=found[mode]}
-  THEME={style:st.id,accent,mode:modeChoice,density,custom:t.custom||null};
+  THEME={style:st.id,accent,mode:modeChoice,density,custom:t.custom||null,cardTagLimit};
   const R=document.documentElement.style;
   const set=(k,v)=>R.setProperty(k,v);
   set('--page',p.page);set('--surface',p.surface);set('--surface2',p.surface2);set('--ink',p.ink);set('--ink2',p.ink2);
@@ -1049,6 +1054,16 @@ function fieldText(v){return Array.isArray(v)?v.join(', '):v===true?'yes':v===fa
 function labelBadge(l){
   return '<span class="lbl" style="--lc:'+esc(l.color||'var(--grid)')+'" title="'+esc(l.group?l.group+': '+l.value:l.id)+'">#'+esc(l.value||l.id)+'</span>';
 }
+function cardTagBadges(c){
+  const details=c.labelDetails||[];
+  const tags=details.length
+    ?details.map(l=>({html:labelBadge(l),text:'#'+(l.value||l.id)}))
+    :(c.labels||[]).map(l=>({html:'<span>#'+esc(l)+'</span>',text:'#'+l}));
+  const visible=tags.slice(0,THEME.cardTagLimit),hidden=tags.slice(THEME.cardTagLimit);
+  const out=visible.map(t=>t.html);
+  if(hidden.length)out.push('<span class="moretags" title="'+esc(hidden.map(t=>t.text).join(', '))+'">+'+hidden.length+' more</span>');
+  return out;
+}
 function blockerOf(c){
   return ((BOARD&&BOARD.blockers)||[]).find(b=>b.id===c.blocker)||{id:c.blocker,name:c.blocker,color:null};
 }
@@ -1068,8 +1083,7 @@ function faceBadges(b,c){
   if(c.metrics&&c.metrics.dueChanges)items.push('<span title="due date changed '+c.metrics.dueChanges+' time(s)">↻ '+c.metrics.dueChanges+'</span>');
   if(c.assignee)items.push('<span title="accountable assignee">@'+esc(who(c.assignee))+'</span>');
   if(c.delegate)items.push('<span title="executing delegate">⇢ @'+esc(who(c.delegate))+'</span>');
-  for(const l of c.labelDetails||[])items.push(labelBadge(l));
-  if(!(c.labelDetails||[]).length)for(const l of c.labels||[])items.push('<span>#'+esc(l)+'</span>');
+  const tagIndex=items.length;
   if(c.checklist)items.push(badge(IC.check,c.checklist.done+'/'+c.checklist.total,c.checklist.done===c.checklist.total?'ok':''));
   if(c.estimate)items.push('<span title="estimate">est '+c.estimate+'</span>');
   for(const f of c.faceFields||[])items.push('<span class="fieldface"><b>'+esc(f.name)+'</b> '+esc(fieldText(f.value))+'</span>');
@@ -1081,7 +1095,8 @@ function faceBadges(b,c){
   if(c.boostCount)items.push(badge('✦',c.boostCount,'boosts'));
   const s=c.metrics&&c.metrics.stagnation;if(s&&s.dots)items.push('<span title="'+s.days+' cumulative days in lane">'+('●'.repeat(s.dots))+'</span>');
   if(ready.has(c.id))items.push('<span class="ready bare">▶ ready</span>');
-  return items.slice(0,10).join('');
+  const shown=items.slice(0,10);shown.splice(tagIndex,0,...cardTagBadges(c));
+  return shown.join('');
 }
 function cardHtml(b,c){
   const board=c.type==='board';
@@ -3051,8 +3066,10 @@ function themeControlsHtml(){
     +'<div class="setting-pair"><div class="setting-group"><h4 class="setting-title">density</h4><p class="setting-note">A designed version of this world, not browser zoom.</p>'
     +'<div class="segsel">'+[['compact','more cards'],['relaxed','more breathing room']].map(x=>'<button type="button" data-density="'+x[0]+'" class="'+(x[0]===THEME.density?'primary':'')+'"><span>'+x[0]+'</span><small>'+x[1]+'</small></button>').join('')+'</div></div>'
     +'<div class="setting-group"><h4 class="setting-title">mode</h4><p class="setting-note">System follows each viewer’s device.</p>'
-    +'<div class="segsel">'+[['system','follow device'],['light','daylight'],['dark','lights out']].map(x=>'<button type="button" data-mode="'+x[0]+'" class="'+(x[0]===THEME.mode?'primary':'')+'"><span>'+x[0]+'</span><small>'+x[1]+'</small></button>').join('')+'</div></div></div>'
-    +'<p class="setting-note">Saved company-wide. Operators and public share pages use the same visual system and density.</p>';
+    +'<div class="segsel">'+[['system','follow device'],['light','daylight'],['dark','lights out']].map(x=>'<button type="button" data-mode="'+x[0]+'" class="'+(x[0]===THEME.mode?'primary':'')+'"><span>'+x[0]+'</span><small>'+x[1]+'</small></button>').join('')+'</div></div>'
+    +'<div class="setting-group"><h4 class="setting-title">card tags</h4><p class="setting-note">How many tags each card shows before +N more.</p>'
+    +'<label class="limitctl"><input type="number" id="cardtaglimit" min="0" max="${MAX_CARD_TAG_LIMIT}" step="1" value="'+THEME.cardTagLimit+'"><span>visible tags</span></label></div></div>'
+    +'<p class="setting-note">Saved company-wide. Operators and public share pages use the same visual system, density, and card tag limit.</p>';
 }
 const SH='<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">';
 async function renderCompanyShares(host){
@@ -3112,7 +3129,8 @@ function renderSettings(main){
     try{const saved=await api('/api/settings',{method:'POST',body:JSON.stringify(next)});applyTheme(saved);const controls=$('#themecontrols');if(controls&&VIEW==='settings'){patchView(controls,themeControlsHtml());wireCustomAccent()}}
     catch(err){const out=$('#serr');if(out)out.textContent=err.message}
   };
-  const wireCustomAccent=()=>{const custom=$('#custcol');if(custom){custom.oninput=e=>applyTheme({...THEME,accent:'custom',custom:e.target.value});custom.onchange=e=>save({...THEME,accent:'custom',custom:e.target.value})}};
+  const wireCustomAccent=()=>{const custom=$('#custcol');if(custom){custom.oninput=e=>applyTheme({...THEME,accent:'custom',custom:e.target.value});custom.onchange=e=>save({...THEME,accent:'custom',custom:e.target.value})}
+    const limit=$('#cardtaglimit');if(limit)limit.onchange=e=>save({...THEME,cardTagLimit:Number(e.target.value)})};
   api('/api/settings').then(cur=>{const gs=$('#gs');if(gs){gs.checked=cur.gateShares!==false;
     gs.onchange=()=>api('/api/settings',{method:'POST',body:JSON.stringify({...THEME,gateShares:gs.checked})}).catch(err=>{$('#serr').textContent=err.message})}});
   renderAccount($('#maccount'));

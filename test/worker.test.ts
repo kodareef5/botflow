@@ -1490,7 +1490,15 @@ vendor:
     assert.equal(publicEventAfter, publicEventBefore, 'public projection polling appends no project event');
     const closedGate = (await call('/api/public/gate')).body as { shares: { token: string }[] };
     assert.equal(closedGate.shares.length, 0, 'share directory is off by default');
+    const tagSettings = await call('/api/settings', {
+      method: 'POST', token: admin, body: JSON.stringify({ cardTagLimit: 4 }),
+    });
+    assert.equal(tagSettings.body['cardTagLimit'], 4, 'owners can set the compact card tag allowance');
+    assert.equal((await call('/api/theme')).body['cardTagLimit'], 4,
+      'the public appearance endpoint carries the limit to operators and share pages');
     await call('/api/settings', { method: 'POST', token: admin, body: JSON.stringify({ gateShares: true }) });
+    assert.equal((await call('/api/settings', { token: admin })).body['cardTagLimit'], 4,
+      'changing an unrelated preference preserves the tag allowance');
     const openGate = (await call('/api/public/gate')).body as { shares: { token: string }[] };
     assert.ok(openGate.shares.some((s) => s.token === share), 'admin can opt in to the share directory');
 

@@ -575,7 +575,8 @@ export default {
       const status = await registry.status();
       // Theme is public chrome: the gate and share pages paint with it pre-auth.
       if (req.method === 'GET' && url.pathname === '/api/theme') {
-        return json(await registry.getTheme());
+        const prefs = await registry.getPrefs();
+        return json({ ...(await registry.getTheme()), cardTagLimit: prefs.cardTagLimit });
       }
       if (req.method === 'POST' && url.pathname === '/api/setup') {
         if (status.initialized) return json({ error: 'already initialized' }, 409);
@@ -753,8 +754,8 @@ export default {
           const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
           if (body === null) return json({ error: 'invalid JSON body' }, 400);
           const theme = await registry.setTheme(body as never);
-          const prefs = 'gateShares' in body ? await registry.setPrefs(body) : await registry.getPrefs();
-          await registry.audit(actor, 'settings', `style ${theme.style}/${theme.accent} ${theme.density}, mode ${theme.mode}, gate shares ${prefs.gateShares ? 'on' : 'off'}`);
+          const prefs = 'gateShares' in body || 'cardTagLimit' in body ? await registry.setPrefs(body) : await registry.getPrefs();
+          await registry.audit(actor, 'settings', `style ${theme.style}/${theme.accent} ${theme.density}, mode ${theme.mode}, card tags ${prefs.cardTagLimit}, gate shares ${prefs.gateShares ? 'on' : 'off'}`);
           return json({ ...theme, ...prefs });
         }
       }

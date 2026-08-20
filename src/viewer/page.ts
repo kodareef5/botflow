@@ -11,6 +11,7 @@ import type { Analysis } from '../core/analyze.ts';
 import { lintBoard } from '../core/analyze.ts';
 import type { Tree } from '../core/load.ts';
 import { boardJson, cardJson } from '../cli/render.ts';
+import { DEFAULT_CARD_TAG_LIMIT, MAX_CARD_TAG_LIMIT } from '../ui/card-face.ts';
 import { STYLES } from '../ui/themes.ts';
 
 export interface ViewerData {
@@ -103,7 +104,7 @@ main[data-layout=kanban]{display:flex;gap:12px;align-items:flex-start}
 .badges .p1{color:#c47317;font-weight:650}
 .badges .blk{color:var(--st-blocked)}
 .badges .due-overdue,.badges .due-today{color:var(--st-blocked);font-weight:650}.badges .due-soon{color:#c47317;font-weight:650}
-.badges .lbl{box-shadow:inset 3px 0 0 var(--lc)}.badges .fieldface b{font-weight:600;color:var(--muted)}
+.badges .lbl{box-shadow:inset 3px 0 0 var(--lc)}.badges .moretags{color:var(--muted);border-style:dashed}.badges .fieldface b{font-weight:600;color:var(--muted)}
 .previewtasks{margin-top:6px;padding-top:5px;border-top:1px dashed var(--grid);font-size:11px;color:var(--ink2);display:flex;flex-direction:column;gap:2px}.previewtasks span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.previewtasks span::before{content:"□ ";color:var(--muted)}
 .subboard{margin-top:7px;display:flex;gap:8px;align-items:center}
 .subboard button{font:12px var(--font);border:var(--bw) var(--bs) var(--grid);background:var(--surface);color:var(--ink);border-radius:var(--rk);padding:2px 8px;cursor:pointer}
@@ -177,6 +178,9 @@ let DATA=window.__BOTFLOW__||null,CUR='.',LIVE=window.__LIVE__===true;
 let LAYOUT=localStorage.getItem('bfv_layout')||'kanban';
 if(!['kanban','table','swimlane','calendar','timeline','grouped','metrics','hill'].includes(LAYOUT))LAYOUT='kanban';
 let GROUP_AXIS=localStorage.getItem('bfv_group_axis')||'assignee',SWIM_AXIS=localStorage.getItem('bfv_swim_axis')||'assignee',CAL_MONTH=null,TABLE_SORT='id',TABLE_DESC=false;
+const STORED_CARD_TAG_LIMIT=localStorage.getItem('bfv_card_tag_limit');
+let CARD_TAG_LIMIT=STORED_CARD_TAG_LIMIT===null?${DEFAULT_CARD_TAG_LIMIT}:Number(STORED_CARD_TAG_LIMIT);
+if(!Number.isInteger(CARD_TAG_LIMIT)||CARD_TAG_LIMIT<0||CARD_TAG_LIMIT>${MAX_CARD_TAG_LIMIT})CARD_TAG_LIMIT=${DEFAULT_CARD_TAG_LIMIT};
 // ---- shared theme layer (same worlds as the hosted manager) ----
 const THEMES=window.__THEMES__;
 const mq=matchMedia('(prefers-color-scheme: dark)');
@@ -205,6 +209,7 @@ function applyTheme(){
   const ts=$('#tstyle');if(ts)ts.value=st.id;
   const ta=$('#taccent');if(ta){ta.innerHTML=st.accents.map(a=>'<option value="'+a.id+'" '+((THEME.accent||st.accents[0].id)===a.id?'selected':'')+'>'+esc(a.name)+'</option>').join('')}
   const tm=$('#tmode');if(tm)tm.textContent=THEME.mode==='light'?'☀':THEME.mode==='dark'?'☾':'auto';
+  const tl=$('#taglimit');if(tl)tl.value=String(CARD_TAG_LIMIT);
 }
 function saveTheme(){localStorage.setItem('bfv_theme',JSON.stringify(THEME));applyTheme()}
 mq.addEventListener('change',applyTheme);
@@ -231,6 +236,16 @@ function md(src){
   return out.join('\\n')}
 function fieldText(v){return Array.isArray(v)?v.join(', '):v===true?'yes':v===false?'no':String(v)}
 function labelBadge(l){return '<span class="lbl" style="--lc:'+esc(l.color||'var(--grid)')+'" title="'+esc(l.group?l.group+': '+l.value:l.id)+'">#'+esc(l.value||l.id)+'</span>'}
+function cardTagBadges(c){
+  const details=c.labelDetails||[];
+  const tags=details.length
+    ?details.map(l=>({html:labelBadge(l),text:'#'+(l.value||l.id)}))
+    :(c.labels||[]).map(l=>({html:'<span>#'+esc(l)+'</span>',text:'#'+l}));
+  const visible=tags.slice(0,CARD_TAG_LIMIT),hidden=tags.slice(CARD_TAG_LIMIT);
+  const out=visible.map(t=>t.html);
+  if(hidden.length)out.push('<span class="moretags" title="'+esc(hidden.map(t=>t.text).join(', '))+'">+'+hidden.length+' more</span>');
+  return out;
+}
 function dueFace(c){
   const d=c.metrics&&c.metrics.due;if(!d||d.status==='complete')return null;
   const text=d.status==='overdue'?Math.abs(d.days)+'d late':d.status==='today'?'due today':d.days+'d';
@@ -243,8 +258,7 @@ function badge(c){
   if(c.metrics&&c.metrics.dueChanges)b.push('<span title="due date changed '+c.metrics.dueChanges+' time(s)">↻ '+c.metrics.dueChanges+'</span>');
   if(c.assignee)b.push('<span title="accountable assignee">@'+esc(c.assignee)+'</span>');
   if(c.delegate)b.push('<span title="executing delegate">⇢ @'+esc(c.delegate)+'</span>');
-  for(const l of c.labelDetails||[])b.push(labelBadge(l));
-  if(!(c.labelDetails||[]).length)for(const l of c.labels||[])b.push('<span>#'+esc(l)+'</span>');
+  const tagIndex=b.length;
   if(c.checklist)b.push('<span>☑ '+c.checklist.done+'/'+c.checklist.total+'</span>');
   if(c.estimate)b.push('<span>est '+c.estimate+'</span>');
   for(const f of c.faceFields||[])b.push('<span class="fieldface"><b>'+esc(f.name)+'</b> '+esc(fieldText(f.value))+'</span>');
@@ -256,7 +270,8 @@ function badge(c){
   if(c.boostCount)b.push('<span title="boosts">✦ '+c.boostCount+'</span>');
   const s=c.metrics&&c.metrics.stagnation;if(s&&s.dots)b.push('<span title="'+s.days+' cumulative days in lane">'+('●'.repeat(s.dots))+'</span>');
   if(READY.has(c.id))b.push('<span class="ready">▶ ready</span>');
-  return b.slice(0,10).join('')}
+  const shown=b.slice(0,10);shown.splice(tagIndex,0,...cardTagBadges(c));
+  return shown.join('')}
 let READY=new Set();
 function cardHtml(c){
   const board=c.type==='board';
@@ -426,6 +441,7 @@ $('#tstyle').innerHTML=THEMES.map(s=>'<option value="'+s.id+'">'+esc(s.name)+'</
 $('#tstyle').addEventListener('change',e=>{THEME.style=e.target.value;THEME.accent=null;saveTheme()});
 $('#taccent').addEventListener('change',e=>{THEME.accent=e.target.value;saveTheme()});
 $('#tmode').addEventListener('click',()=>{THEME.mode=THEME.mode==='system'?'light':THEME.mode==='light'?'dark':'system';saveTheme()});
+$('#taglimit').addEventListener('change',e=>{CARD_TAG_LIMIT=Number(e.target.value);localStorage.setItem('bfv_card_tag_limit',String(CARD_TAG_LIMIT));render()});
 applyTheme();
 async function poll(){
   try{const r=await fetch('/api/data');const next=await r.text();
@@ -463,6 +479,9 @@ export function viewerHtml(data: ViewerData | null, opts: { live: boolean; title
     <select id="tstyle" aria-label="visual style"></select>
     <select id="taccent" aria-label="accent"></select>
     <button id="tmode" aria-label="color mode" title="cycle system, light, dark">auto</button>
+    <span class="lbl">tags</span><select id="taglimit" aria-label="visible tags per card">
+      ${Array.from({ length: MAX_CARD_TAG_LIMIT + 1 }, (_, value) => `<option value="${value}">${value === 0 ? 'none' : value}</option>`).join('')}
+    </select>
   </div>
 </header>
 <main></main>

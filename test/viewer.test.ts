@@ -54,7 +54,10 @@ test('viewer: shared theme layer ships and its scripts parse', () => {
   for (const script of [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]!)) {
     new Function(script); // eslint-disable-line no-new-func
   }
-  for (const needle of ['__THEMES__', 'applyTheme', 'data-style=harbor', 'data-style=blockparty', 'id="tstyle"', '--st-doing']) {
+  for (const needle of [
+    '__THEMES__', 'applyTheme', 'data-style=harbor', 'data-style=blockparty', 'id="tstyle"', '--st-doing',
+    'id="taglimit"', 'bfv_card_tag_limit', 'cardTagBadges', "hidden.length+' more</span>'",
+  ]) {
     assert.ok(html.includes(needle), `viewer page missing: ${needle}`);
   }
 });
