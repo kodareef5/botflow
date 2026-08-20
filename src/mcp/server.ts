@@ -47,6 +47,7 @@ const str = { type: 'string' } as const;
 const bool = { type: 'boolean' } as const;
 const positiveInt = { type: 'integer', minimum: 1 } as const;
 const strList = { type: 'array', items: { type: 'string' } } as const;
+const fieldMap = { type: 'object', additionalProperties: true } as const;
 
 function schema(required: string[], props: Json): Json {
   return { type: 'object', properties: props, required, additionalProperties: false };
@@ -82,6 +83,11 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       throw new UsageError(`invalid ${name}: expected a positive integer`);
     }
     return v;
+  };
+  const fieldsOf = (v: unknown): Record<string, unknown> | undefined => {
+    if (v === undefined) return undefined;
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) throw new UsageError('invalid fields: expected an object');
+    return v as Record<string, unknown>;
   };
 
   const view = () => {
@@ -150,7 +156,8 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       inputSchema: schema(['title'], {
         title: str, lane: str, type: { type: 'string', enum: ['task', 'board'] }, board_path: str,
         labels: strList, priority: { type: 'string', enum: PRIORITIES }, deps: strList,
-        assignee: str, delegate: str, start: str, due: str, estimate: positiveInt, evergreen: bool, actor: str,
+        assignee: str, delegate: str, start: str, due: str, estimate: positiveInt, evergreen: bool,
+        cover_color: str, fields: fieldMap, actor: str,
       }),
       run: (args) => {
         const card = addCard(root, {
@@ -167,6 +174,8 @@ function buildTools(root: string, defaultActor: string): Tool[] {
           due: args['due'] === undefined ? undefined : strOf(args['due'], 'due'),
           estimate: positiveIntOf(args['estimate'], 'estimate'),
           evergreen: args['evergreen'] === true,
+          coverColor: args['cover_color'] === undefined ? undefined : strOf(args['cover_color'], 'cover_color'),
+          fields: fieldsOf(args['fields']),
           actor: actorOf(args),
         });
         return { id: card.id, file: card.file, lane: card.laneId };
@@ -227,7 +236,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
         assignee: { type: ['string', 'null'] }, delegate: { type: ['string', 'null'] }, deps: strList,
         start: { type: ['string', 'null'] }, due: { type: ['string', 'null'] },
         estimate: { type: ['integer', 'null'], minimum: 1 }, evergreen: bool, board_path: str,
-        cover: { type: ['string', 'null'] }, actor: str,
+        cover: { type: ['string', 'null'] }, cover_color: { type: ['string', 'null'] }, fields: fieldMap, actor: str,
       }),
       run: (args) => {
         const patch: EditPatch = {};
@@ -246,6 +255,8 @@ function buildTools(root: string, defaultActor: string): Tool[] {
         }
         if ('board_path' in args) patch.boardPath = opt(args['board_path']);
         if ('cover' in args) patch.cover = args['cover'] === null ? null : strOf(args['cover'], 'cover');
+        if ('cover_color' in args) patch.coverColor = args['cover_color'] === null ? null : strOf(args['cover_color'], 'cover_color');
+        if ('fields' in args) patch.fields = fieldsOf(args['fields']);
         const card = editCard(root, strOf(args['id'], 'id'), patch, actorOf(args));
         return { id: card.id, edited: Object.keys(patch) };
       },

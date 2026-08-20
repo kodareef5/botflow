@@ -1,0 +1,25 @@
+botflow: 0
+name: presentation
+features: [scoped-labels, custom-fields, cover-colors]
+labels:
+  - id: Type/Bug
+    color: "#d03b3b"
+  - id: Team/Platform
+    color: "#2a78d6"
+fields:
+  - id: sprint
+    name: Sprint
+    type: number
+    face: true
+  - id: risk
+    name: Risk
+    type: select
+    options: [low, medium, high]
+    face: true
+  - id: notes
+    name: Notes
+    type: text
+lanes:
+  - id: todo
+  - id: doing
+  - id: done

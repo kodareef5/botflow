@@ -7,6 +7,7 @@ import { addAttachmentLine, appendToSection, parseBody, removeAttachmentLine, se
 import { emitScalar } from './emit.ts';
 import { validCardDate, validEstimate } from './fields.ts';
 import { newHashId, nextSeqId, slugify } from './ids.ts';
+import { labelGroupConflict, validColor, validCustomFieldValue } from './presentation.ts';
 import { logMutation, nowDate, nowDateTime, sanitizeActor, sanitizeBlock, sanitizeInline, sanitizeSectionName, sanitizeUrl } from './write.ts';
 
 /** An error caused by how a tool was invoked: message for the caller, no stack. */
@@ -140,6 +141,8 @@ export interface AddOptions {
   due?: string | undefined;
   estimate?: number | undefined;
   evergreen?: boolean | undefined;
+  coverColor?: string | undefined;
+  fields?: Record<string, unknown> | undefined;
   actor: string;
 }
 
@@ -172,8 +175,51 @@ function cleanActorField(value: string | null | undefined): string | null | unde
   return clean === '' ? null : clean;
 }
 
+function checkedLabels(labels: string[]): string[] {
+  const conflict = labelGroupConflict(labels);
+  if (conflict !== null) throw new UsageError(conflict);
+  return labels;
+}
+
+function checkedCoverColor(value: string | null | undefined): string | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (!validColor(value)) throw new UsageError('cover color must be #RGB or #RRGGBB');
+  return value.toLowerCase();
+}
+
+function checkedCustomFields(
+  board: LoadedBoard | undefined,
+  values: Record<string, unknown> | undefined,
+  allowClear: boolean,
+): Record<string, unknown> {
+  if (values === undefined) return {};
+  if (board === undefined && Object.keys(values).length > 0) throw new UsageError('custom field edits require board context');
+  const clean: Record<string, unknown> = {};
+  for (const [id, value] of Object.entries(values)) {
+    const definition = board!.config.customFields.find((field) => field.id === id);
+    if (definition === undefined) throw new UsageError(`unknown custom field "${id}"`);
+    if (value === null && allowClear) {
+      clean[id] = null;
+      continue;
+    }
+    if (!validCustomFieldValue(definition, value)) {
+      throw new UsageError(`custom field "${id}" must be a valid ${definition.type} value`);
+    }
+    clean[id] = value;
+  }
+  return clean;
+}
+
+function sameValue(left: unknown, right: unknown): boolean {
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((value, index) => sameValue(value, right[index]));
+  }
+  return Object.is(left, right);
+}
+
 export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
   const config = board.config;
+  if (opts.title.trim() === '') throw new UsageError('title required');
   const type = opts.type ?? 'task';
   if (type === 'board') {
     if (!opts.boardPath) throw new UsageError('a board-card needs a board path');
@@ -186,6 +232,7 @@ export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
 
   const existing = board.cards.map((c) => c.id);
   const id = config.ids === 'seq' ? nextSeqId(existing) : newHashId(existing);
+  const fields = checkedCustomFields(board, opts.fields, false);
   const card: Card = {
     id,
     title: opts.title,
@@ -193,7 +240,7 @@ export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
     substate: pos.substate,
     type,
     boardPath: type === 'board' ? opts.boardPath! : null,
-    labels: opts.labels ?? [],
+    labels: checkedLabels(opts.labels ?? []),
     assignee: cleanActorField(opts.assignee) ?? null,
     delegate: cleanActorField(opts.delegate) ?? null,
     priority: checkedPriority(opts.priority) ?? null,
@@ -203,10 +250,11 @@ export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
     estimate: checkedEstimate(opts.estimate) ?? null,
     evergreen: opts.evergreen === true,
     cover: null,
+    coverColor: checkedCoverColor(opts.coverColor) ?? null,
     blocked: null,
     created: nowDate(),
     updated: null,
-    extra: {},
+    extra: fields,
     file: `cards/${id}-${slugify(opts.title)}.md`,
     body: '',
   };
@@ -364,59 +412,89 @@ export interface EditPatch {
   boardPath?: string | undefined;
   /** Image url, 'none' to suppress card art, or null to clear (auto fallback). */
   cover?: string | null | undefined;
+  coverColor?: string | null | undefined;
+  /** Declared custom-field values; null clears one. */
+  fields?: Record<string, unknown> | undefined;
 }
 
-export function opEdit(card: Card, patch: EditPatch, actor: string): Card {
+export function opEdit(card: Card, patch: EditPatch, actor: string, board?: LoadedBoard): Card {
+  if (patch.title !== undefined && patch.title.trim() === '') throw new UsageError('title required');
+  const labels = patch.labels === undefined ? undefined : checkedLabels(patch.labels);
+  const priority = patch.priority === undefined ? undefined : (checkedPriority(patch.priority) ?? null);
+  const assignee = patch.assignee === undefined ? undefined : (cleanActorField(patch.assignee) ?? null);
+  const delegate = patch.delegate === undefined ? undefined : (cleanActorField(patch.delegate) ?? null);
+  const start = patch.start === undefined ? undefined : (checkedDate(patch.start, 'start') ?? null);
+  const due = patch.due === undefined ? undefined : (checkedDate(patch.due, 'due') ?? null);
+  const estimate = patch.estimate === undefined ? undefined : (checkedEstimate(patch.estimate) ?? null);
+  const coverColor = patch.coverColor === undefined ? undefined : (checkedCoverColor(patch.coverColor) ?? null);
+  const fields = checkedCustomFields(board, patch.fields, true);
+  if (patch.boardPath !== undefined) {
+    if (card.type !== 'board') throw new UsageError('board path only applies to board-cards');
+    validateBoardPath(patch.boardPath);
+  }
+
   const changed: string[] = [];
   if (patch.title !== undefined && patch.title !== card.title) {
     card.title = patch.title;
     changed.push('title');
   }
-  if (patch.labels !== undefined) {
-    card.labels = patch.labels;
+  if (labels !== undefined && !sameValue(labels, card.labels)) {
+    card.labels = labels;
     changed.push('labels');
   }
-  if (patch.priority !== undefined) {
-    card.priority = checkedPriority(patch.priority) ?? null;
+  if (patch.priority !== undefined && priority !== card.priority) {
+    card.priority = priority!;
     changed.push('priority');
   }
-  if (patch.assignee !== undefined) {
-    card.assignee = cleanActorField(patch.assignee) ?? null;
+  if (patch.assignee !== undefined && assignee !== card.assignee) {
+    card.assignee = assignee!;
     changed.push('assignee');
   }
-  if (patch.delegate !== undefined) {
-    card.delegate = cleanActorField(patch.delegate) ?? null;
+  if (patch.delegate !== undefined && delegate !== card.delegate) {
+    card.delegate = delegate!;
     changed.push('delegate');
   }
-  if (patch.deps !== undefined) {
+  if (patch.deps !== undefined && !sameValue(patch.deps, card.deps)) {
     card.deps = patch.deps;
     changed.push('deps');
   }
-  if (patch.start !== undefined) {
-    card.start = checkedDate(patch.start, 'start') ?? null;
+  if (patch.start !== undefined && start !== card.start) {
+    card.start = start!;
     changed.push('start');
   }
-  if (patch.due !== undefined) {
-    card.due = checkedDate(patch.due, 'due') ?? null;
+  if (patch.due !== undefined && due !== card.due) {
+    card.due = due!;
     changed.push('due');
   }
-  if (patch.estimate !== undefined) {
-    card.estimate = checkedEstimate(patch.estimate) ?? null;
+  if (patch.estimate !== undefined && estimate !== card.estimate) {
+    card.estimate = estimate!;
     changed.push('estimate');
   }
-  if (patch.evergreen !== undefined) {
+  if (patch.evergreen !== undefined && patch.evergreen !== card.evergreen) {
     card.evergreen = patch.evergreen;
     changed.push('evergreen');
   }
-  if (patch.boardPath !== undefined) {
-    if (card.type !== 'board') throw new UsageError('board path only applies to board-cards');
-    validateBoardPath(patch.boardPath);
+  if (patch.boardPath !== undefined && patch.boardPath !== card.boardPath) {
     card.boardPath = patch.boardPath;
     changed.push('board');
   }
-  if (patch.cover !== undefined) {
+  if (patch.cover !== undefined && patch.cover !== card.cover) {
     card.cover = patch.cover;
     changed.push('cover');
+  }
+  if (coverColor !== undefined && coverColor !== card.coverColor) {
+    card.coverColor = coverColor;
+    changed.push('cover_color');
+  }
+  for (const [id, value] of Object.entries(fields)) {
+    if (value === null) {
+      if (!Object.hasOwn(card.extra, id)) continue;
+      delete card.extra[id];
+    } else {
+      if (sameValue(card.extra[id], value)) continue;
+      card.extra[id] = value;
+    }
+    changed.push(`field:${id}`);
   }
   if (changed.length === 0) throw new UsageError('nothing to edit');
   logMutation(card, actor, `edited ${changed.join(', ')}`);

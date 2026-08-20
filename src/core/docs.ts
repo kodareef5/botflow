@@ -10,6 +10,7 @@ import { parseBoardConfig } from './config.ts';
 import { parseCard } from './card.ts';
 import type { BoardConfig, Card, Finding, LoadedBoard, Tree } from './model.ts';
 import { HASH_ID_RE, SEQ_ID_RE, fallbackConfig, finding } from './model.ts';
+import { labelGroupConflict, validCustomFieldValue } from './presentation.ts';
 
 export interface BoardDocument {
   /** Path relative to the board root, e.g. "cards/042-fix-auth.md". */
@@ -32,12 +33,28 @@ export function parseCardDocument(doc: BoardDocument, config: BoardConfig, findi
   }
   let card: Card | null = null;
   try {
-    card = parseCard(parseYaml(split.yaml), fileRef, doc.path, split.body, findings);
+    card = parseCard(
+      parseYaml(split.yaml),
+      fileRef,
+      doc.path,
+      split.body,
+      findings,
+      new Set(config.customFields.map((field) => field.id)),
+    );
   } catch (err) {
     if (!(err instanceof YamlError)) throw err;
     findings.push(finding('yaml-error', fileRef, `${rel}: ${err.message}`));
   }
   if (card === null) return null;
+
+  const conflict = labelGroupConflict(card.labels);
+  if (conflict !== null) findings.push(finding('label-group-conflict', card.id, conflict));
+  for (const definition of config.customFields) {
+    const value = card.extra[definition.id];
+    if (value !== undefined && !validCustomFieldValue(definition, value)) {
+      findings.push(finding('custom-field-value', card.id, `custom field "${definition.id}" has an invalid ${definition.type} value`));
+    }
+  }
 
   const idRe = config.ids === 'seq' ? SEQ_ID_RE : HASH_ID_RE;
   if (!idRe.test(card.id)) {

@@ -6,9 +6,14 @@ import { lintBoard } from './analyze.ts';
 import { parseBody } from './body.ts';
 import type { BoardNode, Card, Tree } from './model.ts';
 import { boardFlowMetrics, cardFlowMetrics } from './metrics.ts';
+import { cardCustomFields, labelColor, scopedLabel } from './presentation.ts';
 
 export function cardJson(card: Card, node: BoardNode, ba: BoardAnalysis, nowValue: number | Date = Date.now()): Record<string, unknown> {
   const parsed = parseBody(card.body);
+  const fields = cardCustomFields(card, node.board.config);
+  const checklistPreview = parsed.checklists.flatMap((checklist) => checklist.items
+    .filter((item) => !item.checked)
+    .map((item) => ({ ...item, section: checklist.section })));
   return {
     id: card.id,
     title: card.title,
@@ -20,6 +25,10 @@ export function cardJson(card: Card, node: BoardNode, ba: BoardAnalysis, nowValu
     board: card.boardPath,
     child: card.type === 'board' ? (node.childKeyByCard.get(card.id) ?? null) : undefined,
     labels: card.labels,
+    labelDetails: card.labels.map((id) => {
+      const scoped = scopedLabel(id);
+      return { id, group: scoped?.group ?? null, value: scoped?.value ?? id, color: labelColor(node.board.config, id) };
+    }),
     assignee: card.assignee,
     delegate: card.delegate,
     priority: card.priority,
@@ -30,14 +39,19 @@ export function cardJson(card: Card, node: BoardNode, ba: BoardAnalysis, nowValu
     evergreen: card.evergreen,
     blocked: card.blocked,
     cover: card.cover === 'none' ? null : (card.cover ?? parsed.images[0] ?? null),
+    coverColor: card.coverColor,
     // Whether a viewer may supply art of its own. `cover` alone cannot say:
     // it is null both when art is suppressed and when none was found, and a
     // viewer that substituted a picture in the first case would be overriding
     // an explicit `cover: none`.
     coverAuto: card.cover === null,
     checklist: parsed.checklist.total > 0 ? parsed.checklist : null,
+    checklistPreview,
     comments: parsed.comments.length,
     attachments: parsed.attachments.length,
+    descriptionPresent: parsed.description !== null,
+    fields,
+    faceFields: fields.filter((field) => field.face),
     // Who made this card, read back off the creation entry opAdd always
     // writes first. Derived, not stored: no frontmatter key, no spec change,
     // and it answers for every card that already exists. The `created` check
@@ -64,6 +78,9 @@ export function boardJson(tree: Tree, analysis: Analysis, key = '.', nowValue: n
     name: node.board.config.name,
     key,
     ids: node.board.config.ids,
+    features: node.board.config.features,
+    labels: node.board.config.labelDefinitions.map(({ id, color }) => ({ id, color })),
+    fields: node.board.config.customFields.map(({ id, name, type, options, face }) => ({ id, name, type, options, face })),
     cards: node.board.cards.length,
     progress: ba.progress,
     effort: ba.effort,

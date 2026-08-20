@@ -1,7 +1,7 @@
 export * from './model.ts';
 export { parseYaml, YamlError, type YamlValue } from './yaml.ts';
 export { splitFrontmatter, joinFrontmatter, type FrontmatterSplit } from './frontmatter.ts';
-export { parseBoardConfig } from './config.ts';
+export { emitBoardYaml, parseBoardConfig, parseCustomFields, parseLabelDefinitions } from './config.ts';
 export { parseCard } from './card.ts';
 export {
   loadBoard,
@@ -37,6 +37,19 @@ export {
 export { boardJson as coreBoardJson, cardDetailJson, cardJson as coreCardJson, rollupJson as coreRollupJson } from './json.ts';
 export { emitMap, emitScalar } from './emit.ts';
 export { validCardDate, validEstimate } from './fields.ts';
+export {
+  BUILTIN_CARD_KEYS,
+  RESERVED_CARD_KEYS,
+  cardCustomFields,
+  customFieldFilled,
+  labelColor,
+  labelGroupConflict,
+  parseCustomFieldText,
+  scopedLabel,
+  validColor,
+  validCustomFieldValue,
+  type CustomFieldValue,
+} from './presentation.ts';
 export {
   boardFlowMetrics,
   cardFlowEvents,

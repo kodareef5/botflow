@@ -204,7 +204,7 @@ export function addLogEntry(root: string, id: string, actor: string, message: st
 
 export function editCard(root: string, id: string, patch: EditPatch, actor: string): Card {
   return mutateCard(root, (board) => {
-    const card = opEdit(getCard(board, id), patch, actor);
+    const card = opEdit(getCard(board, id), patch, actor, board);
     writeCard(root, card);
     return card;
   });

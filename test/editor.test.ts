@@ -86,7 +86,7 @@ test('emitBoardYaml omits every default: a plain board stays tiny', () => {
   assert.deepEqual({ ...reparsed, lanesDefaulted: true }, config);
 });
 
-test('board.yaml rewrites preserve unknown top-level, lane, and rollup data', () => {
+test('board.yaml rewrites preserve unknown top-level and nested registry data', () => {
   const findings: Finding[] = [];
   const config = parseBoardConfig(parseYaml(`botflow: 0
 name: future-safe
@@ -94,6 +94,17 @@ lanes:
   - id: todo
     visual:
       color: blue
+labels:
+  - id: Type/Bug
+    color: "#d03b3b"
+    icon: bug
+fields:
+  - id: risk
+    name: Risk
+    type: select
+    options: [low, high]
+    face: true
+    width: compact
 rollup:
   future_mode: weighted
 vendor:
@@ -101,8 +112,10 @@ vendor:
   nested:
     enabled: true
 `), findings);
-  assert.deepEqual(findings.map((f) => f.rule), ['unknown-key', 'unknown-key', 'unknown-key']);
+  assert.deepEqual(findings.map((f) => f.rule), ['unknown-key', 'unknown-key', 'unknown-key', 'unknown-key', 'unknown-key']);
   assert.deepEqual(config.lanes[0]!.extra, { visual: { color: 'blue' } });
+  assert.deepEqual(config.labelDefinitions[0]!.extra, { icon: 'bug' });
+  assert.deepEqual(config.customFields[0]!.extra, { width: 'compact' });
   assert.deepEqual(config.rollup.extra, { future_mode: 'weighted' });
   assert.deepEqual(config.extra, { vendor: { flags: ['alpha', 'beta'], nested: { enabled: true } } });
 

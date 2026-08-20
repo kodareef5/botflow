@@ -32,6 +32,7 @@ export function viewerData(tree: Tree, analysis: Analysis): ViewerData {
       substates: lane.substates,
       order: lane.order,
       wip: lane.wip,
+      estimate: node.board.cards.filter((c) => c.laneId === lane.id).reduce((sum, card) => sum + (card.estimate ?? 0), 0),
       cards: node.board.cards
         .filter((c) => c.laneId === lane.id)
         .map((c) => ({ ...cardJson(c, node, ba), body: c.body })),
@@ -81,9 +82,13 @@ main{display:flex;gap:12px;padding:16px 20px 40px;overflow-x:auto;align-items:fl
 .col h2 .wipbad{color:var(--st-blocked);font-weight:650}
 .col h2 .canon{color:var(--muted);font-weight:400;text-transform:none}
 .sub-h{font-size:11px;color:var(--muted);padding:6px 4px 2px;border-top:1px dashed var(--grid);margin-top:6px}
-.card{border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);padding:8px 10px;margin:6px 0;background:var(--page);cursor:pointer}
+.card{border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);padding:0;margin:6px 0;background:var(--page);cursor:pointer;overflow:hidden;transition:opacity .12s ease,filter .12s ease}
 .card:hover{border-color:var(--baseline)}
 .card.blocked{border-left:3px solid var(--st-blocked)}
+.card.has-color::before{content:"";display:block;height:5px;background:var(--cover-color)}
+.card.age-1:not(:hover):not(:focus-within){opacity:.9}.card.age-2:not(:hover):not(:focus-within){opacity:.8}.card.age-3:not(:hover):not(:focus-within){opacity:.68;filter:saturate(.65)}
+.card .art{width:100%;height:90px;object-fit:cover;display:block;border-bottom:var(--bw) var(--bs) var(--grid)}
+.card .inner{padding:8px 10px}
 .card .cid{font:11px ui-monospace,Menlo,monospace;color:var(--muted)}
 .card .t{font-weight:550;margin:1px 0 4px}
 .badges{display:flex;flex-wrap:wrap;gap:5px;font-size:11px;color:var(--ink2)}
@@ -92,6 +97,9 @@ main{display:flex;gap:12px;padding:16px 20px 40px;overflow-x:auto;align-items:fl
 .badges .p0{color:var(--st-blocked);font-weight:650}
 .badges .p1{color:#c47317;font-weight:650}
 .badges .blk{color:var(--st-blocked)}
+.badges .due-overdue,.badges .due-today{color:var(--st-blocked);font-weight:650}.badges .due-soon{color:#c47317;font-weight:650}
+.badges .lbl{box-shadow:inset 3px 0 0 var(--lc)}.badges .fieldface b{font-weight:600;color:var(--muted)}
+.previewtasks{margin-top:6px;padding-top:5px;border-top:1px dashed var(--grid);font-size:11px;color:var(--ink2);display:flex;flex-direction:column;gap:2px}.previewtasks span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.previewtasks span::before{content:"□ ";color:var(--muted)}
 .subboard{margin-top:7px;display:flex;gap:8px;align-items:center}
 .subboard button{font:12px var(--font);border:var(--bw) var(--bs) var(--grid);background:var(--surface);color:var(--ink);border-radius:var(--rk);padding:2px 8px;cursor:pointer}
 .subboard .mini{flex:1;height:6px;border-radius:3px;background:var(--grid);overflow:hidden}
@@ -205,27 +213,45 @@ function md(src){
   }
   flush();if(fence)out.push('</pre>');
   return out.join('\\n')}
+function fieldText(v){return Array.isArray(v)?v.join(', '):v===true?'yes':v===false?'no':String(v)}
+function labelBadge(l){return '<span class="lbl" style="--lc:'+esc(l.color||'var(--grid)')+'" title="'+esc(l.group?l.group+': '+l.value:l.id)+'">#'+esc(l.value||l.id)+'</span>'}
+function dueFace(c){
+  const d=c.metrics&&c.metrics.due;if(!d||d.status==='complete')return null;
+  const text=d.status==='overdue'?Math.abs(d.days)+'d late':d.status==='today'?'due today':d.days+'d';
+  return '<span class="due-'+d.status+'" title="due '+esc(c.due)+'">◷ '+text+'</span>'}
 function badge(c){
   const b=[];
-  if(c.assignee)b.push('<span>@'+esc(c.assignee)+'</span>');
   if(c.priority)b.push('<span class="'+(c.priority==='p0'?'p0':c.priority==='p1'?'p1':'')+'">'+c.priority+'</span>');
-  for(const l of c.labels||[])b.push('<span>#'+esc(l)+'</span>');
   if(c.blocked)b.push('<span class="blk" title="'+esc(c.blocked)+'">⛔ blocked</span>');
-  if((c.deps||[]).length)b.push('<span>deps→'+c.deps.map(esc).join(',')+'</span>');
+  const due=dueFace(c);if(due)b.push(due);
+  if(c.assignee)b.push('<span title="accountable assignee">@'+esc(c.assignee)+'</span>');
+  if(c.delegate)b.push('<span title="executing delegate">⇢ @'+esc(c.delegate)+'</span>');
+  for(const l of c.labelDetails||[])b.push(labelBadge(l));
+  if(!(c.labelDetails||[]).length)for(const l of c.labels||[])b.push('<span>#'+esc(l)+'</span>');
+  if(c.checklist)b.push('<span>☑ '+c.checklist.done+'/'+c.checklist.total+'</span>');
+  if(c.estimate)b.push('<span>est '+c.estimate+'</span>');
+  for(const f of c.faceFields||[])b.push('<span class="fieldface"><b>'+esc(f.name)+'</b> '+esc(fieldText(f.value))+'</span>');
+  if(c.descriptionPresent)b.push('<span title="description">≡</span>');
+  if(c.comments)b.push('<span title="comments">◌ '+c.comments+'</span>');
+  if(c.attachments)b.push('<span title="attachments">⌕ '+c.attachments+'</span>');
+  const s=c.metrics&&c.metrics.stagnation;if(s&&s.dots)b.push('<span title="'+s.days+' cumulative days in lane">'+('●'.repeat(s.dots))+'</span>');
   if(READY.has(c.id))b.push('<span class="ready">▶ ready</span>');
-  return b.join('')}
+  return b.slice(0,10).join('')}
 let READY=new Set();
 function cardHtml(c){
   const board=c.type==='board';
   const child=board&&c.child!=null?DATA.boards[c.child]:null;
-  return '<div class="card '+(c.blocked?'blocked':'')+'" data-card="'+esc(c.id)+'">'
-    +'<div class="cid">'+esc(c.id)+'</div><div class="t">'+esc(c.title)+'</div>'
+  const age=c.metrics&&c.metrics.agingLevel||0;
+  return '<div class="card '+(c.blocked?'blocked ':'')+(c.coverColor?'has-color ':'')+(age?'age-'+age:'')+'"'+(c.coverColor?' style="--cover-color:'+esc(c.coverColor)+'"':'')+' data-card="'+esc(c.id)+'" tabindex="0">'
+    +(c.cover?'<img class="art" src="'+esc(c.cover)+'" alt="" loading="lazy">':'')
+    +'<div class="inner"><div class="cid">'+esc(c.id)+'</div><div class="t">'+esc(c.title)+'</div>'
     +'<div class="badges">'+badge(c)+'</div>'
+    +((c.checklistPreview||[]).length?'<div class="previewtasks">'+c.checklistPreview.slice(0,2).map(i=>'<span title="'+esc(i.section)+'">'+esc(i.text)+'</span>').join('')+'</div>':'')
     +(board?'<div class="subboard"><button data-goto="'+esc(c.child??'')+'" '+(c.child==null?'disabled':'')+'>⇒ '+esc(c.child??c.board??'?')+'</button>'
       +'<span class="statechip" style="background:'+stateColor(c.state)+'">'+c.state+'</span>'
       +(child?'<div class="mini" title="child progress '+pct(child.progress)+'"><i style="width:'+Math.round((child.progress||0)*100)+'%"></i></div>':'')
       +'</div>':'')
-    +'</div>'}
+    +'</div></div>'}
 function render(){
   const b=DATA.boards[CUR];if(!b){CUR='.';return render()}
   READY=new Set(b.ready||[]);
@@ -256,7 +282,8 @@ function render(){
       }
     }else body=lane.cards.map(cardHtml).join('');
     if(!body)body='<div class="empty">·</div>';
-    return '<section class="col"><h2>'+esc(lane.name)+' '+canon+' '+wip+'</h2>'+body+'</section>'
+    const estimate=lane.estimate?'<span class="n">est '+lane.estimate+'</span>':'';
+    return '<section class="col"><h2>'+esc(lane.name)+' '+canon+' '+wip+' '+estimate+'</h2>'+body+'</section>'
   }).join('');
   $('#findings').innerHTML=(b.findings||[]).length
     ?'<h3>findings: '+esc(CUR)+'</h3>'+(b.findings||[]).map(f=>'<div class="finding">'+(f.severity==='error'?'<b>error</b>':f.severity==='warning'?'<i>warning</i>':'info')
@@ -265,8 +292,16 @@ function render(){
 }
 function openDrawer(c){
   const d=$('#drawer');
-  const rows=[['position',c.position],['state',c.state],['assignee',c.assignee],['priority',c.priority],
+  const rows=[['position',c.position],['state',c.state],['assignee',c.assignee],['delegate',c.delegate],['priority',c.priority],
+    ['start',c.start],['due',c.due],['estimate',c.estimate],['evergreen',c.evergreen?'yes':null],
     ['labels',(c.labels||[]).join(', ')],['deps',(c.deps||[]).join(', ')],['blocked',c.blocked],
+    ...(c.fields||[]).map(f=>[f.name,fieldText(f.value)]),
+    ['current lane',c.metrics&&c.metrics.currentLaneDays!=null?c.metrics.currentLaneDays+'d':null],
+    ['cumulative lane',c.metrics&&c.metrics.cumulativeLaneDays!=null?c.metrics.cumulativeLaneDays+'d':null],
+    ['idle',c.metrics&&c.metrics.idleDays!=null?c.metrics.idleDays+'d':null],
+    ['cycle',c.metrics&&c.metrics.cycleDays!=null?c.metrics.cycleDays+'d':null],
+    ['lead',c.metrics&&c.metrics.leadDays!=null?c.metrics.leadDays+'d':null],
+    ['blocked time',c.metrics&&c.metrics.blockedDays?c.metrics.blockedDays+'d':null],
     ['created',c.created],['updated',c.updated],['board',c.board],['file',c.file]]
     .filter(r=>r[1]);
   d.innerHTML='<button class="close" title="close">✕</button>'
@@ -283,7 +318,10 @@ document.addEventListener('click',e=>{
   const el=e.target.closest('[data-card]');
   if(el){const b=DATA.boards[CUR];for(const lane of b.lanes){const c=lane.cards.find(x=>x.id===el.dataset.card);if(c){openDrawer(c);return}}}
 });
-document.addEventListener('keydown',e=>{if(e.key==='Escape')$('#drawer').classList.remove('open')});
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape')$('#drawer').classList.remove('open');
+  if((e.key==='Enter'||e.key===' ')&&e.target.closest('[data-card]')){e.preventDefault();e.target.closest('[data-card]').click()}
+});
 $('#switch').addEventListener('change',e=>{CUR=e.target.value;render()});
 $('#tstyle').innerHTML=THEMES.map(s=>'<option value="'+s.id+'">'+esc(s.name)+'</option>').join('');
 $('#tstyle').addEventListener('change',e=>{THEME.style=e.target.value;THEME.accent=null;saveTheme()});

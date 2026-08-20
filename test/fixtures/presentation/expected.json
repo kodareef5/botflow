@@ -1,0 +1,28 @@
+{
+  "boards": {
+    ".": {
+      "lint": [],
+      "cards": { "001": "doing" },
+      "distribution": { "wishlist": 0, "todo": 0, "doing": 1, "blocked": 0, "done": 0, "archive": 0 },
+      "ready": [],
+      "progress": 0,
+      "presentation": {
+        "labels": [
+          { "id": "Type/Bug", "color": "#d03b3b" },
+          { "id": "Team/Platform", "color": "#2a78d6" }
+        ],
+        "fields": [
+          { "id": "sprint", "name": "Sprint", "type": "number", "options": [], "face": true },
+          { "id": "risk", "name": "Risk", "type": "select", "options": ["low", "medium", "high"], "face": true },
+          { "id": "notes", "name": "Notes", "type": "text", "options": [], "face": false }
+        ],
+        "cards": {
+          "001": {
+            "coverColor": "#f0c040",
+            "values": { "sprint": 14, "risk": "high", "notes": "visible in detail only" }
+          }
+        }
+      }
+    }
+  }
+}

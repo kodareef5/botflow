@@ -1,5 +1,11 @@
 {
   "cases": {
+    "cover-color": [
+      {
+        "rule": "schema",
+        "ref": "001"
+      }
+    ],
     "bad-card-date": [
       {
         "rule": "schema",
@@ -9,6 +15,12 @@
     "bad-estimate": [
       {
         "rule": "schema",
+        "ref": "001"
+      }
+    ],
+    "custom-field-value": [
+      {
+        "rule": "custom-field-value",
         "ref": "001"
       }
     ],
@@ -58,6 +70,12 @@
       {
         "rule": "id-scheme-mismatch",
         "ref": "abc123"
+      }
+    ],
+    "label-group-conflict": [
+      {
+        "rule": "label-group-conflict",
+        "ref": "001"
       }
     ],
     "frontmatter-missing": [

@@ -53,6 +53,8 @@ Written in the strict YAML subset (§9). Top-level keys:
 | `ids` | `seq` \| `hash` | no (default `seq`) | Card id scheme (§8). |
 | `features` | list of slugs | no | Additive capabilities the board relies on. Readers that do not support every declared feature MUST identify each unsupported feature and MUST refuse to mutate the board; read-only rendering MAY degrade. |
 | `lanes` | list of lane maps | no | Defaults to the six canonical lanes, in canonical order, when omitted. |
+| `labels` | list of label maps | no | Optional colors for card labels. Scoped single-select groups are derived from `Group/Value` names below. |
+| `fields` | list of field maps | no | Typed declarations for board-specific card frontmatter fields. |
 | `rollup` | map | no | Rollup policy (§7); defaults below. |
 
 An implementation that encounters an unsupported `botflow` major MAY inspect and
@@ -73,8 +75,41 @@ Lane map keys:
 
 A board MAY have several lanes projecting to the same canonical state (e.g. `needs-qa` → `doing`), and MAY omit canonical states it doesn't use. Lane order in the file is the display order.
 
-Unknown keys in the top-level board mapping, lane mappings, or `rollup` mapping are
-lint `info` (`unknown-key`) and MUST be preserved semantically by any tool that
+Label map keys:
+
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `id` | string | yes | Exact card-label value, unique in the registry. |
+| `color` | `#RGB` \| `#RRGGBB` | no | Face color. Undeclared labels and entries without a color receive a deterministic derived color. |
+
+A label containing `/` with non-empty text on both sides is scoped: the text before
+the first slash is its group and the remainder is its value. A card MUST NOT carry two
+labels from the same group (`Type/Bug` plus `Type/Feature`); lint reports
+`label-group-conflict`, and conforming mutation tools MUST refuse to create the conflict.
+Labels without a slash remain ordinary multi-select tags. The convention works without
+a registry; the registry only supplies deliberate colors.
+
+Custom-field map keys:
+
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `id` | frontmatter key | yes | Unique key matching `[a-z][a-z0-9_-]*`; MUST NOT shadow a built-in or reserved card key. |
+| `name` | string | no | Display name; defaults to `id`. |
+| `type` | `text` \| `number` \| `checkbox` \| `date` \| `select` \| `multi-select` \| `url` \| `person` | yes | Value contract below. |
+| `options` | list of strings | iff select type | Allowed values for `select` / `multi-select`; unique and non-empty. |
+| `face` | bool | no (default `false`) | Whether a filled value may appear on the compact card face. Registry order is display and graceful-degradation priority. |
+
+Values live directly in card frontmatter under the declared `id`, so an older reader
+still preserves them as unknown keys. `text`, `url`, `person`, and `select` are strings;
+`number` is an integer (the YAML subset has no floats); `checkbox` is boolean; `date`
+uses the `start`/`due` UTC forms; `multi-select` is a list of strings. Select values MUST
+belong to `options`. A declared field is not lint `unknown-key`; a mistyped value is
+error `custom-field-value`. Compact faces render only filled fields whose declaration
+has `face: true`, in registry order, and MAY silently omit the lowest-priority tail when
+space is constrained. Detail views MUST retain every filled field.
+
+Unknown keys in the top-level board mapping, lane, label, custom-field, or `rollup`
+mappings are lint `info` (`unknown-key`) and MUST be preserved semantically by any tool that
 rewrites `board.yaml`, under the same normalization allowance as unknown card keys
 (§5). This makes additive board capabilities safe across routine edits.
 
@@ -111,6 +146,7 @@ Frontmatter keys:
 | `estimate` | positive int | no | Board-local effort points. It is deliberately unitless; tools may sum it but MUST NOT reinterpret it as elapsed time. |
 | `evergreen` | bool | no (default `false`) | Suppresses stale-card aging signals for intentionally long-lived reference work. It does not suppress time metrics. |
 | `cover` | url \| `none` | no | Card art. Viewers show the image atop the card; when absent they MAY fall back to the first image attachment; `none` suppresses art entirely. |
+| `cover_color` | `#RGB` \| `#RRGGBB` | no | Color band or fallback art behind the compact card; independent of `cover`. |
 | `blocked` | string | no | Blocked **flag** with a reason. Presence overrides projection (§6). |
 | `created` | date string | no | `YYYY-MM-DD` or ISO datetime; stored as a plain string. |
 | `updated` | date string | no | Tools SHOULD touch this only on meaningful changes (merge-noise discipline). |
@@ -250,6 +286,8 @@ Not supported (parse error): anchors/aliases (`&`, `*`), tags (`!`), block scala
 | `bare-substate-lane` | warning | Card in a substated lane without a substate. |
 | `rollup-drift` | warning | Board-card lane canonical ≠ rolled-up effective state. |
 | `blocked-in-done` | warning | Blocked flag on a done/archive card. |
+| `label-group-conflict` | error | Card carries more than one scoped label in the same group. |
+| `custom-field-value` | error | A declared custom-field value violates its type/options. |
 | `unknown-key` | info | Unrecognized frontmatter key (preserved). |
 | `unsupported-feature` | warning | `board.yaml` declares a feature this reader does not implement; the board is read-only. |
 | `hosted-ref` | info | Board-card uses a `project:` reference; resolvable only on a manager. |
@@ -265,6 +303,7 @@ Each directory under `test/fixtures/` is a board (or, for `invalid/`, a set of b
 - `substates/`: strict-ordered `doing` substates, incl. a bare-lane warning case. → `expected.json`
 - `nested/`: a parent whose cards include two board-cards (one all-done child, one mixed child with a blocked card); exercises rollup, drift, progress. → `expected.json`
 - `card-features/`: scheduling, estimate, Evergreen, and accountable-assignee / executing-delegate fields. → `expected.json`
+- `presentation/`: scoped/colored labels, typed custom fields, face flags, description/checklist previews, and cover color. → `expected.json`
 - `invalid/`: one board per error class. → `expected.json` (lint findings)
 
 Expected files record, per board: lint findings (rule ids + card ids), per-card canonical states, lane distributions, ready sets, and (where relevant) effective states and progress. A conforming engine must reproduce them exactly.

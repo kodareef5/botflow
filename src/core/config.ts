@@ -3,18 +3,21 @@
 // edit board shape, like the hosted board editor.
 
 import type { YamlValue } from './yaml.ts';
-import type { BoardConfig, Finding, Lane, RollupPolicy, Canonical } from './model.ts';
-import { SLUG_RE, defaultLanes, defaultRollup, finding, isCanonical } from './model.ts';
+import type { BoardConfig, CustomFieldDefinition, Finding, LabelDefinition, Lane, RollupPolicy, Canonical } from './model.ts';
+import { CUSTOM_FIELD_TYPES, SLUG_RE, defaultLanes, defaultRollup, finding, isCanonical } from './model.ts';
 import { emitMap, emitScalar } from './emit.ts';
+import { BUILTIN_CARD_KEYS, RESERVED_CARD_KEYS, validColor } from './presentation.ts';
 
 /** Capability names understood by this reader. Later feature phases add to
  *  this registry as their semantics become real; declarations are optional,
  *  but an unknown declaration deliberately makes a board read-only. */
-export const SUPPORTED_BOARD_FEATURES = new Set(['dates', 'estimates', 'delegation', 'aging']);
+export const SUPPORTED_BOARD_FEATURES = new Set([
+  'dates', 'estimates', 'delegation', 'aging', 'scoped-labels', 'custom-fields', 'cover-colors',
+]);
 
 /** Serialize a BoardConfig back to board.yaml text. Defaults are omitted so
  *  the file stays as small as a hand-written one; parse(emit(c)) === c. */
-export function emitBoardYaml(config: Pick<BoardConfig, 'version' | 'name' | 'ids' | 'features' | 'lanes' | 'rollup' | 'extra'>): string {
+export function emitBoardYaml(config: Pick<BoardConfig, 'version' | 'name' | 'ids' | 'features' | 'lanes' | 'labelDefinitions' | 'customFields' | 'rollup' | 'extra'>): string {
   const lines = [`botflow: ${config.version}`, `name: ${emitScalar(config.name)}`];
   if (config.ids === 'hash') lines.push('ids: hash');
   if (config.features.length > 0) lines.push(`features: [${config.features.map(emitScalar).join(', ')}]`);
@@ -28,6 +31,27 @@ export function emitBoardYaml(config: Pick<BoardConfig, 'version' | 'name' | 'id
     if (lane.wip !== null) lines.push(`    wip: ${lane.wip}`);
     const laneExtra = emitMap(lane.extra, 4);
     if (laneExtra !== '') lines.push(laneExtra);
+  }
+  if (config.labelDefinitions.length > 0) {
+    lines.push('labels:');
+    for (const definition of config.labelDefinitions) {
+      lines.push(`  - id: ${emitScalar(definition.id)}`);
+      if (definition.color !== null) lines.push(`    color: ${emitScalar(definition.color)}`);
+      const extra = emitMap(definition.extra, 4);
+      if (extra !== '') lines.push(extra);
+    }
+  }
+  if (config.customFields.length > 0) {
+    lines.push('fields:');
+    for (const definition of config.customFields) {
+      lines.push(`  - id: ${definition.id}`);
+      if (definition.name !== definition.id) lines.push(`    name: ${emitScalar(definition.name)}`);
+      lines.push(`    type: ${definition.type}`);
+      if (definition.options.length > 0) lines.push(`    options: [${definition.options.map(emitScalar).join(', ')}]`);
+      if (definition.face) lines.push('    face: true');
+      const extra = emitMap(definition.extra, 4);
+      if (extra !== '') lines.push(extra);
+    }
   }
   const d = defaultRollup();
   const rollup: string[] = [];
@@ -111,8 +135,10 @@ export function parseBoardConfig(value: YamlValue, findings: Finding[]): BoardCo
   }
 
   const rollup = parseRollup(map['rollup'], findings);
+  const labelDefinitions = parseLabelDefinitions(map['labels'], findings);
+  const customFields = parseCustomFields(map['fields'], findings);
 
-  const known = new Set(['botflow', 'name', 'ids', 'features', 'lanes', 'rollup']);
+  const known = new Set(['botflow', 'name', 'ids', 'features', 'lanes', 'labels', 'fields', 'rollup']);
   const extra: Record<string, unknown> = {};
   for (const key of Object.keys(map)) {
     if (!known.has(key)) {
@@ -121,7 +147,115 @@ export function parseBoardConfig(value: YamlValue, findings: Finding[]): BoardCo
     }
   }
 
-  return { version, name, ids, features, unsupportedFeatures, mutationBlocked, lanes, lanesDefaulted, rollup, extra };
+  return { version, name, ids, features, unsupportedFeatures, mutationBlocked, lanes, lanesDefaulted, labelDefinitions, customFields, rollup, extra };
+}
+
+export function parseLabelDefinitions(value: YamlValue | undefined, findings: Finding[]): LabelDefinition[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    findings.push(finding('schema', REF, 'labels must be a list of label maps'));
+    return [];
+  }
+  const out: LabelDefinition[] = [];
+  const seen = new Set<string>();
+  const knownKeys = new Set(['id', 'color']);
+  for (const raw of value) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      findings.push(finding('schema', REF, 'each label definition must be a mapping'));
+      continue;
+    }
+    const map = raw as Record<string, YamlValue>;
+    const id = typeof map['id'] === 'string' && map['id'] !== '' ? map['id'] : null;
+    if (id === null) {
+      findings.push(finding('schema', REF, 'label definition id must be a non-empty string'));
+      continue;
+    }
+    if (seen.has(id)) {
+      findings.push(finding('schema', REF, `duplicate label definition "${id}"`));
+      continue;
+    }
+    seen.add(id);
+    let color: string | null = null;
+    if (map['color'] !== undefined) {
+      if (typeof map['color'] === 'string' && validColor(map['color'])) color = map['color'].toLowerCase();
+      else findings.push(finding('schema', REF, `label "${id}": color must be #RGB or #RRGGBB`));
+    }
+    const extra: Record<string, unknown> = {};
+    for (const key of Object.keys(map)) {
+      if (!knownKeys.has(key)) {
+        extra[key] = map[key];
+        findings.push(finding('unknown-key', REF, `label "${id}": unknown key "${key}" (preserved)`));
+      }
+    }
+    out.push({ id, color, extra });
+  }
+  return out;
+}
+
+export function parseCustomFields(value: YamlValue | undefined, findings: Finding[]): CustomFieldDefinition[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    findings.push(finding('schema', REF, 'fields must be a list of field maps'));
+    return [];
+  }
+  const out: CustomFieldDefinition[] = [];
+  const seen = new Set<string>();
+  const knownKeys = new Set(['id', 'name', 'type', 'options', 'face']);
+  for (const raw of value) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      findings.push(finding('schema', REF, 'each custom field definition must be a mapping'));
+      continue;
+    }
+    const map = raw as Record<string, YamlValue>;
+    const id = typeof map['id'] === 'string' && /^[a-z][a-z0-9_-]*$/.test(map['id']) ? map['id'] : null;
+    if (id === null) {
+      findings.push(finding('schema', REF, 'custom field id must match [a-z][a-z0-9_-]*'));
+      continue;
+    }
+    if (seen.has(id) || BUILTIN_CARD_KEYS.has(id) || RESERVED_CARD_KEYS.has(id)) {
+      findings.push(finding('schema', REF, `custom field id "${id}" is duplicate or reserved`));
+      continue;
+    }
+    seen.add(id);
+    if (typeof map['type'] !== 'string' || !(CUSTOM_FIELD_TYPES as readonly string[]).includes(map['type'])) {
+      findings.push(finding('schema', REF, `custom field "${id}" has an unsupported type`));
+      continue;
+    }
+    const type = map['type'] as CustomFieldDefinition['type'];
+    const options: string[] = [];
+    if (map['options'] !== undefined) {
+      if (!Array.isArray(map['options'])) findings.push(finding('schema', REF, `custom field "${id}": options must be a list`));
+      else for (const option of map['options']) {
+        if (typeof option !== 'string' || option === '' || options.includes(option)) {
+          findings.push(finding('schema', REF, `custom field "${id}": options must be unique non-empty strings`));
+        } else options.push(option);
+      }
+    }
+    if ((type === 'select' || type === 'multi-select') && options.length === 0) {
+      findings.push(finding('schema', REF, `custom field "${id}": ${type} requires options`));
+    } else if (type !== 'select' && type !== 'multi-select' && map['options'] !== undefined) {
+      findings.push(finding('schema', REF, `custom field "${id}": options only apply to select types`));
+    }
+    let face = false;
+    if (map['face'] !== undefined) {
+      if (typeof map['face'] === 'boolean') face = map['face'];
+      else findings.push(finding('schema', REF, `custom field "${id}": face must be true or false`));
+    }
+    let name = id;
+    if (map['name'] !== undefined) {
+      if (typeof map['name'] === 'string' && map['name'] !== '') name = map['name'];
+      else findings.push(finding('schema', REF, `custom field "${id}": name must be a non-empty string`));
+    }
+    const extra: Record<string, unknown> = {};
+    for (const key of Object.keys(map)) {
+      if (!knownKeys.has(key)) {
+        extra[key] = map[key];
+        findings.push(finding('unknown-key', REF, `custom field "${id}": unknown key "${key}" (preserved)`));
+      }
+    }
+    out.push({ id, name, type, options, face, extra });
+  }
+  return out;
 }
 
 function parseLanes(items: YamlValue[], findings: Finding[]): Lane[] {
@@ -242,6 +376,8 @@ function fallback(name: string): BoardConfig {
     mutationBlocked: 'board.yaml is malformed',
     lanes: defaultLanes(),
     lanesDefaulted: true,
+    labelDefinitions: [],
+    customFields: [],
     rollup: defaultRollup(),
     extra: {},
   };

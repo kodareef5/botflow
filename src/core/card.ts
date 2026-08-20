@@ -4,17 +4,20 @@ import type { YamlValue } from './yaml.ts';
 import type { Card, Finding } from './model.ts';
 import { finding } from './model.ts';
 import { validCardDate, validEstimate } from './fields.ts';
-
-const KNOWN_KEYS = new Set([
-  'id', 'title', 'lane', 'type', 'board', 'labels', 'assignee', 'delegate', 'priority', 'deps',
-  'start', 'due', 'estimate', 'evergreen', 'cover', 'blocked', 'created', 'updated',
-]);
+import { BUILTIN_CARD_KEYS, validColor } from './presentation.ts';
 
 const PRIORITY_RE = /^p[0-3]$/;
 
 /** Parse card frontmatter data. `fileBase` is the file's basename, used as the
  *  finding ref until an id is known. Returns null when the card is unusable. */
-export function parseCard(value: YamlValue, fileBase: string, file: string, body: string, findings: Finding[]): Card | null {
+export function parseCard(
+  value: YamlValue,
+  fileBase: string,
+  file: string,
+  body: string,
+  findings: Finding[],
+  customFieldIds: ReadonlySet<string> = new Set(),
+): Card | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     findings.push(finding('schema', fileBase, 'card frontmatter must be a mapping'));
     return null;
@@ -118,11 +121,17 @@ export function parseCard(value: YamlValue, fileBase: string, file: string, body
     return null;
   };
 
+  let coverColor: string | null = null;
+  if (m['cover_color'] !== undefined) {
+    if (typeof m['cover_color'] === 'string' && validColor(m['cover_color'])) coverColor = m['cover_color'].toLowerCase();
+    else findings.push(finding('schema', id, `cover_color must be #RGB or #RRGGBB, got ${JSON.stringify(m['cover_color'])}`));
+  }
+
   const extra: Record<string, unknown> = {};
   for (const key of Object.keys(m)) {
-    if (!KNOWN_KEYS.has(key)) {
+    if (!BUILTIN_CARD_KEYS.has(key)) {
       extra[key] = m[key];
-      findings.push(finding('unknown-key', id, `unknown frontmatter key "${key}" (preserved)`));
+      if (!customFieldIds.has(key)) findings.push(finding('unknown-key', id, `unknown frontmatter key "${key}" (preserved)`));
     }
   }
 
@@ -143,6 +152,7 @@ export function parseCard(value: YamlValue, fileBase: string, file: string, body
     estimate,
     evergreen,
     cover: optString(m['cover']),
+    coverColor,
     blocked: optString(m['blocked']),
     created: optString(m['created']),
     updated: optString(m['updated']),

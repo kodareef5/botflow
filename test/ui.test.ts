@@ -265,6 +265,18 @@ test('ui: a link preview can become cover art without overriding cover: none', (
   assert.match(app, /data-cover="'\+esc\(t\.img\)/, 'and can still be pinned as the cover');
 });
 
+test('ui: compact cards and editors expose structured presentation data', () => {
+  const app = scripts.join('\n');
+  for (const needle of [
+    'c.labelDetails||[]', 'c.faceFields||[]', 'c.descriptionPresent', 'c.checklistPreview||[]',
+    'c.coverColor', 'metrics.agingLevel', 'function dueFace(c)', 'lane.estimate',
+    'function customFormFields(', 'function customPayload(', 'data-labeldef', 'data-fielddef',
+  ]) assert.ok(page.includes(needle) || app.includes(needle), `structured card UI missing: ${needle}`);
+  assert.match(app, /items\.slice\(0,10\)\.join\(''\)/, 'lowest-priority badges degrade away instead of overflowing forever');
+  assert.match(app, /checklistPreview\.slice\(0,2\)/, 'only a compact unfinished checklist preview reaches the face');
+  assert.match(app, /ME\.kind==='bot'\?c\.delegate:c\.assignee/, 'bot ownership follows delegation rather than overwriting accountability');
+});
+
 test('ui: setup asks only for what the deployment needs', () => {
   const app = scripts.join('\n');
   // The setup key exists to stop a stranger claiming a public deployment

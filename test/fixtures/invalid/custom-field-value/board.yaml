@@ -1,0 +1,7 @@
+botflow: 0
+name: invalid field value
+features: [custom-fields]
+fields:
+  - id: risk
+    type: select
+    options: [low, high]

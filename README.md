@@ -48,6 +48,35 @@ botflow setup claude               # wire the playbook into CLAUDE.md/AGENTS.md
 
 Run from a checkout with `node src/cli/botflow.ts …` or link the bin (`npm link`).
 
+### Structured card faces
+
+Boards may register scoped label colors and typed custom fields without moving card
+truth out of frontmatter:
+
+```yaml
+labels:
+  - id: Type/Bug
+    color: "#d03b3b"
+fields:
+  - id: sprint
+    name: Sprint
+    type: number
+    face: true
+  - id: risk
+    name: Risk
+    type: select
+    options: [low, medium, high]
+    face: true
+```
+
+`Type/Bug` and `Type/Feature` are mutually exclusive because they share the `Type`
+group. Field values remain direct card keys (`sprint: 14`, `risk: high`), so older
+readers preserve them. Create or edit them from the CLI with repeatable
+`--field id=value`; use `--cover-color '#f0c040'` for a compact color band. The CLI,
+MCP server, local viewer, hosted manager, and public shares use the same validation
+and presentation data. Card faces show only filled `face` fields and unfinished
+checklist previews; detail views keep everything.
+
 ## Quickstart (template workspace)
 
 ```sh

@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
@@ -16,6 +16,24 @@ test('mcp: handshake, tools/list, lifecycle via tools/call', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'botflow-mcp-'));
   const init = spawnSync(process.execPath, [ENTRY, 'init', '--name', 'mcp-board', '--dir', dir], { encoding: 'utf8' });
   assert.equal(init.status, 0, init.stderr);
+  writeFileSync(join(dir, '.botflow', 'board.yaml'), `botflow: 0
+name: mcp-board
+features: [scoped-labels, custom-fields, cover-colors]
+fields:
+  - id: sprint
+    type: number
+    face: true
+  - id: risk
+    type: select
+    options: [low, high]
+lanes:
+  - id: wishlist
+  - id: todo
+  - id: doing
+  - id: blocked
+  - id: done
+  - id: archive
+`);
 
   const child = spawn(process.execPath, [ENTRY, 'mcp', '--board', dir, '--actor', 'mcp-agent'], {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -62,8 +80,9 @@ test('mcp: handshake, tools/list, lifecycle via tools/call', async () => {
     }
 
     const added = await callTool('card_add', {
-      title: 'From MCP', labels: ['mcp'], priority: 'p1', start: '2026-08-20',
-      due: '2026-08-24T12:30Z', estimate: 5, evergreen: true,
+      title: 'From MCP', labels: ['Type/Bug'], priority: 'p1', start: '2026-08-20',
+      due: '2026-08-24T12:30Z', estimate: 5, evergreen: true, cover_color: '#f0c040',
+      fields: { sprint: 14, risk: 'high' },
     });
     assert.equal(added.isError, false);
     const { id } = JSON.parse(added.text) as { id: string };
@@ -73,6 +92,13 @@ test('mcp: handshake, tools/list, lifecycle via tools/call', async () => {
     assert.equal(scheduled['due'], '2026-08-24T12:30Z');
     assert.equal(scheduled['estimate'], 5);
     assert.equal(scheduled['evergreen'], true);
+    assert.equal(scheduled['coverColor'], '#f0c040');
+    assert.deepEqual(Object.fromEntries((scheduled['fields'] as { id: string; value: unknown }[]).map((field) => [field.id, field.value])), { sprint: 14, risk: 'high' });
+    const editedPresentation = await callTool('card_edit', { id, cover_color: null, fields: { sprint: 15, risk: null } });
+    assert.equal(editedPresentation.isError, false);
+    const rescheduled = JSON.parse((await callTool('card_show', { id })).text) as Record<string, unknown>;
+    assert.equal(rescheduled['coverColor'], null);
+    assert.deepEqual(Object.fromEntries((rescheduled['fields'] as { id: string; value: unknown }[]).map((field) => [field.id, field.value])), { sprint: 15 });
 
     const claim = await callTool('card_claim', { id });
     assert.equal(claim.isError, false);

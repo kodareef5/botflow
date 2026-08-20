@@ -36,6 +36,8 @@ export const RULE_SEVERITY: Record<string, Severity> = {
   'bare-substate-lane': 'warning',
   'rollup-drift': 'warning',
   'blocked-in-done': 'warning',
+  'label-group-conflict': 'error',
+  'custom-field-value': 'error',
   'unsupported-feature': 'warning',
   'unknown-key': 'info',
   'hosted-ref': 'info',
@@ -69,6 +71,26 @@ export interface RollupPolicy {
   extra: Record<string, unknown>;
 }
 
+export interface LabelDefinition {
+  id: string;
+  color: string | null;
+  /** Unknown label-map keys, preserved across board.yaml rewrites. */
+  extra: Record<string, unknown>;
+}
+
+export const CUSTOM_FIELD_TYPES = ['text', 'number', 'checkbox', 'date', 'select', 'multi-select', 'url', 'person'] as const;
+export type CustomFieldType = (typeof CUSTOM_FIELD_TYPES)[number];
+
+export interface CustomFieldDefinition {
+  id: string;
+  name: string;
+  type: CustomFieldType;
+  options: string[];
+  face: boolean;
+  /** Unknown field-map keys, preserved across board.yaml rewrites. */
+  extra: Record<string, unknown>;
+}
+
 export interface BoardConfig {
   version: number;
   name: string;
@@ -82,6 +104,8 @@ export interface BoardConfig {
   lanes: Lane[];
   /** True when the board omitted `lanes:` and got the canonical six. */
   lanesDefaulted: boolean;
+  labelDefinitions: LabelDefinition[];
+  customFields: CustomFieldDefinition[];
   rollup: RollupPolicy;
   /** Unknown top-level board.yaml keys, preserved across rewrites. */
   extra: Record<string, unknown>;
@@ -110,6 +134,8 @@ export interface Card {
   /** Card-art cover: an image url, 'none' to suppress, or null (viewers fall
    *  back to the first image attachment). */
   cover: string | null;
+  /** Compact card color band, independent of image cover art. */
+  coverColor: string | null;
   /** Blocked-flag reason; null = no flag. */
   blocked: string | null;
   created: string | null;
@@ -158,6 +184,8 @@ export function fallbackConfig(name: string): BoardConfig {
     mutationBlocked: 'board.yaml is missing or unreadable',
     lanes: defaultLanes(),
     lanesDefaulted: true,
+    labelDefinitions: [],
+    customFields: [],
     rollup: defaultRollup(),
     extra: {},
   };

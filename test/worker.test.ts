@@ -350,6 +350,11 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
         { id: 'needs-qa', canonical: 'doing', wip: 2 },
         { id: 'done' },
       ],
+      labels: [{ id: 'Type/Bug', color: '#d03b3b' }],
+      fields: [
+        { id: 'sprint', name: 'Sprint', type: 'number', face: true },
+        { id: 'risk', name: 'Risk', type: 'select', options: ['low', 'high'], face: true },
+      ],
       rollup: { blockedWhen: 'never', doingWhen: 'any-doing', elseState: 'todo' },
       migrations: { wishlist: 'todo' },
     };
@@ -360,6 +365,41 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     const cfg1 = await call(`/api/projects/${parent}/config`, { token: admin });
     assert.deepEqual((cfg1.body['lanes'] as { id: string }[]).map((l) => l.id), ['todo', 'doing', 'needs-qa', 'done']);
     assert.equal((cfg1.body['rollup'] as { doingWhen: string }).doingWhen, 'any-doing');
+    assert.deepEqual(cfg1.body['labels'], reshape.labels);
+    const normalizedFields = [
+      { id: 'sprint', name: 'Sprint', type: 'number', options: [], face: true },
+      { id: 'risk', name: 'Risk', type: 'select', options: ['low', 'high'], face: true },
+    ];
+    assert.deepEqual(cfg1.body['fields'], normalizedFields);
+    const richAdd = await call(`/api/projects/${parent}/cards`, {
+      method: 'POST', token: admin,
+      body: JSON.stringify({
+        title: 'Structured face', labels: ['Type/Bug'], cover_color: '#F0C040', estimate: 3,
+        due: '2026-08-25', fields: { sprint: 14, risk: 'high' },
+      }),
+    });
+    assert.equal(richAdd.status, 200, JSON.stringify(richAdd.body));
+    const richId = richAdd.body['id'] as string;
+    let rich = await call(`/api/projects/${parent}/cards/${richId}`, { token: admin });
+    assert.equal(rich.body['coverColor'], '#f0c040');
+    assert.deepEqual((rich.body['labelDetails'] as { group: string; value: string; color: string }[])[0], {
+      id: 'Type/Bug', group: 'Type', value: 'Bug', color: '#d03b3b',
+    });
+    assert.deepEqual(Object.fromEntries((rich.body['faceFields'] as { id: string; value: unknown }[]).map((field) => [field.id, field.value])), { sprint: 14, risk: 'high' });
+    assert.equal((await call(`/api/projects/${parent}/cards/${richId}/edit`, {
+      method: 'POST', token: admin, body: JSON.stringify({ cover_color: null, fields: { sprint: 15, risk: null } }),
+    })).status, 200);
+    rich = await call(`/api/projects/${parent}/cards/${richId}`, { token: admin });
+    assert.equal(rich.body['coverColor'], null);
+    assert.deepEqual(Object.fromEntries((rich.body['fields'] as { id: string; value: unknown }[]).map((field) => [field.id, field.value])), { sprint: 15 });
+    const incompatibleFields = await call(`/api/projects/${parent}/config`, {
+      method: 'PUT', token: admin,
+      body: JSON.stringify({ ...reshape, fields: [{ id: 'sprint', name: 'Sprint', type: 'select', options: ['small', 'large'], face: true }] }),
+    });
+    assert.equal(incompatibleFields.status, 400, 'a registry edit cannot invalidate existing card values');
+    assert.match(String(incompatibleFields.body['error']), new RegExp(`card ${richId}`));
+    assert.deepEqual((await call(`/api/projects/${parent}/config`, { token: admin })).body['fields'], normalizedFields,
+      'a rejected schema edit leaves the registry intact');
     const migrated = await call(`/api/projects/${parent}/cards/001`, { token: admin });
     assert.equal(migrated.body['position'], 'doing.design', 'doing card entered the new substate machine');
     assert.match(String(migrated.body['body']), /migrated doing → doing\.design \(board edit\)/, 'migration logged on the card');
@@ -380,6 +420,16 @@ lanes:
     visual:
       color: blue
   - id: done
+labels:
+  - id: Type/Bug
+    color: "#d03b3b"
+    icon: bug
+fields:
+  - id: risk
+    type: select
+    options: [low, high]
+    face: true
+    width: compact
 rollup:
   future_mode: weighted
 vendor:
@@ -390,13 +440,17 @@ vendor:
     })).status, 200);
     const compatEdit = await call(`/api/projects/${compatProject}/config`, {
       method: 'PUT', token: admin, body: JSON.stringify({
-        name: 'compatibility edited', lanes: [{ id: 'todo' }, { id: 'done' }], rollup: {},
+        name: 'compatibility edited', lanes: [{ id: 'todo' }, { id: 'done' }],
+        labels: [{ id: 'Type/Bug', color: '#d03b3b' }],
+        fields: [{ id: 'risk', type: 'select', options: ['low', 'high'], face: true }], rollup: {},
       }),
     });
     assert.equal(compatEdit.status, 200, JSON.stringify(compatEdit.body));
     const compatExport = await call(`/api/projects/${compatProject}/export`, { token: admin });
     const preservedConfig = compatExport.body['config'] as string;
     assert.match(preservedConfig, /visual:\n      color: blue/);
+    assert.match(preservedConfig, /icon: bug/, 'unknown label-map data survives the hosted editor');
+    assert.match(preservedConfig, /width: compact/, 'unknown custom-field-map data survives the hosted editor');
     assert.match(preservedConfig, /future_mode: weighted/);
     assert.match(preservedConfig, /vendor:\n  flags: \[alpha, beta\]/);
     const unsupportedImport = await call(`/api/projects/${compatProject}/import`, {

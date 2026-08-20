@@ -10,6 +10,7 @@ import { viewerData, viewerHtml } from '../viewer/page.ts';
 import { startMcpServer } from '../mcp/server.ts';
 import { instantiate, setupAgentFiles } from '../core/template.ts';
 import { cardDetailJson } from '../core/json.ts';
+import { parseCustomFieldText } from '../core/presentation.ts';
 import { loadRemote, pull, push, remoteAdd } from './remote.ts';
 
 import { analyze, lintBoard } from '../core/analyze.ts';
@@ -68,6 +69,7 @@ usage: botflow <command> [args]
   card add <title> [--lane l] [--labels a,b] [--priority p0-p3] [--deps 1,2]
            [--type board --board-path <dir>] [--assignee name] [--delegate agent]
            [--start YYYY-MM-DD] [--due YYYY-MM-DD] [--estimate n] [--evergreen]
+           [--cover-color #RRGGBB] [--field id=value ...]
   card show <id> [--json]
   card mv <id> <lane[.substate]> [--force]
   card claim <id> [--delegate] [--force] take a ready card into doing as assignee
@@ -81,7 +83,8 @@ usage: botflow <command> [args]
            [--assignee name|none] [--delegate name|none] [--deps 1,2]
            [--start date|none] [--due date|none] [--estimate n|none]
            [--evergreen true|false] [--board-path <dir>]
-           [--cover <url>|none|auto]
+           [--cover <url>|none|auto] [--cover-color #RRGGBB|none]
+           [--field id=value ...]              empty value clears a custom field
   card comment <id> <text…>             append to the Comments section
   card describe <id> <text…>            set the Description (empty clears)
   card item <id> <text…> [--section s]  add an unchecked checklist task
@@ -94,7 +97,7 @@ global: --board <path> (or BOTFLOW_DIR) picks the board; --actor <name>
 (or BOTFLOW_ACTOR, USER) identifies you; --json for machine output.
 `;
 
-type Values = Record<string, string | boolean | undefined>;
+type Values = Record<string, string | string[] | boolean | undefined>;
 
 function parse(args: string[], options: ParseArgsConfig['options']): { values: Values; positionals: string[] } {
   try {
@@ -129,6 +132,26 @@ function getActor(values: Values): string {
 
 const csv = (v: string | undefined): string[] | undefined =>
   v === undefined ? undefined : v === '' ? [] : v.split(',').map((s) => s.trim()).filter((s) => s !== '');
+
+function fieldAssignments(root: string, entries: string[] | undefined): Record<string, unknown> | undefined {
+  if (entries === undefined) return undefined;
+  const definitions = loadTree(root).boards.get('.')!.board.config.customFields;
+  const fields: Record<string, unknown> = {};
+  for (const entry of entries) {
+    const equals = entry.indexOf('=');
+    if (equals < 1) throw new UsageError(`--field must be id=value (got "${entry}")`);
+    const id = entry.slice(0, equals);
+    if (Object.hasOwn(fields, id)) throw new UsageError(`custom field "${id}" was provided more than once`);
+    const definition = definitions.find((field) => field.id === id);
+    if (definition === undefined) throw new UsageError(`unknown custom field "${id}"`);
+    try {
+      fields[id] = parseCustomFieldText(definition, entry.slice(equals + 1));
+    } catch (err) {
+      throw new UsageError((err as Error).message);
+    }
+  }
+  return fields;
+}
 
 /** Card text is repo-carried, so it arrives from whoever can commit: titles,
  *  labels and log lines all reach the terminal verbatim. Escape sequences in
@@ -338,12 +361,15 @@ function runCard(argv: string[]): number {
         due: { type: 'string' },
         estimate: { type: 'string' },
         evergreen: { type: 'boolean', default: false },
+        'cover-color': { type: 'string' },
+        field: { type: 'string', multiple: true },
       });
       const title = positionals.join(' ').trim();
       if (title === '') throw new UsageError('usage: botflow card add <title> [flags]');
       const type = values['type'] as string | undefined;
       if (type !== undefined && type !== 'task' && type !== 'board') throw new UsageError('--type must be task or board');
-      const card = addCard(getRoot(values), {
+      const root = getRoot(values);
+      const card = addCard(root, {
         title,
         lane: values['lane'] as string | undefined,
         type: type as 'task' | 'board' | undefined,
@@ -357,6 +383,8 @@ function runCard(argv: string[]): number {
         due: values['due'] as string | undefined,
         estimate: values['estimate'] === undefined ? undefined : Number(values['estimate']),
         evergreen: values['evergreen'] as boolean,
+        coverColor: values['cover-color'] as string | undefined,
+        fields: fieldAssignments(root, values['field'] as string[] | undefined),
         actor: getActor(values),
       });
       const pos = card.substate === null ? card.laneId : `${card.laneId}.${card.substate}`;
@@ -450,6 +478,8 @@ function runCard(argv: string[]): number {
         evergreen: { type: 'string' },
         'board-path': { type: 'string' },
         cover: { type: 'string' },
+        'cover-color': { type: 'string' },
+        field: { type: 'string', multiple: true },
       });
       const id = positionals[0];
       if (!id) throw new UsageError('usage: botflow card edit <id> [flags]');
@@ -477,7 +507,10 @@ function runCard(argv: string[]): number {
         const c = values['cover'] as string;
         patch.cover = c === 'auto' ? null : c; // 'none' suppresses; a url sets art
       }
-      const card = editCard(getRoot(values), id, patch, getActor(values));
+      if (values['cover-color'] !== undefined) patch.coverColor = noneable(values['cover-color'] as string);
+      const root = getRoot(values);
+      if (values['field'] !== undefined) patch.fields = fieldAssignments(root, values['field'] as string[]);
+      const card = editCard(root, id, patch, getActor(values));
       values['json'] ? emitJson({ id: card.id, edited: Object.keys(patch) }) : out(`✓ ${card.id} edited (${Object.keys(patch).join(', ')})`);
       return 0;
     }

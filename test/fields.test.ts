@@ -60,3 +60,35 @@ test('mutation validation refuses bad dates and estimates before writing them', 
   assert.throws(() => opEdit(card, { start: '2026-02-29' }, 'test'), UsageError);
   assert.throws(() => opEdit(card, { estimate: 1.5 }, 'test'), UsageError);
 });
+
+test('presentation mutations enforce scoped labels, colors, and typed fields atomically', () => {
+  const board = boardFromDocuments(`botflow: 0
+name: presentation
+labels:
+  - id: Type/Bug
+    color: "#D03B3B"
+fields:
+  - id: sprint
+    type: number
+    face: true
+  - id: risk
+    type: select
+    options: [low, high]
+lanes:
+  - id: todo
+  - id: doing
+  - id: done
+`, []);
+  const card = opAdd(board, {
+    title: 'Rendered', labels: ['Type/Bug'], coverColor: '#F0C040', fields: { sprint: 14, risk: 'high' }, actor: 'test',
+  });
+  assert.equal(card.coverColor, '#f0c040');
+  assert.deepEqual(card.extra, { sprint: 14, risk: 'high' });
+  assert.throws(() => opAdd(board, { title: 'conflict', labels: ['Type/Bug', 'Type/Feature'], actor: 'test' }), /both belong to group/);
+  assert.throws(() => opAdd(board, { title: 'bad field', fields: { risk: 'medium' }, actor: 'test' }), /valid select/);
+  assert.throws(() => opEdit(card, { title: 'must not stick', fields: { sprint: 'fourteen' } }, 'test', board), /valid number/);
+  assert.equal(card.title, 'Rendered', 'a rejected patch does not partially mutate the card');
+  opEdit(card, { coverColor: null, fields: { sprint: 15, risk: null } }, 'test', board);
+  assert.equal(card.coverColor, null);
+  assert.deepEqual(card.extra, { sprint: 15 });
+});

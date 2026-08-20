@@ -10,6 +10,7 @@ import { viewerData, viewerHtml } from '../src/viewer/page.ts';
 import { analyze, loadTree } from '../src/core/index.ts';
 
 const NESTED = join(import.meta.dirname, 'fixtures', 'nested');
+const PRESENTATION = join(import.meta.dirname, 'fixtures', 'presentation');
 
 test('viewer: serve exposes page and live data', async () => {
   const { server, url } = await serveBoard(NESTED, 0);
@@ -51,6 +52,32 @@ test('viewer: shared theme layer ships and its scripts parse', () => {
   }
   for (const needle of ['__THEMES__', 'applyTheme', 'data-style=harbor', 'data-style=blockparty', 'id="tstyle"', '--st-doing']) {
     assert.ok(html.includes(needle), `viewer page missing: ${needle}`);
+  }
+});
+
+test('viewer: structured card faces carry parity data without body heuristics', () => {
+  const tree = loadTree(PRESENTATION);
+  const data = viewerData(tree, analyze(tree));
+  const board = data.boards['.'] as {
+    labels: { id: string; color: string }[];
+    fields: { id: string; face: boolean }[];
+    lanes: { estimate: number; cards: Record<string, unknown>[] }[];
+  };
+  const card = board.lanes.flatMap((lane) => lane.cards)[0]!;
+  assert.deepEqual(board.labels, [
+    { id: 'Type/Bug', color: '#d03b3b' },
+    { id: 'Team/Platform', color: '#2a78d6' },
+  ]);
+  assert.deepEqual((card['labelDetails'] as { group: string; value: string }[]).map(({ group, value }) => ({ group, value })), [
+    { group: 'Type', value: 'Bug' }, { group: 'Team', value: 'Platform' },
+  ]);
+  assert.equal(card['coverColor'], '#f0c040');
+  assert.equal(card['descriptionPresent'], true);
+  assert.deepEqual((card['checklistPreview'] as { text: string }[]).map((item) => item.text), ['rendered']);
+  assert.deepEqual((card['faceFields'] as { id: string }[]).map((field) => field.id), ['sprint', 'risk']);
+  const html = viewerHtml(data, { live: false });
+  for (const needle of ['checklistPreview.slice(0,2)', 'c.faceFields||[]', 'c.labelDetails||[]', 'metrics.agingLevel', 'lane.estimate']) {
+    assert.ok(html.includes(needle), `local viewer missing ${needle}`);
   }
 });
 

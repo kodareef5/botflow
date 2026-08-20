@@ -21,11 +21,11 @@ const CSS = `
 body{background-color:var(--page);color:var(--ink);font:var(--base-size)/var(--line-height) var(--font);height:100vh;display:flex;flex-direction:column}
 button{font:inherit;color:var(--ink);background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:var(--control-pad);cursor:pointer}
 button:hover{border-color:var(--baseline)}
-button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
 button.primary{background:var(--acc);color:var(--acc-ink);border-color:transparent}
 button.ghost{border-color:transparent;background:none;color:var(--muted)}
 button.ghost:hover{color:var(--ink)}
-input,textarea{font:inherit;color:var(--ink);background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:var(--field-pad)}
+input,textarea,select{font:inherit;color:var(--ink);background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:var(--field-pad)}
 svg.ic{width:13px;height:13px;vertical-align:-2px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 header.top{display:flex;align-items:center;gap:18px;padding:var(--header-pad);border-bottom:var(--bw) var(--bs) var(--grid);flex:none;background:var(--surface)}
 header.top h1{font:700 16px/1.1 var(--display)}
@@ -108,6 +108,10 @@ aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
 .card:hover{border-color:var(--baseline)}
 .card:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
 .card.blocked{border-left:3px solid var(--st-blocked)}
+.card.has-color::before{content:"";display:block;height:5px;background:var(--cover-color)}
+.card.age-1:not(:hover):not(:focus-within){opacity:.9}
+.card.age-2:not(:hover):not(:focus-within){opacity:.8}
+.card.age-3:not(:hover):not(:focus-within){opacity:.68;filter:saturate(.65)}
 .card .art{width:100%;height:var(--art-h);object-fit:cover;display:block;border-bottom:var(--bw) var(--bs) var(--grid)}
 .card .inner{padding:var(--card-pad)}
 .card .cid{font:11px ui-monospace,Menlo,monospace;color:var(--muted)}
@@ -120,6 +124,13 @@ aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
 .badges .p1{color:#c47317;font-weight:650}
 .badges .blk{color:var(--st-blocked)}
 .badges .ok{color:var(--st-done)}
+.badges .due-overdue,.badges .due-today{color:var(--st-blocked);font-weight:650}
+.badges .due-soon{color:#c47317;font-weight:650}
+.badges .lbl{box-shadow:inset 3px 0 0 var(--lc)}
+.badges .fieldface b{font-weight:600;color:var(--muted)}
+.previewtasks{margin-top:6px;padding-top:5px;border-top:1px dashed var(--grid);font-size:11px;color:var(--ink2);display:flex;flex-direction:column;gap:2px}
+.previewtasks span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.previewtasks span::before{content:"□ ";color:var(--muted)}
 .subboard{margin:7px 0 0;display:flex;gap:8px;align-items:center}
 .subboard button{font-size:12px;padding:2px 8px}
 .subboard .mini{flex:1;height:6px;border-radius:3px;background:var(--grid);overflow:hidden}
@@ -153,7 +164,7 @@ table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink2)}
 .modal h3{margin-bottom:12px;font:700 15px/1.2 var(--display)}
 .modal .field{margin-bottom:10px}
 .modal .field label{display:block;font-size:12px;color:var(--ink2);margin-bottom:3px}
-.modal .field input,.modal .field textarea{width:100%;margin-top:3px}
+.modal .field input,.modal .field textarea,.modal .field select{width:100%;margin-top:3px}
 .modal .field textarea{resize:vertical;font:12.5px/1.5 ui-monospace,Menlo,monospace}
 .editor{max-width:680px}
 .lanerow{display:flex;gap:6px;align-items:center;margin:5px 0;flex-wrap:wrap}
@@ -165,12 +176,18 @@ table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink2)}
 .lanerow.dead .lid{text-decoration:line-through}
 .lanerow .mig{display:inline-flex;gap:5px;align-items:center;font-size:11.5px;color:var(--st-blocked)}
 .lanerow .mig[hidden]{display:none}
+.registryrow{display:flex;gap:6px;align-items:center;margin:5px 0;flex-wrap:wrap}
+.registryrow input,.registryrow select{padding:3px 7px;font-size:12.5px}
+.registryrow .rid{width:145px}.registryrow .rname{width:120px}.registryrow .ropts{flex:1;min-width:130px}.registryrow .rcolor{width:105px}
+.registryrow .rface{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:var(--ink2)}
+.registryrow .rface input{width:auto;margin:0}
 .editor h4{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:14px 0 6px}
 .editor .rollups{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px}
 .editor .rollups label{display:flex;flex-direction:column;gap:3px;color:var(--ink2)}
 .modal .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
 .cardmodal{max-width:780px;padding:0;overflow:hidden}
 .cardmodal .banner{width:100%;height:170px;object-fit:cover;display:block}
+.cardmodal .coverband{height:8px;background:var(--cover-color)}
 .cardmodal .inner{padding:18px 22px 22px}
 .cardmodal .close{float:right;font-size:16px;padding:2px 9px}
 .cardmodal .cid{font:12px ui-monospace,Menlo,monospace;color:var(--muted)}
@@ -485,14 +502,16 @@ function formModal(title,fields,submitLabel,onSubmit){
     '<div class="field"><label>'+esc(f.label)
     +(f.type==='textarea'
       ?'<textarea name="'+f.name+'" rows="'+(f.rows||6)+'" placeholder="'+esc(f.placeholder||'')+'" '+(f.required?'required':'')+'>'+esc(f.value||'')+'</textarea>'
-      :'<input name="'+f.name+'"'+(f.type==='password'?' type="password" autocomplete="new-password"':'')+' value="'+esc(f.value||'')+'" placeholder="'+esc(f.placeholder||'')+'" '+(f.required?'required':'')+'>')
+      :f.type==='select'
+        ?'<select name="'+f.name+'">'+(f.options||[]).map(o=>'<option value="'+esc(o.value)+'"'+(String(f.value??'')===String(o.value)?' selected':'')+'>'+esc(o.label)+'</option>').join('')+'</select>'
+        :'<input name="'+f.name+'" type="'+(f.type==='password'?'password':f.type==='number'?'number':f.type==='url'?'url':'text')+'"'+(f.type==='password'?' autocomplete="new-password"':'')+' value="'+esc(f.value||'')+'" placeholder="'+esc(f.placeholder||'')+'" '+(f.required?'required':'')+'>')
     +'</label></div>').join('')
     +'<div class="err" role="alert"></div><div class="actions"><button type="button" class="ghost" data-x>cancel</button><button class="primary">'+esc(submitLabel)+'</button></div></form>',null,title);
   $('form',m).onsubmit=async e=>{e.preventDefault();
     const data={};for(const f of fields)data[f.name]=$('[name="'+f.name+'"]',m).value.trim();
     try{await onSubmit(data);closeOverlay()}catch(err){$('.err',m).textContent=err.message}};
   $('[data-x]',m).onclick=closeOverlay;
-  const first=$('input,textarea',m);if(first)first.focus();
+  const first=$('input,textarea,select',m);if(first)first.focus();
 }
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeOverlay()});
 function confirmModal(title,message,confirmLabel,onConfirm){
@@ -689,18 +708,55 @@ function renderMain(){
 // whole script lives inside a TypeScript template literal.)
 function newCard(lane){
   if(!CAN_WRITE)return;
-  formModal('New card',[
+  const defs=(BOARD&&BOARD.fields)||[];
+  const fields=[
     {name:'title',label:'title',required:true},
     {name:'priority',label:'priority (p0-p3, optional)'},
     {name:'labels',label:'labels (comma separated, optional)'},
-    {name:'assignee',label:'assignee (username, optional)'},
-  ],'create',async d=>{
+    {name:'assignee',label:'accountable assignee (username, optional)'},
+    {name:'delegate',label:'executing delegate (bot username, optional)'},
+    {name:'start',label:'start (YYYY-MM-DD or UTC datetime)'},
+    {name:'due',label:'due (YYYY-MM-DD or UTC datetime)'},
+    {name:'estimate',label:'estimate (positive points)',type:'number'},
+    {name:'evergreen',label:'aging signal',type:'select',options:[{value:'',label:'normal'},{value:'true',label:'evergreen (hide aging)'}]},
+    {name:'cover_color',label:'cover color (#RGB or #RRGGBB)'},
+  ].concat(customFormFields(defs,[]));
+  formModal('New card',fields,'create',async d=>{
     const labels=d.labels?d.labels.split(',').map(x=>x.trim()).filter(Boolean):undefined;
     const r=await api('/api/projects/'+SEL+'/cards',{method:'POST',body:JSON.stringify({
-      title:d.title,lane:lane||undefined,priority:d.priority||undefined,labels:labels,assignee:d.assignee||undefined})});
+      title:d.title,lane:lane||undefined,priority:d.priority||undefined,labels:labels,
+      assignee:d.assignee||undefined,delegate:d.delegate||undefined,start:d.start||undefined,due:d.due||undefined,
+      estimate:d.estimate?Number(d.estimate):undefined,evergreen:d.evergreen===''?undefined:d.evergreen==='true',
+      cover_color:d.cover_color||undefined,fields:customPayload(defs,d,false)})});
     await reloadOrg();
     if(r&&r.id)openCard(r.id,'card');
   });
+}
+function customFormFields(defs,values){
+  const current=new Map((values||[]).map(v=>[v.id,v.value]));
+  return defs.map(f=>{
+    const raw=current.has(f.id)?current.get(f.id):'';
+    const value=Array.isArray(raw)?raw.join(', '):raw===true?'true':raw===false?'false':raw??'';
+    const base={name:'cf_'+f.id,label:f.name+' · '+f.type,value:value};
+    if(f.type==='checkbox')return {...base,type:'select',options:[{value:'',label:'unset'},{value:'true',label:'true'},{value:'false',label:'false'}]};
+    if(f.type==='select')return {...base,type:'select',options:[{value:'',label:'unset'}].concat((f.options||[]).map(o=>({value:o,label:o})))};
+    if(f.type==='number')return {...base,type:'number'};
+    if(f.type==='url')return {...base,type:'url'};
+    if(f.type==='multi-select')return {...base,label:f.name+' · choices, comma separated'};
+    return base;
+  });
+}
+function customPayload(defs,data,clear){
+  const out={};
+  for(const f of defs){
+    const raw=data['cf_'+f.id];
+    if(raw===''){if(clear)out[f.id]=null;continue}
+    if(f.type==='number')out[f.id]=Number(raw);
+    else if(f.type==='checkbox')out[f.id]=raw==='true';
+    else if(f.type==='multi-select')out[f.id]=raw.split(',').map(x=>x.trim()).filter(Boolean);
+    else out[f.id]=raw;
+  }
+  return out;
 }
 // What art this card shows. An explicit cover wins; otherwise a viewer may
 // substitute the first previewable attachment, but only when the card has not
@@ -715,25 +771,43 @@ function coverOf(c){
   return p?p.image:null;
 }
 function badge(ic,txt,cls){return '<span class="'+(cls||'')+'">'+ic+(txt!==undefined?' '+txt:'')+'</span>'}
+function fieldText(v){return Array.isArray(v)?v.join(', '):v===true?'yes':v===false?'no':String(v)}
+function labelBadge(l){
+  return '<span class="lbl" style="--lc:'+esc(l.color||'var(--grid)')+'" title="'+esc(l.group?l.group+': '+l.value:l.id)+'">#'+esc(l.value||l.id)+'</span>';
+}
+function dueFace(c){
+  const d=c.metrics&&c.metrics.due;if(!d||d.status==='complete')return null;
+  const text=d.status==='overdue'?Math.abs(d.days)+'d late':d.status==='today'?'due today':d.days+'d';
+  return '<span class="due-'+d.status+'" title="due '+esc(c.due)+'">◷ '+text+'</span>';
+}
+function faceBadges(b,c){
+  const ready=new Set(b.ready||[]),items=[];
+  if(c.priority)items.push('<span class="'+(c.priority==='p0'?'p0':c.priority==='p1'?'p1':'')+'">'+esc(c.priority)+'</span>');
+  if(c.blocked)items.push('<span class="blk" title="'+esc(c.blocked)+'">⛔ blocked</span>');
+  const due=dueFace(c);if(due)items.push(due);
+  if(c.assignee)items.push('<span title="accountable assignee">@'+esc(who(c.assignee))+'</span>');
+  if(c.delegate)items.push('<span title="executing delegate">⇢ @'+esc(who(c.delegate))+'</span>');
+  for(const l of c.labelDetails||[])items.push(labelBadge(l));
+  if(!(c.labelDetails||[]).length)for(const l of c.labels||[])items.push('<span>#'+esc(l)+'</span>');
+  if(c.checklist)items.push(badge(IC.check,c.checklist.done+'/'+c.checklist.total,c.checklist.done===c.checklist.total?'ok':''));
+  if(c.estimate)items.push('<span title="estimate">est '+c.estimate+'</span>');
+  for(const f of c.faceFields||[])items.push('<span class="fieldface"><b>'+esc(f.name)+'</b> '+esc(fieldText(f.value))+'</span>');
+  if(c.descriptionPresent)items.push(badge('≡','description'));
+  if(c.comments)items.push(badge(IC.chat,c.comments));
+  if(c.attachments)items.push(badge(IC.clip,c.attachments));
+  const s=c.metrics&&c.metrics.stagnation;if(s&&s.dots)items.push('<span title="'+s.days+' cumulative days in lane">'+('●'.repeat(s.dots))+'</span>');
+  if(ready.has(c.id))items.push('<span class="ready bare">▶ ready</span>');
+  return items.slice(0,10).join('');
+}
 function cardHtml(b,c){
-  const ready=new Set(b.ready||[]);
-  const badges=[];
-  if(c.checklist)badges.push(badge(IC.check,c.checklist.done+'/'+c.checklist.total,c.checklist.done===c.checklist.total?'ok':''));
-  if(c.comments)badges.push(badge(IC.chat,c.comments));
-  if(c.attachments)badges.push(badge(IC.clip,c.attachments));
-  if(c.assignee)badges.push('<span title="assignee">@'+esc(who(c.assignee))+'</span>');
-  else if(c.author)badges.push('<span class="by" title="created by '+esc(c.author)+'">'+esc(who(c.author))+'</span>');
-  if(c.priority)badges.push('<span class="'+(c.priority==='p0'?'p0':c.priority==='p1'?'p1':'')+'">'+esc(c.priority)+'</span>');
-  for(const l of c.labels||[])badges.push('<span>#'+esc(l)+'</span>');
-  if(c.blocked)badges.push('<span class="blk" title="'+esc(c.blocked)+'">⛔ blocked</span>');
-  if((c.deps||[]).length)badges.push('<span>deps→'+c.deps.map(esc).join(',')+'</span>');
-  if(ready.has(c.id))badges.push('<span class="ready bare">▶ ready</span>');
   const board=c.type==='board';
-  return '<div class="card '+(c.blocked?'blocked':'')+'" data-card="'+esc(c.id)+'" tabindex="0" role="button" aria-label="'+esc(c.id+' '+c.title)+'"'
+  const age=c.metrics&&c.metrics.agingLevel||0;
+  return '<div class="card '+(c.blocked?'blocked ':'')+(c.coverColor?'has-color ':'')+(age?'age-'+age:'')+'"'+(c.coverColor?' style="--cover-color:'+esc(c.coverColor)+'"':'')+' data-card="'+esc(c.id)+'" tabindex="0" role="button" aria-label="'+esc(c.id+' '+c.title)+'"'
     +(RO?'':' aria-keyshortcuts="Shift+ArrowLeft Shift+ArrowRight Shift+ArrowUp Shift+ArrowDown"')+'>'
     +((cov=>cov?'<img class="art" src="'+esc(cov)+'" alt="" loading="lazy">':'')(coverOf(c)))
     +'<div class="inner"><div class="cid">'+esc(c.id)+'</div><div class="t">'+esc(c.title)+'</div>'
-    +'<div class="badges">'+badges.join('')+'</div>'
+    +'<div class="badges">'+faceBadges(b,c)+'</div>'
+    +((c.checklistPreview||[]).length?'<div class="previewtasks">'+c.checklistPreview.slice(0,2).map(i=>'<span title="'+esc(i.section)+'">'+esc(i.text)+'</span>').join('')+'</div>':'')
     +(board?'<div class="subboard"><button data-goto="'+esc(c.child??'')+'" '+(c.child==null||RO?'disabled':'')+'>'+IC.open+' board</button>'
       +statechip(c.state)
       +(c.childProgress!=null?'<div class="mini" title="'+pct(c.childProgress)+'"><i style="width:'+Math.round((c.childProgress||0)*100)+'%"></i></div>':'')
@@ -744,6 +818,7 @@ function colsHtml(b){
   return '<div class="cols" style="margin-top:12px">'+b.lanes.map(lane=>{
     const n=lane.cards.length;
     const wip=lane.wip!=null?'<span class="'+(n>lane.wip?'wipbad':'n')+'">'+n+'/'+lane.wip+'</span>':'<span class="n">'+n+'</span>';
+    const estimate=lane.estimate?'<span class="n">est '+lane.estimate+'</span>':'';
     let body='';
     if(lane.substates.length){
       // Every substate gets a group, empty ones included: a strict lane must
@@ -756,7 +831,7 @@ function colsHtml(b){
       }
     }else body=lane.cards.map(c=>cardHtml(b,c)).join('');
     const add=!RO?'<footer class="lanefoot"><button type="button" class="laneadd" data-addcard="'+esc(lane.id)+'" title="add a card to '+esc(lane.name)+'" aria-label="add a card to '+esc(lane.name)+'">+ add card</button></footer>':'';
-    return '<section class="col" data-lane="'+esc(lane.id)+'"><h3>'+esc(lane.name)+' '+wip+'</h3>'
+    return '<section class="col" data-lane="'+esc(lane.id)+'"><h3>'+esc(lane.name)+' '+wip+' '+estimate+'</h3>'
       +'<div class="deck" data-lane="'+esc(lane.id)+'">'+(body||'<div class="empty">·</div>')+'</div>'+add+'</section>';
   }).join('')+'</div>';
 }
@@ -1102,11 +1177,27 @@ async function boardEditor(){
     +'<button type="button" class="ghost" data-rm aria-label="remove lane">✕</button>'
     +'<span class="mig" hidden>→ move its cards to <select class="mtarget" aria-label="migration target"></select></span>'
     +'</div>';
+  const labelRow=l=>'<div class="registryrow" data-labeldef>'
+    +'<input class="rid" value="'+esc(l.id||'')+'" placeholder="Group/Value or tag" aria-label="label id">'
+    +'<input class="rcolor" value="'+esc(l.color||'')+'" placeholder="#RRGGBB" aria-label="label color">'
+    +'<button type="button" class="ghost" data-rmlabel aria-label="remove label">✕</button></div>';
+  const TYPES=['text','number','checkbox','date','select','multi-select','url','person'];
+  const fieldRow=f=>'<div class="registryrow" data-fielddef>'
+    +'<input class="rid" value="'+esc(f.id||'')+'" placeholder="field_id" aria-label="field id">'
+    +'<input class="rname" value="'+esc(f.name||'')+'" placeholder="display name" aria-label="field name">'
+    +'<select class="rtype" aria-label="field type">'+TYPES.map(t=>'<option '+(t===f.type?'selected':'')+'>'+t+'</option>').join('')+'</select>'
+    +'<input class="ropts" value="'+esc((f.options||[]).join(', '))+'" placeholder="select options, comma separated" aria-label="field options">'
+    +'<label class="rface"><input type="checkbox" '+(f.face?'checked':'')+'> face</label>'
+    +'<button type="button" class="ghost" data-rmfield aria-label="remove field">✕</button></div>';
   const m=overlay('<h3>Edit board</h3>'
     +'<div class="field"><label>board name<input id="bname" value="'+esc(cfg.name)+'"></label></div>'
     +'<h4>lanes</h4><p class="setting-note">Every lane projects onto one canonical state; lanes named after a canonical state map to themselves. Removing a lane migrates its cards, and each move is logged on the card.</p>'
     +'<div id="lanes">'+cfg.lanes.map(laneRow).join('')+'</div>'
     +'<button type="button" id="addlane">+ lane</button>'
+    +'<h4>labels</h4><p class="setting-note">Use Group/Value for a single-select group. Colors are optional and undeclared labels still work.</p>'
+    +'<div id="labeldefs">'+(cfg.labels||[]).map(labelRow).join('')+'</div><button type="button" id="addlabel">+ label</button>'
+    +'<h4>custom fields</h4><p class="setting-note">Values remain ordinary card frontmatter. Face fields appear on compact cards only when filled.</p>'
+    +'<div id="fielddefs">'+(cfg.fields||[]).map(fieldRow).join('')+'</div><button type="button" id="addfield">+ field</button>'
     +'<h4>rollup policy</h4><div class="rollups">'
     +'<label>blocked when<select id="rbw"><option '+(cfg.rollup.blockedWhen==='any-blocked'?'selected':'')+'>any-blocked</option><option '+(cfg.rollup.blockedWhen==='never'?'selected':'')+'>never</option></select></label>'
     +'<label>doing when<select id="rdw"><option '+(cfg.rollup.doingWhen==='any-started'?'selected':'')+'>any-started</option><option '+(cfg.rollup.doingWhen==='any-doing'?'selected':'')+'>any-doing</option></select></label>'
@@ -1124,6 +1215,10 @@ async function boardEditor(){
     }
   };
   $('#addlane',m).onclick=()=>{$('#lanes',m).insertAdjacentHTML('beforeend',laneRow({id:'',canonical:'todo',substates:[],order:'free',wip:null}));$('#lanes',m).lastElementChild.querySelector('.lid').focus()};
+  $('#addlabel',m).onclick=()=>{$('#labeldefs',m).insertAdjacentHTML('beforeend',labelRow({id:'',color:''}));$('#labeldefs',m).lastElementChild.querySelector('.rid').focus()};
+  $('#addfield',m).onclick=()=>{$('#fielddefs',m).insertAdjacentHTML('beforeend',fieldRow({id:'',name:'',type:'text',options:[],face:false}));$('#fielddefs',m).lastElementChild.querySelector('.rid').focus()};
+  $('#labeldefs',m).onclick=e=>{const x=e.target.closest('[data-rmlabel]');if(x)x.closest('[data-labeldef]').remove()};
+  $('#fielddefs',m).onclick=e=>{const x=e.target.closest('[data-rmfield]');if(x)x.closest('[data-fielddef]').remove()};
   $('#lanes',m).oninput=refreshMigTargets;
   $('#lanes',m).onclick=e=>{
     const rm=e.target.closest('[data-rm]');if(!rm)return;
@@ -1136,7 +1231,7 @@ async function boardEditor(){
     refreshMigTargets();
   };
   $('#bsave',m).onclick=async()=>{
-    const lanes=[],migrations={};
+    const lanes=[],labels=[],fields=[],migrations={};
     for(const row of m.querySelectorAll('[data-lane]')){
       const id=row.querySelector('.lid').value.trim();
       if(row.classList.contains('dead')){
@@ -1150,9 +1245,20 @@ async function boardEditor(){
         substates:row.querySelector('.lsub').value.split(',').map(s=>s.trim()).filter(Boolean),
         order:row.querySelector('.lord').value,wip:wip===''?null:Number(wip)});
     }
+    for(const row of m.querySelectorAll('[data-labeldef]')){
+      const id=row.querySelector('.rid').value.trim();if(!id)continue;
+      labels.push({id,color:row.querySelector('.rcolor').value.trim()||undefined});
+    }
+    for(const row of m.querySelectorAll('[data-fielddef]')){
+      const id=row.querySelector('.rid').value.trim();if(!id)continue;
+      const type=row.querySelector('.rtype').value;
+      const options=row.querySelector('.ropts').value.split(',').map(s=>s.trim()).filter(Boolean);
+      fields.push({id,name:row.querySelector('.rname').value.trim()||id,type,
+        options:type==='select'||type==='multi-select'?options:undefined,face:row.querySelector('.rface input').checked});
+    }
     try{
       await api('/api/projects/'+SEL+'/config',{method:'PUT',body:JSON.stringify({
-        name:$('#bname',m).value,lanes,
+        name:$('#bname',m).value,lanes,labels,fields,
         rollup:{blockedWhen:$('#rbw',m).value,doingWhen:$('#rdw',m).value,elseState:$('#rel',m).value},migrations})});
       closeOverlay();BOARD=null;refreshBoard();reloadOrg();
     }catch(err){$('.err',m).textContent=err.message}
@@ -1229,12 +1335,15 @@ function cardModalHtml(c,tab){
   const p=c.parsed||{};
   const meta=[statechip(c.state),'<span class="cid">'+esc(c.position)+'</span>'];
   if(c.assignee)meta.push('<span class="badges"><span title="assignee">@'+esc(who(c.assignee))+'</span></span>');
+  if(c.delegate)meta.push('<span class="badges"><span title="executing delegate">⇢ @'+esc(who(c.delegate))+'</span></span>');
   if(c.author)meta.push('<span class="badges"><span class="by" title="created by '+esc(c.author)+'">'+esc(who(c.author))+'</span></span>');
   if(c.priority)meta.push('<span class="badges"><span class="'+(c.priority==='p0'?'p0':'')+'">'+esc(c.priority)+'</span></span>');
-  for(const l of c.labels||[])meta.push('<span class="badges"><span>#'+esc(l)+'</span></span>');
+  for(const l of c.labelDetails||[])meta.push('<span class="badges">'+labelBadge(l)+'</span>');
+  if(!(c.labelDetails||[]).length)for(const l of c.labels||[])meta.push('<span class="badges"><span>#'+esc(l)+'</span></span>');
+  const due=dueFace(c);if(due)meta.push('<span class="badges">'+due+'</span>');
   if(c.blocked)meta.push('<span class="badges"><span class="blk">⛔ '+esc(c.blocked)+'</span></span>');
   if(!RO){
-    const mine=ME&&c.assignee===ME.username;
+    const mine=ME&&(ME.kind==='bot'?c.delegate:c.assignee)===ME.username;
     const settled=c.state==='done'||c.state==='archive';
     const acts=[];
     if(!settled&&!(mine&&c.state==='doing'))acts.push('<button class="ghost" data-claim title="take this card and move it into doing">▶ claim</button>');
@@ -1243,11 +1352,12 @@ function cardModalHtml(c,tab){
       ?'<button class="ghost" data-unblock title="clear the blocked flag">unblock</button>'
       :'<button class="ghost" data-block title="park this card with a reason">⛔ block</button>');
     meta.push(acts.join(''));
-    meta.push('<button class="ghost" data-editcard title="edit title, priority, labels, deps, assignee">✎ edit</button>'
+    meta.push('<button class="ghost" data-editcard title="edit card fields">✎ edit</button>'
       +'<button class="ghost" data-sharecard title="public read-only link to just this card">↗ share</button>');
   }
   const tabs=[['card','card'],['chat','chat '+((p.comments||[]).length||'')],['activity','activity']];
-  return ((cov=>cov?'<img class="banner" src="'+esc(cov)+'" alt="">':'')(coverOf(c)))
+  return (c.coverColor?'<div class="coverband" style="--cover-color:'+esc(c.coverColor)+'"></div>':'')
+    +((cov=>cov?'<img class="banner" src="'+esc(cov)+'" alt="">':'')(coverOf(c)))
     +'<div class="inner"><button class="close ghost" data-x aria-label="close card">✕</button>'
     +'<div class="cid">'+esc(c.id)+'</div><h2>'+esc(c.title)+'</h2>'
     +'<div class="metaline">'+meta.join(' ')+'</div>'
@@ -1292,9 +1402,23 @@ function paneCard(c){
         +(RO?'':'<button class="setcov primary" data-cover="'+esc(t.img)+'">☆ cover</button>')+'</div>').join('')+'</div>';
   }
   const kv=[];
+  if(c.assignee)kv.push('<span><b>assignee</b> '+esc(who(c.assignee))+'</span>');
+  if(c.delegate)kv.push('<span><b>delegate</b> '+esc(who(c.delegate))+'</span>');
+  if(c.start)kv.push('<span><b>start</b> '+esc(c.start)+'</span>');
+  if(c.due)kv.push('<span><b>due</b> '+esc(c.due)+'</span>');
+  if(c.estimate!=null)kv.push('<span><b>estimate</b> '+esc(c.estimate)+'</span>');
+  if(c.evergreen)kv.push('<span><b>aging</b> evergreen</span>');
+  for(const f of c.fields||[])kv.push('<span><b>'+esc(f.name)+'</b> '+esc(fieldText(f.value))+'</span>');
   if(c.created)kv.push('<span><b>created</b> '+esc(c.created)+'</span>');
   if(c.updated)kv.push('<span><b>updated</b> '+esc(c.updated)+'</span>');
   if((c.deps||[]).length)kv.push('<span><b>deps</b> '+c.deps.map(esc).join(', ')+'</span>');
+  const fm=c.metrics||{};
+  if(fm.currentLaneDays!=null)kv.push('<span><b>current lane</b> '+fm.currentLaneDays+'d</span>');
+  if(fm.cumulativeLaneDays!=null)kv.push('<span><b>cumulative lane</b> '+fm.cumulativeLaneDays+'d</span>');
+  if(fm.idleDays!=null)kv.push('<span><b>idle</b> '+fm.idleDays+'d</span>');
+  if(fm.cycleDays!=null)kv.push('<span><b>cycle</b> '+fm.cycleDays+'d</span>');
+  if(fm.leadDays!=null)kv.push('<span><b>lead</b> '+fm.leadDays+'d</span>');
+  if(fm.blockedDays)kv.push('<span><b>blocked</b> '+fm.blockedDays+'d</span>');
   kv.push('<span><b>file</b> '+esc(c.file)+'</span>');
   out+='<div class="kv">'+kv.join('')+'</div>';
   return out;
@@ -1404,17 +1528,27 @@ function wireCardModal(m,c,tab){
       await reloadOrg();openCard(c.id,'card');
       return}
     if(e.target.closest('[data-editcard]')){
-      formModal('Edit card',[
+      const defs=(BOARD&&BOARD.fields)||[];
+      const fields=[
         {name:'title',label:'title',required:true,value:c.title},
         {name:'priority',label:'priority (p0 to p3, empty for none)',value:c.priority||''},
         {name:'labels',label:'labels (comma separated)',value:(c.labels||[]).join(', ')},
         {name:'deps',label:'deps (comma separated card ids)',value:(c.deps||[]).join(', ')},
-        {name:'assignee',label:'assignee (empty to clear)',value:c.assignee||''},
-      ],'save',async d=>{
+        {name:'assignee',label:'accountable assignee (empty to clear)',value:c.assignee||''},
+        {name:'delegate',label:'executing delegate (empty to clear)',value:c.delegate||''},
+        {name:'start',label:'start (empty to clear)',value:c.start||''},
+        {name:'due',label:'due (empty to clear)',value:c.due||''},
+        {name:'estimate',label:'estimate (empty to clear)',type:'number',value:c.estimate??''},
+        {name:'evergreen',label:'aging signal',type:'select',value:String(!!c.evergreen),options:[{value:'false',label:'normal'},{value:'true',label:'evergreen (hide aging)'}]},
+        {name:'cover_color',label:'cover color (empty to clear)',value:c.coverColor||''},
+      ].concat(customFormFields(defs,c.fields||[]));
+      formModal('Edit card',fields,'save',async d=>{
         await api('/api/projects/'+SEL+'/cards/'+c.id+'/edit',{method:'POST',body:JSON.stringify({
           title:d.title,priority:d.priority||null,assignee:d.assignee||null,
+          delegate:d.delegate||null,start:d.start||null,due:d.due||null,
+          estimate:d.estimate?Number(d.estimate):null,evergreen:d.evergreen==='true',cover_color:d.cover_color||null,
           labels:d.labels?d.labels.split(',').map(s=>s.trim()).filter(Boolean):[],
-          deps:d.deps?d.deps.split(',').map(s=>s.trim()).filter(Boolean):[]})});
+          deps:d.deps?d.deps.split(',').map(s=>s.trim()).filter(Boolean):[],fields:customPayload(defs,d,true)})});
         openCard(c.id,'card');refreshBoard(true)});
     }
   });

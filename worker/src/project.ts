@@ -14,9 +14,11 @@ import { boardFromDocuments, validateBoardDocuments, type BoardDocument } from '
 import { boardJson, cardDetailJson, cardJson } from '../../src/core/json.ts';
 import { parseBody } from '../../src/core/body.ts';
 import type { BoardAnalysis } from '../../src/core/analyze.ts';
-import type { BoardNode, Canonical, Card, Lane, LoadedBoard } from '../../src/core/model.ts';
+import type { BoardNode, Canonical, Card, Finding, Lane, LoadedBoard } from '../../src/core/model.ts';
 import { SLUG_RE, defaultRollup, isCanonical } from '../../src/core/model.ts';
-import { emitBoardYaml } from '../../src/core/config.ts';
+import { emitBoardYaml, parseCustomFields, parseLabelDefinitions } from '../../src/core/config.ts';
+import type { YamlValue } from '../../src/core/yaml.ts';
+import { validCustomFieldValue } from '../../src/core/presentation.ts';
 import {
   ClaimConflict,
   UsageError,
@@ -241,6 +243,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       substates: lane.substates,
       order: lane.order,
       wip: lane.wip,
+      estimate: board.cards.filter((c) => c.laneId === lane.id).reduce((sum, card) => sum + (card.estimate ?? 0), 0),
       cards: board.cards
         .filter((c) => c.laneId === lane.id)
         .map((c) => this.withPreviews(
@@ -341,6 +344,8 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       features: c.features,
       readOnlyReason: c.mutationBlocked,
       lanes: c.lanes.map((l) => ({ id: l.id, name: l.name, canonical: l.canonical, substates: l.substates, order: l.order, wip: l.wip })),
+      labels: c.labelDefinitions.map(({ id, color }) => ({ id, color })),
+      fields: c.customFields.map(({ id, name, type, options, face }) => ({ id, name, type, options, face })),
       rollup: { blockedWhen: c.rollup.blockedWhen, doneWhen: c.rollup.doneWhen, doingWhen: c.rollup.doingWhen, elseState: c.rollup.elseState },
     };
   }
@@ -353,7 +358,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     const board = this.loadBoardDocs();
     if (board.config.mutationBlocked !== null) return { error: `board is read-only: ${board.config.mutationBlocked}` };
     if (payload === null || typeof payload !== 'object') return { error: 'malformed config' };
-    const p = payload as { name?: unknown; lanes?: unknown; rollup?: unknown; migrations?: unknown };
+    const p = payload as { name?: unknown; lanes?: unknown; labels?: unknown; fields?: unknown; rollup?: unknown; migrations?: unknown };
     const name = typeof p.name === 'string' && p.name.trim() !== '' ? p.name.trim().replace(/[\r\n]+/g, ' ') : null;
     if (name === null) return { error: 'board name required' };
     if (!Array.isArray(p.lanes) || p.lanes.length === 0) return { error: 'at least one lane required' };
@@ -416,6 +421,32 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       }
     }
 
+    const presentationFindings: Finding[] = [];
+    const parsedLabels = p.labels === undefined
+      ? board.config.labelDefinitions
+      : parseLabelDefinitions(p.labels as YamlValue, presentationFindings);
+    const parsedFields = p.fields === undefined
+      ? board.config.customFields
+      : parseCustomFields(p.fields as YamlValue, presentationFindings);
+    const presentationError = presentationFindings.find((finding) => finding.severity === 'error');
+    if (presentationError !== undefined) return { error: presentationError.message };
+    const labelDefinitions = parsedLabels.map((definition) => ({
+      ...definition,
+      extra: { ...(board.config.labelDefinitions.find((old) => old.id === definition.id)?.extra ?? {}), ...definition.extra },
+    }));
+    const customFields = parsedFields.map((definition) => ({
+      ...definition,
+      extra: { ...(board.config.customFields.find((old) => old.id === definition.id)?.extra ?? {}), ...definition.extra },
+    }));
+    for (const card of board.cards) {
+      for (const definition of customFields) {
+        const value = card.extra[definition.id];
+        if (value !== undefined && !validCustomFieldValue(definition, value)) {
+          return { error: `card ${card.id}: existing value for custom field "${definition.id}" is not valid for the new ${definition.type} definition` };
+        }
+      }
+    }
+
     const migrations = new Map<string, string>();
     if (p.migrations !== undefined && p.migrations !== null) {
       if (typeof p.migrations !== 'object' || Array.isArray(p.migrations)) return { error: 'migrations must be an object of oldLane: newLane' };
@@ -446,7 +477,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       moved.push(card);
     }
 
-    const configYaml = emitBoardYaml({ ...board.config, name, lanes, rollup });
+    const configYaml = emitBoardYaml({ ...board.config, name, lanes, labelDefinitions, customFields, rollup });
     this.ctx.storage.transactionSync(() => {
       this.sql.exec("INSERT INTO meta(key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", configYaml);
       for (const card of moved) this.persistCard(card);
@@ -636,7 +667,15 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
             patch.evergreen = args['evergreen'];
           }
           if ('cover' in args) patch.cover = args['cover'] === null ? null : String(args['cover']);
-          opEdit(card, patch, actor);
+          if ('cover_color' in args) {
+            if (args['cover_color'] !== null && typeof args['cover_color'] !== 'string') throw new UsageError('cover_color must be a string or null');
+            patch.coverColor = args['cover_color'];
+          }
+          if ('fields' in args) {
+            if (args['fields'] === null || typeof args['fields'] !== 'object' || Array.isArray(args['fields'])) throw new UsageError('fields must be an object');
+            patch.fields = args['fields'] as Record<string, unknown>;
+          }
+          opEdit(card, patch, actor, board);
           this.persistCard(card);
           this.event(actor, 'edit', id, Object.keys(patch).join(', '));
           return { id, edited: Object.keys(patch) };

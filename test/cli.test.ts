@@ -195,6 +195,45 @@ test('cli: comments, checklists, attachments, cover', () => {
   assert.equal(bf(dir, 'lint').code, 0);
 });
 
+test('cli: scoped labels, cover color, and typed custom fields round-trip', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'botflow-'));
+  ok(dir, 'init', '--name', 'presentation');
+  writeFileSync(join(dir, '.botflow', 'board.yaml'), `botflow: 0
+name: presentation
+features: [scoped-labels, custom-fields, cover-colors]
+labels:
+  - id: Type/Bug
+    color: "#d03b3b"
+fields:
+  - id: sprint
+    name: Sprint
+    type: number
+    face: true
+  - id: risk
+    name: Risk
+    type: select
+    options: [low, high]
+lanes:
+  - id: todo
+  - id: doing
+  - id: done
+`);
+  ok(dir, 'card', 'add', 'Visible card', '--labels', 'Type/Bug', '--cover-color', '#F0C040', '--field', 'sprint=14', '--field', 'risk=high');
+  let shown = JSON.parse(ok(dir, 'card', 'show', '001', '--json')) as {
+    coverColor: string | null; labelDetails: { group: string; value: string; color: string }[];
+    fields: { id: string; value: unknown }[]; faceFields: { id: string }[];
+  };
+  assert.equal(shown.coverColor, '#f0c040');
+  assert.deepEqual(shown.labelDetails, [{ id: 'Type/Bug', group: 'Type', value: 'Bug', color: '#d03b3b' }]);
+  assert.deepEqual(Object.fromEntries(shown.fields.map((field) => [field.id, field.value])), { sprint: 14, risk: 'high' });
+  assert.deepEqual(shown.faceFields.map((field) => field.id), ['sprint']);
+  ok(dir, 'card', 'edit', '001', '--cover-color', 'none', '--field', 'sprint=15', '--field', 'risk=');
+  shown = JSON.parse(ok(dir, 'card', 'show', '001', '--json')) as typeof shown;
+  assert.equal(shown.coverColor, null);
+  assert.deepEqual(Object.fromEntries(shown.fields.map((field) => [field.id, field.value])), { sprint: 15 });
+  assert.match(readFileSync(join(dir, '.botflow', 'cards', '001-visible-card.md'), 'utf8'), /sprint: 15/);
+});
+
 test('cli: bin shim runs (js importing native ts)', () => {
   const res = spawnSync(process.execPath, [BIN, '--version'], { encoding: 'utf8' });
   assert.equal(res.status, 0, res.stderr);

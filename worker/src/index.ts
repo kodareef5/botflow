@@ -1068,11 +1068,14 @@ export default {
         for (const field of ['labels', 'deps']) {
           if (body[field] !== undefined && !Array.isArray(body[field])) return json({ error: `${field} must be a list` }, 400);
         }
-        for (const field of ['lane', 'priority', 'assignee', 'delegate', 'start', 'due']) {
+        for (const field of ['lane', 'priority', 'assignee', 'delegate', 'start', 'due', 'cover_color']) {
           if (body[field] !== undefined && typeof body[field] !== 'string') return json({ error: `${field} must be a string` }, 400);
         }
         if (body['estimate'] !== undefined && typeof body['estimate'] !== 'number') return json({ error: 'estimate must be a number' }, 400);
         if (body['evergreen'] !== undefined && typeof body['evergreen'] !== 'boolean') return json({ error: 'evergreen must be a boolean' }, 400);
+        if (body['fields'] !== undefined && (body['fields'] === null || typeof body['fields'] !== 'object' || Array.isArray(body['fields']))) {
+          return json({ error: 'fields must be an object' }, 400);
+        }
         // project: refs must point at projects nested beneath this board; the
         // DO enforces this at resolution time too, this is the friendly error.
         if (typeof body['board'] === 'string' && body['board'].startsWith('project:')) {
@@ -1096,6 +1099,8 @@ export default {
             due: typeof body['due'] === 'string' ? (body['due'] as string) : undefined,
             estimate: body['estimate'] as number | undefined,
             evergreen: body['evergreen'] as boolean | undefined,
+            coverColor: body['cover_color'] as string | undefined,
+            fields: body['fields'] as Record<string, unknown> | undefined,
           },
           actor,
         );

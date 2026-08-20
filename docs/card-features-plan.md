@@ -20,6 +20,9 @@ format and subsystem dependency.
 
 ## Delivery phases
 
+Phases 1–3 are complete in local commits. Nothing in this program is pushed until
+the full program is reviewed.
+
 1. **Compatibility foundation** — reserved names; lossless top-level, lane, and
    rollup extras; unknown-major refusal; `features:` declarations.
 2. **Core semantics and metrics** — consistent log datetimes; stalled, age,
