@@ -19,7 +19,7 @@ import { dirname, join, sep } from 'node:path';
 
 import { validateBoardDocuments } from '../core/docs.ts';
 import { emitScalar } from '../core/emit.ts';
-import { readBoardDocuments } from '../core/load.ts';
+import { loadBoard, readBoardDocuments } from '../core/load.ts';
 import { atomicWrite, withBoardLock } from '../core/mutate.ts';
 import { UsageError } from '../core/ops.ts';
 import { parseYaml } from '../core/yaml.ts';
@@ -156,7 +156,14 @@ export async function pull(root: string, token: string, force = false, timeoutMs
   // set is not atomic; an interrupted pull leaves valid files that a re-run
   // converges.
   return withBoardLock(root, () => {
-    // Gate 2: never destroy work git has not seen. Snapshot pull removes
+    // Gate 2: an older reader may inspect a future board, never replace it.
+    // `--force` only overrides dirty-worktree protection; it cannot override
+    // format compatibility and silently downgrade the documents.
+    const current = loadBoard(root);
+    if (current.config.mutationBlocked !== null) {
+      throw new UsageError(`refusing pull: board is read-only: ${current.config.mutationBlocked}`);
+    }
+    // Gate 3: never destroy work git has not seen. Snapshot pull removes
     // local cards missing remotely, so uncommitted changes need --force.
     if (!force) {
       const dirty = dirtyBoardFiles(root);
@@ -167,7 +174,7 @@ export async function pull(root: string, token: string, force = false, timeoutMs
         );
       }
     }
-    // Gate 3: symlink containment. Compute the deletion set up front so every
+    // Gate 4: symlink containment. Compute the deletion set up front so every
     // write and delete target is checked before the first change happens.
     const remotePaths = new Set(docs.map((c) => c.path));
     const cardsDir = join(root, 'cards');

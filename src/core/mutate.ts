@@ -134,7 +134,13 @@ export function initBoard(dir: string, name?: string): string {
 /** Lock, load fresh, mutate, persist the touched card. Loading inside the
  *  lock is what makes seq id allocation and read-modify-write safe. */
 function mutateCard<T>(root: string, fn: (board: LoadedBoard) => T): T {
-  return withBoardLock(root, () => fn(loadBoard(root)));
+  return withBoardLock(root, () => {
+    const board = loadBoard(root);
+    if (board.config.mutationBlocked !== null) {
+      throw new UsageError(`board is read-only: ${board.config.mutationBlocked}`);
+    }
+    return fn(board);
+  });
 }
 
 export function addCard(root: string, opts: AddOptions): Card {

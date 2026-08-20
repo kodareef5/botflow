@@ -135,5 +135,8 @@ export function validateBoardDocuments(config: unknown, cards: unknown): Snapsho
     const detail = errors.slice(0, 3).map((f) => `${f.rule}(${f.ref}): ${f.message}`).join('; ');
     return { error: `invalid board import: ${detail}` };
   }
+  if (board.config.mutationBlocked !== null) {
+    return { error: `unsupported board import: ${board.config.mutationBlocked}` };
+  }
   return { docs, board };
 }

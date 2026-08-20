@@ -335,8 +335,11 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
   boardConfig(): Record<string, unknown> {
     const c = this.loadBoardDocs().config;
     return {
+      version: c.version,
       name: c.name,
       ids: c.ids,
+      features: c.features,
+      readOnlyReason: c.mutationBlocked,
       lanes: c.lanes.map((l) => ({ id: l.id, name: l.name, canonical: l.canonical, substates: l.substates, order: l.order, wip: l.wip })),
       rollup: { blockedWhen: c.rollup.blockedWhen, doneWhen: c.rollup.doneWhen, doingWhen: c.rollup.doingWhen, elseState: c.rollup.elseState },
     };
@@ -347,6 +350,8 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
    *  caller's plan (or to a same-canonical lane), each move logged on the
    *  card. Validates everything, then commits all-or-nothing. */
   editBoardConfig(payload: unknown, actor: string): ActionResult {
+    const board = this.loadBoardDocs();
+    if (board.config.mutationBlocked !== null) return { error: `board is read-only: ${board.config.mutationBlocked}` };
     if (payload === null || typeof payload !== 'object') return { error: 'malformed config' };
     const p = payload as { name?: unknown; lanes?: unknown; rollup?: unknown; migrations?: unknown };
     const name = typeof p.name === 'string' && p.name.trim() !== '' ? p.name.trim().replace(/[\r\n]+/g, ' ') : null;
@@ -381,10 +386,19 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
         if (!Number.isInteger(n) || n <= 0) return { error: `lane "${id}": wip must be a positive integer` };
         wip = n;
       }
-      lanes.push({ id, name: typeof l['name'] === 'string' && l['name'].trim() !== '' ? l['name'].trim() : id, canonical, substates, order, wip });
+      lanes.push({
+        id,
+        name: typeof l['name'] === 'string' && l['name'].trim() !== '' ? l['name'].trim() : id,
+        canonical,
+        substates,
+        order,
+        wip,
+        extra: { ...(board.config.lanes.find((old) => old.id === id)?.extra ?? {}) },
+      });
     }
 
     const rollup = defaultRollup();
+    rollup.extra = { ...board.config.rollup.extra };
     if (p.rollup !== undefined && p.rollup !== null) {
       if (typeof p.rollup !== 'object') return { error: 'rollup must be an object' };
       const r = p.rollup as Record<string, unknown>;
@@ -411,7 +425,6 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       }
     }
 
-    const board = this.loadBoardDocs();
     const laneById = new Map(lanes.map((l) => [l.id, l]));
     const oldLaneById = new Map(board.config.lanes.map((l) => [l.id, l]));
     const fallbackFor = (oldLaneId: string): Lane => {
@@ -433,7 +446,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       moved.push(card);
     }
 
-    const configYaml = emitBoardYaml({ name, ids: board.config.ids, lanes, rollup });
+    const configYaml = emitBoardYaml({ ...board.config, name, lanes, rollup });
     this.ctx.storage.transactionSync(() => {
       this.sql.exec("INSERT INTO meta(key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", configYaml);
       for (const card of moved) this.persistCard(card);
@@ -460,6 +473,9 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     if ('error' in validation) return validation;
     const docs = validation.docs;
     const current = this.loadBoardDocs();
+    if (this.configText() !== null && current.config.mutationBlocked !== null) {
+      return { error: `board is read-only: ${current.config.mutationBlocked}` };
+    }
     const parsed = validation.board;
     // Preserve manager-native project cards whose referenced project the
     // snapshot doesn't itself carry (matched by ref, not card id: a snapshot
@@ -513,6 +529,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
   addCard(opts: Omit<AddOptions, 'actor'>, actor: string): ActionResult {
     try {
       const board = this.loadBoardDocs();
+      if (board.config.mutationBlocked !== null) throw new UsageError(`board is read-only: ${board.config.mutationBlocked}`);
       const card = opAdd(board, { ...opts, actor });
       this.persistCard(card);
       this.event(actor, 'add', card.id, `created "${card.title}" in ${card.laneId}`);
@@ -526,6 +543,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
   action(kind: string, id: string, args: Record<string, unknown>, actor: string): ActionResult {
     try {
       const board = this.loadBoardDocs();
+      if (board.config.mutationBlocked !== null) throw new UsageError(`board is read-only: ${board.config.mutationBlocked}`);
       const card = getCard(board, id);
       switch (kind) {
         case 'move': {
@@ -652,6 +670,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
    *  ordinary cards. */
   removeCardsByRef(ref: string, actor: string): { removed: number } {
     const board = this.loadBoardDocs();
+    if (board.config.mutationBlocked !== null) throw new UsageError(`board is read-only: ${board.config.mutationBlocked}`);
     const doomed = board.cards.filter((c) => c.type === 'board' && c.boardPath === ref);
     for (const card of doomed) {
       this.sql.exec('DELETE FROM cards WHERE id = ?', card.id);

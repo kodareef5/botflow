@@ -310,6 +310,47 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.deepEqual(boardShape.lanes.map((l) => l.id), ['todo', 'doing', 'needs-qa', 'done']);
     assert.equal(boardShape.findings.filter((f) => (f as { severity: string }).severity === 'error').length, 0, 'reshaped board lints clean');
 
+    // Hosted board edits preserve additive board.yaml data they do not own,
+    // while a declared capability this manager cannot honor is refused before
+    // it can replace the live snapshot.
+    const compatProject = (await call('/api/projects', {
+      method: 'POST', token: admin, body: JSON.stringify({ space: space2, name: 'compatibility' }),
+    })).body['id'] as string;
+    const compatConfig = `botflow: 0
+name: compatibility
+lanes:
+  - id: todo
+    visual:
+      color: blue
+  - id: done
+rollup:
+  future_mode: weighted
+vendor:
+  flags: [alpha, beta]
+`;
+    assert.equal((await call(`/api/projects/${compatProject}/import`, {
+      method: 'PUT', token: admin, body: JSON.stringify({ config: compatConfig, cards: [] }),
+    })).status, 200);
+    const compatEdit = await call(`/api/projects/${compatProject}/config`, {
+      method: 'PUT', token: admin, body: JSON.stringify({
+        name: 'compatibility edited', lanes: [{ id: 'todo' }, { id: 'done' }], rollup: {},
+      }),
+    });
+    assert.equal(compatEdit.status, 200, JSON.stringify(compatEdit.body));
+    const compatExport = await call(`/api/projects/${compatProject}/export`, { token: admin });
+    const preservedConfig = compatExport.body['config'] as string;
+    assert.match(preservedConfig, /visual:\n      color: blue/);
+    assert.match(preservedConfig, /future_mode: weighted/);
+    assert.match(preservedConfig, /vendor:\n  flags: \[alpha, beta\]/);
+    const unsupportedImport = await call(`/api/projects/${compatProject}/import`, {
+      method: 'PUT', token: admin,
+      body: JSON.stringify({ config: 'botflow: 0\nname: future\nfeatures: [teleportation]\n', cards: [] }),
+    });
+    assert.equal(unsupportedImport.status, 400);
+    assert.match(String(unsupportedImport.body['error']), /unsupported board feature/);
+    assert.equal((await call(`/api/projects/${compatProject}/export`, { token: admin })).body['config'], preservedConfig,
+      'rejected future snapshot leaves the current board byte-identical');
+
     // ---- link previews ----
     // A url is not an image, but the page behind it may advertise one. The
     // worker fetches it once, server-side, and proxies the picture: a viewer's

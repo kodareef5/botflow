@@ -71,6 +71,18 @@
         "rule": "dep-cycle",
         "ref": "001"
       }
+    ],
+    "unsupported-major": [
+      {
+        "rule": "schema",
+        "ref": "board.yaml"
+      }
+    ],
+    "unsupported-feature": [
+      {
+        "rule": "unsupported-feature",
+        "ref": "board.yaml"
+      }
     ]
   }
 }

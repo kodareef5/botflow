@@ -51,8 +51,14 @@ Written in the strict YAML subset (§9). Top-level keys:
 | `botflow` | int | yes | Spec major version. This document defines `0`. |
 | `name` | string | yes | Display name. |
 | `ids` | `seq` \| `hash` | no (default `seq`) | Card id scheme (§8). |
+| `features` | list of slugs | no | Additive capabilities the board relies on. Readers that do not support every declared feature MUST identify each unsupported feature and MUST refuse to mutate the board; read-only rendering MAY degrade. |
 | `lanes` | list of lane maps | no | Defaults to the six canonical lanes, in canonical order, when omitted. |
 | `rollup` | map | no | Rollup policy (§7); defaults below. |
+
+An implementation that encounters an unsupported `botflow` major MAY inspect and
+render the board read-only, but MUST refuse every operation that rewrites its
+documents. It MUST NOT replace the version with one it supports. Additive fields do
+not require a major bump; the major is reserved for incompatible semantics.
 
 Lane map keys:
 
@@ -66,6 +72,11 @@ Lane map keys:
 | `wip` | positive int | no | Soft work-in-progress limit; exceeding it is lint warning `wip-breach`, and mutating tools SHOULD warn (not fail) when a move would breach it. |
 
 A board MAY have several lanes projecting to the same canonical state (e.g. `needs-qa` → `doing`), and MAY omit canonical states it doesn't use. Lane order in the file is the display order.
+
+Unknown keys in the top-level board mapping, lane mappings, or `rollup` mapping are
+lint `info` (`unknown-key`) and MUST be preserved semantically by any tool that
+rewrites `board.yaml`, under the same normalization allowance as unknown card keys
+(§5). This makes additive board capabilities safe across routine edits.
 
 Default rollup policy (all keys optional):
 
@@ -204,6 +215,7 @@ Not supported (parse error): anchors/aliases (`&`, `*`), tags (`!`), block scala
 | `rollup-drift` | warning | Board-card lane canonical ≠ rolled-up effective state. |
 | `blocked-in-done` | warning | Blocked flag on a done/archive card. |
 | `unknown-key` | info | Unrecognized frontmatter key (preserved). |
+| `unsupported-feature` | warning | `board.yaml` declares a feature this reader does not implement; the board is read-only. |
 | `hosted-ref` | info | Board-card uses a `project:` reference; resolvable only on a manager. |
 
 Errors mean the board is not conformant; warnings are signals; infos are noise-level.
@@ -228,7 +240,7 @@ Expected files record, per board: lint findings (rule ids + card ids), per-card 
 - **Multi-line body text stays inside its section.** Free-text written into a section (a description, say) and any caller-chosen section name MUST NOT be able to introduce a `## ` heading: tools MUST escape heading markers in that text, and MUST reject a section name that is not a single plain line. Otherwise a writer can splice a second `## Log` ahead of the real one, and since section-aware appends target the *first* matching heading, every later entry lands in the forged section: the append-only Log becomes attacker-chosen, and anything derived from it (such as a card's creator) reports whatever the forged entry says. `## Log` is never a valid target for a checklist item.
 - Section-aware body edits (set/append section, checklist toggles, attachment removal) MUST ignore lines inside fenced code blocks: a literal `## ` or `- [ ]` inside a fence is content, not structure.
 - **Same-tree concurrency.** git covers branch races (§8); two processes in one worktree are the tool's job. A mutating tool MUST serialize its load-mutate-write cycle against other processes (e.g. a short-lived `board.lock` file with stale-owner reaping), MUST allocate seq ids inside that critical section, and SHOULD write files crash-safely (temp file + rename). Lock files are derived state: never committed, safe to delete when their owner is gone.
-- Preserve unknown frontmatter keys and all body content outside the section being edited.
+- Preserve unknown card-frontmatter and `board.yaml` keys and all body content outside the section being edited.
 - Only bump `updated` on meaningful change.
 - `prime`: every conforming CLI SHOULD offer a command that prints the board's shape, rules, ready work, and the tool's own usage, so an agent can be taught with one line in AGENTS.md.
 - Derived stores (indexes, caches) MUST be rebuildable from files alone and MUST NOT be committed.
@@ -236,5 +248,10 @@ Expected files record, per board: lint findings (rule ids + card ids), per-card 
 - **Snapshot sync contract.** When a file-truth board syncs with a hosted copy, the repo documents are truth and sync is whole-board snapshot, last write wins. The hosted side is that snapshot **plus a manager overlay**: hosted-native children (project-reference cards the repo snapshot does not carry) survive a push rather than being severed. Both directions MUST validate the entire snapshot before persisting any of it (fatal findings: `yaml-error`, `frontmatter-missing`, `schema`, `dup-id`; unsafe or duplicate paths), and a pull that would remove local files SHOULD refuse over uncommitted changes without an explicit force. Applying a snapshot is a **validated, crash-safe apply**, not an atomic set-replacement: individual writes are crash-safe, an interruption leaves only valid documents, and re-running the sync converges. Sync MUST NOT follow symlinks: a push skips non-regular files when reading documents, and a pull MUST refuse when the board root or any write/delete target passes through a symlink.
 
 ## 13. Future (non-normative)
+
+The card-frontmatter names `due`, `start`, `estimate`, `spent`, `watchers`,
+`relates`, and `weight` are reserved for future botflow semantics. Implementations
+MUST preserve them as unknown keys today and SHOULD warn before assigning unrelated
+local meanings to them.
 
 Cross-repo/branch board references (`repo#branch` URLs), cross-board deps, sweep policies (auto-archive of aged done cards), quorum `done_when`, per-card `weight:` for leaf-weighted progress (today's progress is structural, §7), CRDT-grade merge for same-card edits, signed Log entries.

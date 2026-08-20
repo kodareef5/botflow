@@ -85,3 +85,42 @@ test('emitBoardYaml omits every default: a plain board stays tiny', () => {
   const reparsed = parseBoardConfig(parseYaml(emitted), []);
   assert.deepEqual({ ...reparsed, lanesDefaulted: true }, config);
 });
+
+test('board.yaml rewrites preserve unknown top-level, lane, and rollup data', () => {
+  const findings: Finding[] = [];
+  const config = parseBoardConfig(parseYaml(`botflow: 0
+name: future-safe
+lanes:
+  - id: todo
+    visual:
+      color: blue
+rollup:
+  future_mode: weighted
+vendor:
+  flags: [alpha, beta]
+  nested:
+    enabled: true
+`), findings);
+  assert.deepEqual(findings.map((f) => f.rule), ['unknown-key', 'unknown-key', 'unknown-key']);
+  assert.deepEqual(config.lanes[0]!.extra, { visual: { color: 'blue' } });
+  assert.deepEqual(config.rollup.extra, { future_mode: 'weighted' });
+  assert.deepEqual(config.extra, { vendor: { flags: ['alpha', 'beta'], nested: { enabled: true } } });
+
+  const emitted = emitBoardYaml(config);
+  const reparsed = parseBoardConfig(parseYaml(emitted), []);
+  assert.deepEqual(reparsed, config);
+});
+
+test('unsupported majors and features stay visible but make the board read-only', () => {
+  const majorFindings: Finding[] = [];
+  const future = parseBoardConfig(parseYaml('botflow: 7\nname: future\n'), majorFindings);
+  assert.equal(future.version, 7, 'the parser never silently downgrades an unknown major');
+  assert.match(future.mutationBlocked ?? '', /major 7/);
+  assert.match(emitBoardYaml(future), /^botflow: 7\n/, 'even a semantic re-emission cannot write version 0');
+
+  const featureFindings: Finding[] = [];
+  const feature = parseBoardConfig(parseYaml('botflow: 0\nname: future\nfeatures: [teleportation]\n'), featureFindings);
+  assert.deepEqual(feature.unsupportedFeatures, ['teleportation']);
+  assert.equal(featureFindings.some((f) => f.rule === 'unsupported-feature'), true);
+  assert.match(feature.mutationBlocked ?? '', /teleportation/);
+});

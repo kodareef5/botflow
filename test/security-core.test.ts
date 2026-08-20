@@ -4,7 +4,7 @@
 // strict-lane no-op moves, and fence-aware body operations.
 
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -16,6 +16,7 @@ import { cardJson } from '../src/core/json.ts';
 import { emitMap } from '../src/core/emit.ts';
 import { nextSeqId } from '../src/core/ids.ts';
 import { loadTree, readBoardDocuments } from '../src/core/load.ts';
+import { addCard } from '../src/core/mutate.ts';
 import { fallbackConfig, type Card, type Finding } from '../src/core/model.ts';
 import { UsageError, opAdd, opAttach, opBlock, opChecklistAdd, opComment, opDescribe, opEdit, opMove, validateBoardPath } from '../src/core/ops.ts';
 import { logMutation, sanitizeActor, sanitizeInline, serializeCard } from '../src/core/write.ts';
@@ -54,6 +55,26 @@ function tmpBoard(files: Record<string, string>): string {
   for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, 'cards', name), text);
   return dir;
 }
+
+test('filesystem mutations refuse unsupported board majors and features', () => {
+  for (const config of [
+    'botflow: 1\nname: future\n',
+    'botflow: 0\nname: future\nfeatures: [teleportation]\n',
+  ]) {
+    const dir = tmpBoard({});
+    try {
+      writeFileSync(join(dir, 'board.yaml'), config);
+      assert.throws(
+        () => addCard(dir, { title: 'must not land', actor: 'reader' }),
+        (err: unknown) => err instanceof UsageError && /read-only/.test(err.message),
+      );
+      assert.equal(readFileSync(join(dir, 'board.yaml'), 'utf8'), config);
+      assert.deepEqual(readdirSync(join(dir, 'cards')), [], 'no card was written');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
 
 // ── 1. Symlink exfiltration ─────────────────────────────────────────────────
 

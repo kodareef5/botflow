@@ -11,7 +11,7 @@ import { join } from 'node:path';
 
 import { initBoard, addCard } from '../src/core/mutate.ts';
 import { UsageError } from '../src/core/ops.ts';
-import { pull } from '../src/cli/remote.ts';
+import { pull, remoteAdd } from '../src/cli/remote.ts';
 
 function serveExport(payload: unknown): Promise<{ server: Server; url: string }> {
   return new Promise((resolvePromise) => {
@@ -55,6 +55,26 @@ test('pull: a valid snapshot replaces the board wholesale', async () => {
     assert.deepEqual(res, { written: 1, removed: 1 });
     assert.equal(readFileSync(join(root, 'board.yaml'), 'utf8'), GOOD_CONFIG);
     assert.deepEqual(readdirSync(join(root, 'cards')), ['001-remote.md']);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('pull cannot overwrite an unsupported local board, even with --force', async () => {
+  const { server, url } = await serveExport({ config: GOOD_CONFIG, cards: [GOOD_CARD] });
+  const dir = mkdtempSync(join(tmpdir(), 'botflow-pull-'));
+  const root = initBoard(dir, 'future');
+  try {
+    const future = 'botflow: 9\nname: future\n';
+    writeFileSync(join(root, 'board.yaml'), future);
+    remoteAdd(root, url, 'p-test');
+    await assert.rejects(
+      pull(root, 'bfk_test', true),
+      (err: unknown) => err instanceof UsageError && /read-only/.test(err.message) && /major 9/.test(err.message),
+    );
+    assert.equal(readFileSync(join(root, 'board.yaml'), 'utf8'), future);
+    assert.deepEqual(readdirSync(join(root, 'cards')), []);
   } finally {
     server.close();
     rmSync(dir, { recursive: true, force: true });

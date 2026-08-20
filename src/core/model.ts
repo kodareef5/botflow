@@ -36,6 +36,7 @@ export const RULE_SEVERITY: Record<string, Severity> = {
   'bare-substate-lane': 'warning',
   'rollup-drift': 'warning',
   'blocked-in-done': 'warning',
+  'unsupported-feature': 'warning',
   'unknown-key': 'info',
   'hosted-ref': 'info',
 };
@@ -55,6 +56,8 @@ export interface Lane {
   substates: string[];
   order: 'strict' | 'free';
   wip: number | null;
+  /** Unknown lane-map keys, preserved across board.yaml rewrites. */
+  extra: Record<string, unknown>;
 }
 
 export interface RollupPolicy {
@@ -62,16 +65,26 @@ export interface RollupPolicy {
   doneWhen: 'all-done';
   doingWhen: 'any-started' | 'any-doing';
   elseState: 'todo' | 'wishlist';
+  /** Unknown rollup-map keys, preserved across board.yaml rewrites. */
+  extra: Record<string, unknown>;
 }
 
 export interface BoardConfig {
   version: number;
   name: string;
   ids: 'seq' | 'hash';
+  /** Additive capabilities this board declares it relies on. */
+  features: string[];
+  /** Features declared by the board but unknown to this reader. */
+  unsupportedFeatures: string[];
+  /** Non-null means readers may inspect but document mutations must refuse. */
+  mutationBlocked: string | null;
   lanes: Lane[];
   /** True when the board omitted `lanes:` and got the canonical six. */
   lanesDefaulted: boolean;
   rollup: RollupPolicy;
+  /** Unknown top-level board.yaml keys, preserved across rewrites. */
+  extra: Record<string, unknown>;
 }
 
 export interface Card {
@@ -119,15 +132,27 @@ export function defaultLanes(): Lane[] {
     substates: [],
     order: 'free',
     wip: null,
+    extra: {},
   }));
 }
 
 export function defaultRollup(): RollupPolicy {
-  return { blockedWhen: 'any-blocked', doneWhen: 'all-done', doingWhen: 'any-started', elseState: 'todo' };
+  return { blockedWhen: 'any-blocked', doneWhen: 'all-done', doingWhen: 'any-started', elseState: 'todo', extra: {} };
 }
 
 export function fallbackConfig(name: string): BoardConfig {
-  return { version: 0, name, ids: 'seq', lanes: defaultLanes(), lanesDefaulted: true, rollup: defaultRollup() };
+  return {
+    version: 0,
+    name,
+    ids: 'seq',
+    features: [],
+    unsupportedFeatures: [],
+    mutationBlocked: 'board.yaml is missing or unreadable',
+    lanes: defaultLanes(),
+    lanesDefaulted: true,
+    rollup: defaultRollup(),
+    extra: {},
+  };
 }
 
 export interface LoadedBoard {

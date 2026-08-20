@@ -5,13 +5,19 @@
 import type { YamlValue } from './yaml.ts';
 import type { BoardConfig, Finding, Lane, RollupPolicy, Canonical } from './model.ts';
 import { SLUG_RE, defaultLanes, defaultRollup, finding, isCanonical } from './model.ts';
-import { emitScalar } from './emit.ts';
+import { emitMap, emitScalar } from './emit.ts';
+
+/** Capability names understood by this reader. Later feature phases add to
+ *  this registry as their semantics become real; declarations are optional,
+ *  but an unknown declaration deliberately makes a board read-only. */
+export const SUPPORTED_BOARD_FEATURES = new Set<string>();
 
 /** Serialize a BoardConfig back to board.yaml text. Defaults are omitted so
  *  the file stays as small as a hand-written one; parse(emit(c)) === c. */
-export function emitBoardYaml(config: Pick<BoardConfig, 'name' | 'ids' | 'lanes' | 'rollup'>): string {
-  const lines = ['botflow: 0', `name: ${emitScalar(config.name)}`];
+export function emitBoardYaml(config: Pick<BoardConfig, 'version' | 'name' | 'ids' | 'features' | 'lanes' | 'rollup' | 'extra'>): string {
+  const lines = [`botflow: ${config.version}`, `name: ${emitScalar(config.name)}`];
   if (config.ids === 'hash') lines.push('ids: hash');
+  if (config.features.length > 0) lines.push(`features: [${config.features.map(emitScalar).join(', ')}]`);
   lines.push('lanes:');
   for (const lane of config.lanes) {
     lines.push(`  - id: ${lane.id}`);
@@ -20,13 +26,19 @@ export function emitBoardYaml(config: Pick<BoardConfig, 'name' | 'ids' | 'lanes'
     if (lane.substates.length > 0) lines.push(`    substates: [${lane.substates.join(', ')}]`);
     if (lane.order === 'strict') lines.push('    order: strict');
     if (lane.wip !== null) lines.push(`    wip: ${lane.wip}`);
+    const laneExtra = emitMap(lane.extra, 4);
+    if (laneExtra !== '') lines.push(laneExtra);
   }
   const d = defaultRollup();
   const rollup: string[] = [];
   if (config.rollup.blockedWhen !== d.blockedWhen) rollup.push(`  blocked_when: ${config.rollup.blockedWhen}`);
   if (config.rollup.doingWhen !== d.doingWhen) rollup.push(`  doing_when: ${config.rollup.doingWhen}`);
   if (config.rollup.elseState !== d.elseState) rollup.push(`  else: ${config.rollup.elseState}`);
+  const rollupExtra = emitMap(config.rollup.extra, 2);
+  if (rollupExtra !== '') rollup.push(rollupExtra);
   if (rollup.length > 0) lines.push('rollup:', ...rollup);
+  const extra = emitMap(config.extra);
+  if (extra !== '') lines.push(extra);
   return lines.join('\n') + '\n';
 }
 
@@ -39,9 +51,14 @@ export function parseBoardConfig(value: YamlValue, findings: Finding[]): BoardCo
   }
   const map = value as { [key: string]: YamlValue };
 
-  const version = map['botflow'];
-  if (version !== 0) {
-    findings.push(finding('schema', REF, `unsupported or missing botflow version (expected 0, got ${JSON.stringify(version ?? null)})`));
+  const rawVersion = map['botflow'];
+  const version = typeof rawVersion === 'number' && Number.isInteger(rawVersion) ? rawVersion : 0;
+  let mutationBlocked: string | null = null;
+  if (rawVersion !== 0) {
+    findings.push(finding('schema', REF, `unsupported or missing botflow version (expected 0, got ${JSON.stringify(rawVersion ?? null)})`));
+    mutationBlocked = typeof rawVersion === 'number' && Number.isInteger(rawVersion)
+      ? `botflow major ${rawVersion} is unsupported by this reader`
+      : 'botflow major is missing or invalid';
   }
 
   let name = 'unnamed';
@@ -52,6 +69,32 @@ export function parseBoardConfig(value: YamlValue, findings: Finding[]): BoardCo
   if (map['ids'] !== undefined) {
     if (map['ids'] === 'seq' || map['ids'] === 'hash') ids = map['ids'];
     else findings.push(finding('schema', REF, `ids must be "seq" or "hash", got ${JSON.stringify(map['ids'])}`));
+  }
+
+  const features: string[] = [];
+  const unsupportedFeatures: string[] = [];
+  if (map['features'] !== undefined) {
+    if (Array.isArray(map['features'])) {
+      for (const feature of map['features']) {
+        if (typeof feature !== 'string' || !SLUG_RE.test(feature)) {
+          findings.push(finding('schema', REF, `feature must be a slug, got ${JSON.stringify(feature)}`));
+          mutationBlocked ??= 'features declaration is invalid';
+          continue;
+        }
+        if (features.includes(feature)) continue;
+        features.push(feature);
+        if (!SUPPORTED_BOARD_FEATURES.has(feature)) {
+          unsupportedFeatures.push(feature);
+          findings.push(finding('unsupported-feature', REF, `unsupported board feature "${feature}"; board is read-only`));
+        }
+      }
+    } else {
+      findings.push(finding('schema', REF, 'features must be a list of slugs'));
+      mutationBlocked ??= 'features declaration is invalid';
+    }
+  }
+  if (unsupportedFeatures.length > 0 && mutationBlocked === null) {
+    mutationBlocked = `unsupported board feature(s): ${unsupportedFeatures.join(', ')}`;
   }
 
   let lanes: Lane[];
@@ -69,12 +112,16 @@ export function parseBoardConfig(value: YamlValue, findings: Finding[]): BoardCo
 
   const rollup = parseRollup(map['rollup'], findings);
 
-  const known = new Set(['botflow', 'name', 'ids', 'lanes', 'rollup']);
+  const known = new Set(['botflow', 'name', 'ids', 'features', 'lanes', 'rollup']);
+  const extra: Record<string, unknown> = {};
   for (const key of Object.keys(map)) {
-    if (!known.has(key)) findings.push(finding('unknown-key', REF, `unknown board.yaml key "${key}"`));
+    if (!known.has(key)) {
+      extra[key] = map[key];
+      findings.push(finding('unknown-key', REF, `unknown board.yaml key "${key}" (preserved)`));
+    }
   }
 
-  return { version: 0, name, ids, lanes, lanesDefaulted, rollup };
+  return { version, name, ids, features, unsupportedFeatures, mutationBlocked, lanes, lanesDefaulted, rollup, extra };
 }
 
 function parseLanes(items: YamlValue[], findings: Finding[]): Lane[] {
@@ -136,8 +183,12 @@ function parseLanes(items: YamlValue[], findings: Finding[]): Lane[] {
     }
 
     const knownLaneKeys = new Set(['id', 'name', 'canonical', 'substates', 'order', 'wip']);
+    const extra: Record<string, unknown> = {};
     for (const key of Object.keys(m)) {
-      if (!knownLaneKeys.has(key)) findings.push(finding('unknown-key', REF, `lane "${id}": unknown key "${key}"`));
+      if (!knownLaneKeys.has(key)) {
+        extra[key] = m[key];
+        findings.push(finding('unknown-key', REF, `lane "${id}": unknown key "${key}" (preserved)`));
+      }
     }
 
     lanes.push({
@@ -147,6 +198,7 @@ function parseLanes(items: YamlValue[], findings: Finding[]): Lane[] {
       substates,
       order,
       wip,
+      extra,
     });
   }
   return lanes;
@@ -172,11 +224,25 @@ function parseRollup(value: YamlValue | undefined, findings: Finding[]): RollupP
   pick('else', ['todo', 'wishlist'] as const, (v) => (rollup.elseState = v));
   const knownKeys = new Set(['blocked_when', 'done_when', 'doing_when', 'else']);
   for (const key of Object.keys(m)) {
-    if (!knownKeys.has(key)) findings.push(finding('unknown-key', REF, `rollup: unknown key "${key}"`));
+    if (!knownKeys.has(key)) {
+      rollup.extra[key] = m[key];
+      findings.push(finding('unknown-key', REF, `rollup: unknown key "${key}" (preserved)`));
+    }
   }
   return rollup;
 }
 
 function fallback(name: string): BoardConfig {
-  return { version: 0, name, ids: 'seq', lanes: defaultLanes(), lanesDefaulted: true, rollup: defaultRollup() };
+  return {
+    version: 0,
+    name,
+    ids: 'seq',
+    features: [],
+    unsupportedFeatures: [],
+    mutationBlocked: 'board.yaml is malformed',
+    lanes: defaultLanes(),
+    lanesDefaulted: true,
+    rollup: defaultRollup(),
+    extra: {},
+  };
 }
