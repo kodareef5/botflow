@@ -113,7 +113,7 @@ lanes:
     const added = await callTool('card_add', {
       title: 'From MCP', labels: ['Type/Bug'], priority: 'p1', start: '2026-08-20',
       due: '2026-08-24T12:30Z', reminders: [60, 15], repeat: { every: 2, unit: 'week', from: 'due' },
-      estimate: 5, evergreen: true, cover_color: '#f0c040',
+      estimate: 5, hill: 0, evergreen: true, cover_color: '#f0c040',
       fields: { sprint: 14, risk: 'high' },
     });
     assert.equal(added.isError, false);
@@ -132,6 +132,7 @@ lanes:
     assert.deepEqual(scheduled['reminders'], [60, 15]);
     assert.deepEqual(scheduled['repeat'], { every: 2, unit: 'week', from: 'due' });
     assert.equal(scheduled['estimate'], 5);
+    assert.equal(scheduled['hill'], 0);
     assert.equal(scheduled['evergreen'], true);
     assert.equal(scheduled['coverColor'], '#f0c040');
     assert.deepEqual(Object.fromEntries((scheduled['fields'] as { id: string; value: unknown }[]).map((field) => [field.id, field.value])), { sprint: 14, risk: 'high' });
@@ -141,11 +142,13 @@ lanes:
     assert.equal((await callTool('card_snooze', { id, until: '2099-01-01T00:00:00Z' })).isError, false);
     assert.ok(!(JSON.parse((await callTool('ready', {})).text) as { id: string }[]).some((card) => card.id === id));
     assert.equal((await callTool('card_snooze', { id, until: null })).isError, false);
-    const editedPresentation = await callTool('card_edit', { id, cover_color: null, fields: { sprint: 15, risk: null } });
+    const editedPresentation = await callTool('card_edit', { id, hill: 72, cover_color: null, fields: { sprint: 15, risk: null } });
     assert.equal(editedPresentation.isError, false);
     const rescheduled = JSON.parse((await callTool('card_show', { id })).text) as Record<string, unknown>;
     assert.equal(rescheduled['coverColor'], null);
+    assert.equal(rescheduled['hill'], 72);
     assert.deepEqual(Object.fromEntries((rescheduled['fields'] as { id: string; value: unknown }[]).map((field) => [field.id, field.value])), { sprint: 15 });
+    assert.equal((await callTool('card_edit', { id, hill: 101 })).isError, true);
 
     const claim = await callTool('card_claim', { id });
     assert.equal(claim.isError, false);

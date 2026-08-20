@@ -100,6 +100,9 @@ aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
 .searchbox select{max-width:180px}
 .searchstatus{font-size:11px;color:var(--muted);white-space:nowrap}
 .view{flex:1;overflow:auto;padding:var(--view-pad)}
+.viewctl{display:flex;align-items:center;gap:5px}
+.viewctl select{max-width:150px;padding:3px 7px;font-size:12px}
+.viewctl .axisctl[hidden]{display:none}
 .cols{display:flex;gap:var(--col-gap);align-items:flex-start;position:relative}
 .relsvg{position:absolute;inset:0;overflow:visible;pointer-events:none;z-index:4}
 .relsvg path{fill:none;stroke:var(--st-blocked);stroke-width:2;opacity:.58;vector-effect:non-scaling-stroke}
@@ -156,6 +159,31 @@ table.list{border-collapse:collapse;width:100%;font-size:13px}
 table.list td,table.list th{text-align:left;padding:6px 10px;border-bottom:var(--bw) var(--bs) var(--grid)}
 table.list th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
 table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink2)}
+.cardtable{overflow:auto;margin-top:12px;border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);background:var(--surface)}
+.cardtable table{min-width:1000px}
+.cardtable tr[data-card]{cursor:pointer}.cardtable tr[data-card]:hover{background:var(--surface2)}
+.cardtable th button{border:0;background:none;padding:0;color:inherit;text-transform:inherit;letter-spacing:inherit;font:inherit}
+.cardtable .titlecell{font-weight:600;min-width:220px}.cardtable .labels-cell{max-width:250px;color:var(--ink2)}
+.axiscols{display:flex;gap:var(--col-gap);align-items:flex-start;margin-top:12px;min-height:160px}
+.axiscol{background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);width:var(--col-w);min-width:var(--col-w);padding:var(--col-pad);box-shadow:var(--shadow)}
+.axiscol h3{font:700 11px/1.25 var(--display);text-transform:uppercase;letter-spacing:.04em;color:var(--ink2);padding:2px 4px 7px;display:flex;gap:6px}.axiscol h3 .n{font-weight:400;color:var(--muted)}
+.dragmode .axiscol.candrop{border-color:var(--acc)}.dragmode .axiscol.drop-on{background:color-mix(in srgb,var(--acc) 12%,var(--surface))}
+.swimwrap{overflow:auto;margin-top:12px;border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);background:var(--surface)}
+.swim{display:grid;min-width:max-content}.swimhead,.swimlabel,.swimcell{padding:8px;border-right:var(--bw) var(--bs) var(--grid);border-bottom:var(--bw) var(--bs) var(--grid)}
+.swimhead{position:sticky;top:0;z-index:6;background:var(--surface2);font:700 11px/1.2 var(--display);text-transform:uppercase;letter-spacing:.04em;color:var(--ink2);min-width:220px}
+.swimlabel{position:sticky;left:0;z-index:5;background:var(--surface2);font-weight:650;min-width:150px}.swimlabel small{display:block;color:var(--muted);font-weight:400}
+.swimcell{width:240px;min-height:74px;background:var(--surface)}.swimcell .card{margin:0 0 6px}
+.calendar{margin-top:12px}.calbar{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:8px}.calbar h3{font:700 14px var(--display);min-width:170px;text-align:center}
+.calgrid{display:grid;grid-template-columns:repeat(7,minmax(120px,1fr));border-top:var(--bw) var(--bs) var(--grid);border-left:var(--bw) var(--bs) var(--grid);min-width:840px;background:var(--surface)}
+.caldayname{padding:5px 7px;background:var(--surface2);font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);border-right:var(--bw) var(--bs) var(--grid);border-bottom:var(--bw) var(--bs) var(--grid)}
+.calday{min-height:112px;padding:5px;border-right:var(--bw) var(--bs) var(--grid);border-bottom:var(--bw) var(--bs) var(--grid)}.calday.out{background:var(--page);opacity:.62}.calday.today{box-shadow:inset 0 0 0 2px var(--acc)}
+.caldate{font:11px ui-monospace,Menlo,monospace;color:var(--muted);margin:0 2px 5px}.calcard{display:block;width:100%;text-align:left;border:0;border-left:3px solid var(--state-color);background:var(--surface2);padding:3px 5px;margin:3px 0;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.timeline{margin-top:12px;min-width:760px}.tlaxis{margin-left:230px;display:flex;justify-content:space-between;color:var(--muted);font:10px ui-monospace,Menlo,monospace;padding:0 2px 5px}.tlrow{display:grid;grid-template-columns:220px minmax(520px,1fr);gap:10px;align-items:center;min-height:38px}.tllabel{border:0;background:none;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px;color:var(--ink)}.tllabel code{font-size:10px;color:var(--muted)}
+.tltrack{height:24px;position:relative;border-left:var(--bw) var(--bs) var(--grid);border-right:var(--bw) var(--bs) var(--grid);background:repeating-linear-gradient(90deg,var(--surface2) 0,var(--surface2) 1px,transparent 1px,transparent 10%)}.tlbar{position:absolute;top:4px;height:16px;min-width:5px;border-radius:999px;background:var(--state-color);box-shadow:var(--shadow)}
+.metricgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:12px}.metric{background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);padding:13px;box-shadow:var(--shadow)}.metric b{font:700 22px/1 var(--display);display:block}.metric span{font-size:11px;color:var(--muted)}
+.chartgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin-top:12px}.chart{background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);padding:12px;min-width:0}.chart h3{font:700 12px var(--display);margin-bottom:8px}.bars{height:150px;display:flex;align-items:flex-end;gap:3px;border-bottom:var(--bw) var(--bs) var(--grid)}.bars i{flex:1;min-width:2px;background:var(--acc);border-radius:2px 2px 0 0}.cfbars{height:150px;display:flex;gap:2px;align-items:flex-end}.cfbar{flex:1;display:flex;flex-direction:column-reverse;height:100%}.cfbar i{display:block;min-height:1px}
+.metriclist{display:grid;gap:5px;font-size:12px}.metriclist div{display:flex;gap:10px}.metriclist b{margin-left:auto}
+.hillview{margin-top:12px;background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);padding:14px;box-shadow:var(--shadow)}.hillnote{color:var(--muted);font-size:12px;margin-bottom:8px}.hillplot{height:270px;position:relative;overflow:hidden;border-bottom:var(--bw) var(--bs) var(--grid);touch-action:none}.hillplot svg{position:absolute;inset:18px 4% 34px;width:92%;height:200px;overflow:visible}.hillplot path{fill:none;stroke:var(--grid);stroke-width:5;vector-effect:non-scaling-stroke}.hillplot .crest{position:absolute;left:50%;top:17px;bottom:34px;border-left:1px dashed var(--grid)}.hillphase{position:absolute;bottom:8px;color:var(--muted);font-size:11px}.hillphase.up{left:10%}.hillphase.down{right:10%}.hilldot{position:absolute;z-index:3;width:20px;height:20px;padding:0;border-radius:50%;transform:translate(-50%,-50%);background:var(--state-color);border:3px solid var(--surface);box-shadow:0 1px 5px rgba(0,0,0,.3)}.hilldot:focus-visible{outline:3px solid var(--acc);outline-offset:2px}.hilllegend{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:6px;margin-top:10px}.hillitem{display:flex;align-items:center;gap:7px;font-size:12px}.hillitem i{width:9px;height:9px;border-radius:50%;background:var(--state-color);flex:none}.hillitem button{border:0;background:none;padding:2px;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.hillitem code{margin-left:auto;color:var(--muted);font-size:10px}.hillitem .hillset{margin-left:auto;border:var(--bw) var(--bs) var(--grid);border-radius:999px;padding:2px 7px;color:var(--muted);font-size:10px;flex:none}.hillitem .hillset:hover{color:var(--ink);border-color:var(--acc)}
 .err{color:var(--st-blocked);font-size:13px;margin-top:8px}
 .warn{color:#c47317;font-size:12px}
 .tokenbox{font:12px ui-monospace,Menlo,monospace;background:var(--page);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:10px;word-break:break-all;margin:10px 0}
@@ -430,6 +458,11 @@ let RO=!!PUB;
 const cardApi=cid=>PUB?'/api/public/'+PUB+'/cards/'+cid:'/api/projects/'+SEL+'/cards/'+cid;
 let THEME={style:'harbor',accent:'pacific',mode:'system',density:'relaxed',custom:null};
 let ORG=null,SEL=null,VIEW='board',BOARD=null,timer=null,MODAL=null,UPLOADS=false;
+let LAYOUT=localStorage.getItem('bf_layout')||'kanban';
+if(!['kanban','table','swimlane','calendar','timeline','grouped','metrics','hill'].includes(LAYOUT))LAYOUT='kanban';
+let GROUP_AXIS=localStorage.getItem('bf_group_axis')||'assignee';
+let SWIM_AXIS=localStorage.getItem('bf_swim_axis')||'assignee';
+let CAL_MONTH=null,TABLE_SORT='id',TABLE_DESC=false,HILL_DRAG=null;
 // Role gates, refreshed from /api/org on every boot. RO stays the read-only
 // flag for public share pages; these are about who is logged in.
 let ME=null,CAN_WRITE=false,IS_OWNER=false,DIR=new Map();
@@ -536,10 +569,10 @@ function formModal(title,fields,submitLabel,onSubmit){
   const m=overlay('<h3>'+esc(title)+'</h3><form>'+fields.map(f=>
     '<div class="field"><label>'+esc(f.label)
     +(f.type==='textarea'
-      ?'<textarea name="'+f.name+'" rows="'+(f.rows||6)+'" placeholder="'+esc(f.placeholder||'')+'" '+(f.required?'required':'')+'>'+esc(f.value||'')+'</textarea>'
+      ?'<textarea name="'+f.name+'" rows="'+(f.rows||6)+'" placeholder="'+esc(f.placeholder||'')+'" '+(f.required?'required':'')+'>'+esc(f.value??'')+'</textarea>'
       :f.type==='select'
         ?'<select name="'+f.name+'">'+(f.options||[]).map(o=>'<option value="'+esc(o.value)+'"'+(String(f.value??'')===String(o.value)?' selected':'')+'>'+esc(o.label)+'</option>').join('')+'</select>'
-        :'<input name="'+f.name+'" type="'+(f.type==='password'?'password':f.type==='number'?'number':f.type==='url'?'url':'text')+'"'+(f.type==='password'?' autocomplete="new-password"':'')+' value="'+esc(f.value||'')+'" placeholder="'+esc(f.placeholder||'')+'" '+(f.required?'required':'')+'>')
+        :'<input name="'+f.name+'" type="'+(f.type==='password'?'password':f.type==='number'?'number':f.type==='url'?'url':'text')+'"'+(f.type==='password'?' autocomplete="new-password"':'')+' value="'+esc(f.value??'')+'" placeholder="'+esc(f.placeholder||'')+'" '+(f.required?'required':'')+'>')
     +'</label></div>').join('')
     +'<div class="err" role="alert"></div><div class="actions"><button type="button" class="ghost" data-x>cancel</button><button class="primary">'+esc(submitLabel)+'</button></div></form>',null,title);
   $('form',m).onsubmit=async e=>{e.preventDefault();
@@ -677,7 +710,7 @@ function layout(){
   $('#setbtn').onclick=()=>{SEL='::settings';renderSide();renderMain()};
   $('#burger').onclick=()=>$('#side').classList.toggle('open');
   renderHeader();renderSide();renderMain();
-  timer=setInterval(()=>{if(VIEW==='board'&&SEL&&SEL!=='::settings'&&!MODAL&&!DRAG&&!PRESS)refreshBoard(true)},3000);
+  timer=setInterval(()=>{if(VIEW==='board'&&SEL&&SEL!=='::settings'&&!MODAL&&!DRAG&&!PRESS&&!HILL_DRAG)refreshBoard(true)},3000);
 }
 function projRow(n){
   const a=n.aggregate;
@@ -746,6 +779,9 @@ function renderMain(){
     +(CAN_WRITE?'<button id="newcard" class="ghost" title="add a card to this board">+ card</button>':'')
     +(CAN_WRITE?'<button id="quickcard" class="ghost" title="create several cards with quick-add syntax">+ quick</button><button id="bulkcard" class="ghost" title="move, close, or label several card ids">bulk</button>':'')
     +(IS_OWNER?'<button id="editboard" class="ghost" title="edit lanes, substates, wip, rollup">✎ edit board</button>':'')
+    +(VIEW==='board'?'<div class="viewctl"><select id="boardlayout" aria-label="board view">'
+      +[['kanban','board'],['table','table'],['swimlane','swimlanes'],['calendar','calendar'],['timeline','timeline'],['grouped','group by field'],['metrics','metrics'],['hill','hill chart']].map(x=>'<option value="'+x[0]+'"'+(LAYOUT===x[0]?' selected':'')+'>'+x[1]+'</option>').join('')+'</select>'
+      +'<select id="axisctl" class="axisctl" aria-label="grouping axis" hidden></select></div>':'')
     +'<div class="tabs" role="tablist">'+tabs.map(t=>
       '<button data-tab="'+t+'" role="tab" aria-selected="'+(VIEW===t)+'" class="'+(VIEW===t?'on':'')+'">'+t+'</button>').join('')+'</div></div>'
     +'<div class="view" id="view">loading…</div>';
@@ -758,6 +794,14 @@ function renderMain(){
     automate.disabled=true;
     try{const r=await api('/api/projects/'+SEL+'/automate',{method:'POST',body:'{}'});await reloadOrg();toast('Automation applied '+((r.actions||[]).length)+' action(s).')}
     catch(err){toast(err.message)}finally{if(document.contains(automate))automate.disabled=false}
+  };
+  const layoutCtl=$('#boardlayout');if(layoutCtl)layoutCtl.onchange=()=>{
+    LAYOUT=layoutCtl.value;localStorage.setItem('bf_layout',LAYOUT);syncViewControls(BOARD);paintBoard();
+  };
+  const axisCtl=$('#axisctl');if(axisCtl)axisCtl.onchange=()=>{
+    if(LAYOUT==='grouped'){GROUP_AXIS=axisCtl.value;localStorage.setItem('bf_group_axis',GROUP_AXIS)}
+    else if(LAYOUT==='swimlane'){SWIM_AXIS=axisCtl.value;localStorage.setItem('bf_swim_axis',SWIM_AXIS)}
+    paintBoard();
   };
   if(VIEW==='board'){wireSearchControls();refreshBoard()}
   else if(VIEW==='activity')refreshActivity();
@@ -808,7 +852,7 @@ function syncSearchControls(b){
 function paintBoard(){
   const v=$('#view');if(!v||!BOARD)return;
   patchView(v,boardHtml(BOARD));
-  requestAnimationFrame(()=>drawRelations(BOARD));
+  if(LAYOUT==='kanban')requestAnimationFrame(()=>drawRelations(BOARD));
 }
 function searchStatus(message){const s=$('#searchstatus');if(s)s.textContent=message||''}
 async function runSearch(){
@@ -885,6 +929,7 @@ function newCard(lane){
     {name:'repeat_from',label:'next dates from',type:'select',options:[{value:'due',label:'the prior due date'},{value:'completion',label:'completion time'}]},
     {name:'snooze',label:'snooze until (YYYY-MM-DD or UTC datetime)'},
     {name:'estimate',label:'estimate (positive points)',type:'number'},
+    {name:'hill',label:'hill position (0–100, optional)',type:'number'},
     {name:'evergreen',label:'aging signal',type:'select',options:[{value:'',label:'normal'},{value:'true',label:'evergreen (hide aging)'}]},
     {name:'cover_color',label:'cover color (#RGB or #RRGGBB)'},
   ]).concat(overflow&&target.wipMode!=='allow'?[{name:'wipReason',label:(target.wipMode==='deny'?'owner override':'WIP')+' justification',required:true}]:[]).concat(customFormFields(defs,[]));
@@ -898,6 +943,7 @@ function newCard(lane){
       reminders:reminders,repeat:repeat,snooze:d.snooze||undefined,wipReason:d.wipReason||undefined,
       force:overflow&&target.wipMode==='deny'&&IS_OWNER,
       estimate:d.estimate?Number(d.estimate):undefined,evergreen:d.evergreen===''?undefined:d.evergreen==='true',
+      hill:d.hill===''?undefined:Number(d.hill),
       cover_color:d.cover_color||undefined,fields:customPayload(defs,d,false)})});
     await reloadOrg();
     if(r&&r.id)openCard(r.id,'card');
@@ -1044,6 +1090,150 @@ function colsHtml(b){
       +'<div class="deck" data-lane="'+esc(lane.id)+'">'+(body||'<div class="empty">·</div>')+'</div>'+add+'</section>';
   }).join('')+'</div>';
 }
+function visibleCards(b){
+  const cards=(b.lanes||[]).flatMap(l=>l.cards||[]);
+  return SEARCH_IDS===null?cards:cards.filter(c=>SEARCH_IDS.has(c.id));
+}
+function cardField(c,id){const f=(c.fields||[]).find(x=>x.id===id);return f?f.value:null}
+function uniqValues(values,label){
+  const seen=new Set(),out=[];
+  for(const raw of values){if(raw===null||raw===undefined||raw==='')continue;const id=String(raw);if(seen.has(id))continue;seen.add(id);out.push({id:id,label:label?label(id):id})}
+  return out.sort((a,z)=>a.label.localeCompare(z.label));
+}
+function axisDefs(b){
+  const cards=(b.lanes||[]).flatMap(l=>l.cards||[]),defs=[];
+  defs.push({id:'lane',label:'lane',kind:'lane',values:(b.lanes||[]).map(l=>({id:l.id,label:l.name}))});
+  const people=[...DIR.keys()];
+  defs.push({id:'assignee',label:'assignee',kind:'assignee',values:uniqValues(people.concat(cards.map(c=>c.assignee)),who)});
+  defs.push({id:'delegate',label:'delegate',kind:'delegate',values:uniqValues(people.concat(cards.map(c=>c.delegate)),who)});
+  defs.push({id:'priority',label:'priority',kind:'priority',values:['p0','p1','p2','p3'].map(id=>({id:id,label:id}))});
+  const groups=new Map();
+  for(const c of cards)for(const l of c.labelDetails||[])if(l.group){if(!groups.has(l.group))groups.set(l.group,new Set());groups.get(l.group).add(l.value)}
+  for(const l of b.labels||[]){const at=l.id.indexOf('/');if(at>0&&at<l.id.length-1){const g=l.id.slice(0,at),v=l.id.slice(at+1);if(!groups.has(g))groups.set(g,new Set());groups.get(g).add(v)}}
+  for(const [group,values] of [...groups].sort((a,z)=>a[0].localeCompare(z[0])))defs.push({id:'label:'+group,label:'label · '+group,kind:'label',group:group,values:uniqValues([...values])});
+  for(const f of b.fields||[]){
+    if(!['select','person','checkbox'].includes(f.type))continue;
+    let values=f.type==='select'?(f.options||[]).map(id=>({id:id,label:id}))
+      :f.type==='checkbox'?[{id:'true',label:'yes'},{id:'false',label:'no'}]
+      :uniqValues(people.concat(cards.map(c=>cardField(c,f.id))),who);
+    defs.push({id:'field:'+f.id,label:'field · '+f.name,kind:'field',field:f,values:values});
+  }
+  return defs;
+}
+function axisValue(axis,c){
+  if(axis.kind==='lane')return c.lane||'';
+  if(axis.kind==='assignee'||axis.kind==='delegate'||axis.kind==='priority')return c[axis.kind]||'';
+  if(axis.kind==='label'){const l=(c.labelDetails||[]).find(x=>x.group===axis.group);return l?String(l.value):''}
+  const value=cardField(c,axis.field.id);return value===null||value===undefined||value===''?'':String(value);
+}
+function chosenAxis(b,id){const defs=axisDefs(b);return defs.find(a=>a.id===id)||defs[0]}
+function syncViewControls(b){
+  const layout=$('#boardlayout');if(layout)layout.value=LAYOUT;
+  const ctl=$('#axisctl');if(!ctl||!b)return;
+  const grouped=LAYOUT==='grouped'||LAYOUT==='swimlane';ctl.hidden=!grouped;if(!grouped)return;
+  const axes=axisDefs(b),wanted=LAYOUT==='grouped'?GROUP_AXIS:SWIM_AXIS;
+  const selected=axes.some(a=>a.id===wanted)?wanted:(LAYOUT==='grouped'?'assignee':'assignee');
+  if(LAYOUT==='grouped')GROUP_AXIS=selected;else SWIM_AXIS=selected;
+  ctl.innerHTML=axes.map(a=>'<option value="'+esc(a.id)+'"'+(a.id===selected?' selected':'')+'>'+esc(a.label)+'</option>').join('');
+}
+function tableValue(c,key){
+  if(key==='title')return c.title||'';if(key==='state')return c.state||'';if(key==='lane')return c.position||c.lane||'';
+  if(key==='assignee')return c.assignee||'';if(key==='due')return c.due||'';if(key==='estimate')return c.estimate??-1;
+  if(key==='hill')return c.hill??-1;return c.id||'';
+}
+function tableHtml(b){
+  const cards=[...visibleCards(b)].sort((a,z)=>{const av=tableValue(a,TABLE_SORT),zv=tableValue(z,TABLE_SORT);const n=typeof av==='number'&&typeof zv==='number'?av-zv:String(av).localeCompare(String(zv),undefined,{numeric:true});return TABLE_DESC?-n:n});
+  const th=(key,label)=>'<th><button data-sort="'+key+'" aria-label="sort by '+label+'">'+label+(TABLE_SORT===key?(TABLE_DESC?' ↓':' ↑'):'')+'</button></th>';
+  return '<div class="cardtable"><table class="list"><thead><tr>'+th('id','id')+th('title','title')+th('state','state')+th('lane','position')+th('assignee','assignee')
+    +'<th>delegate</th><th>priority</th>'+th('due','due')+th('estimate','estimate')+th('hill','hill')+'<th>labels</th><th>idle</th></tr></thead><tbody>'
+    +(cards.length?cards.map(c=>'<tr data-card="'+esc(c.id)+'" tabindex="0"><td class="mono">'+esc(c.id)+'</td><td class="titlecell">'+esc(c.title)+'</td><td>'+statechip(c.state)+'</td><td class="mono">'+esc(c.position)+'</td>'
+      +'<td>'+esc(c.assignee?who(c.assignee):'—')+'</td><td>'+esc(c.delegate?who(c.delegate):'—')+'</td><td>'+esc(c.priority||'—')+'</td><td class="mono">'+esc(c.due||'—')+'</td><td>'+esc(c.estimate??'—')+'</td><td>'+esc(c.hill??'—')+'</td>'
+      +'<td class="labels-cell">'+(c.labelDetails||[]).map(l=>'#'+esc(l.value)).join(' ')+'</td><td>'+esc(c.metrics&&c.metrics.idleDays!=null?c.metrics.idleDays+'d':'—')+'</td></tr>').join('')
+      :'<tr><td colspan="12" class="empty">no matching cards</td></tr>')+'</tbody></table></div>';
+}
+function groupedHtml(b){
+  const cards=visibleCards(b),axis=chosenAxis(b,GROUP_AXIS);
+  const values=axis.kind==='lane'?(axis.values||[]):[{id:'',label:'unset'}].concat(axis.values||[]);
+  return '<div class="axiscols" data-group-axis="'+esc(axis.id)+'">'+values.map(v=>{
+    const cs=cards.filter(c=>axisValue(axis,c)===v.id);
+    return '<section class="axiscol" data-axis-value="'+esc(v.id)+'"><h3>'+esc(v.label)+' <span class="n">'+cs.length+'</span></h3><div class="deck">'+(cs.length?cs.map(c=>cardHtml(b,c)).join(''):'<div class="empty">drop here</div>')+'</div></section>';
+  }).join('')+'</div>';
+}
+function swimlaneHtml(b){
+  const cards=visibleCards(b),axis=chosenAxis(b,SWIM_AXIS),lanes=b.lanes||[];
+  let values=(axis.kind==='lane'?(axis.values||[]):[{id:'',label:'unset'}].concat(axis.values||[])).filter(v=>cards.some(c=>axisValue(axis,c)===v.id));
+  if(!values.length)values=[{id:'',label:'unset'}];
+  const cols='grid-template-columns:160px repeat('+lanes.length+',240px)';
+  let out='<div class="swimwrap"><div class="swim" style="'+cols+'"><div class="swimhead">'+esc(axis.label)+'</div>'
+    +lanes.map(l=>'<div class="swimhead">'+esc(l.name)+'</div>').join('');
+  for(const v of values){
+    const row=cards.filter(c=>axisValue(axis,c)===v.id);out+='<div class="swimlabel">'+esc(v.label)+'<small>'+row.length+' card'+(row.length===1?'':'s')+'</small></div>';
+    for(const lane of lanes){const cs=row.filter(c=>c.lane===lane.id);out+='<div class="swimcell" data-lane="'+esc(lane.id)+'">'+(cs.length?cs.map(c=>cardHtml(b,c)).join(''):'<span class="empty">·</span>')+'</div>'}
+  }
+  return out+'</div></div>';
+}
+function isoDay(value){const s=String(value||'').slice(0,10);return /^\\d{4}-\\d{2}-\\d{2}$/.test(s)?s:null}
+function utcDay(value){const s=isoDay(value);return s?Math.floor(Date.parse(s+'T00:00:00Z')/86400000):null}
+function dayIso(day){return new Date(day*86400000).toISOString().slice(0,10)}
+function calendarHtml(b){
+  const cards=visibleCards(b).filter(c=>isoDay(c.due));
+  const now=new Date(),defaultMonth=now.toISOString().slice(0,7);if(!CAL_MONTH)CAL_MONTH=defaultMonth;
+  let parts=CAL_MONTH.split('-').map(Number),year=parts[0],month=parts[1]-1;
+  if(!Number.isInteger(year)||month<0||month>11){CAL_MONTH=defaultMonth;parts=CAL_MONTH.split('-').map(Number);year=parts[0];month=parts[1]-1}
+  const first=Math.floor(Date.UTC(year,month,1)/86400000),offset=new Date(first*86400000).getUTCDay(),start=first-offset,today=now.toISOString().slice(0,10);
+  const monthName=new Intl.DateTimeFormat(undefined,{month:'long',year:'numeric',timeZone:'UTC'}).format(new Date(Date.UTC(year,month,1)));
+  let out='<div class="calendar"><div class="calbar"><button data-cal="-1" aria-label="previous month">←</button><h3>'+esc(monthName)+'</h3><button data-cal="today">today</button><button data-cal="1" aria-label="next month">→</button></div><div class="calgrid">'
+    +['sun','mon','tue','wed','thu','fri','sat'].map(d=>'<div class="caldayname">'+d+'</div>').join('');
+  for(let i=0;i<42;i++){
+    const day=start+i,date=dayIso(day),inMonth=new Date(day*86400000).getUTCMonth()===month,items=cards.filter(c=>isoDay(c.due)===date);
+    out+='<div class="calday '+(inMonth?'':'out ')+(date===today?'today':'')+'"><div class="caldate">'+esc(date.slice(8))+'</div>'
+      +items.map(c=>'<button class="calcard" style="--state-color:var(--st-'+esc(c.state)+')" data-card="'+esc(c.id)+'" title="'+esc(c.id+' '+c.title+' · '+c.due)+'">'+esc(c.id+' '+c.title)+'</button>').join('')+'</div>';
+  }
+  return out+'</div></div>';
+}
+function timelineHtml(b){
+  const cards=visibleCards(b).filter(c=>isoDay(c.start)||isoDay(c.due));
+  if(!cards.length)return '<div class="empty" style="margin-top:12px">No matching cards have a start or due date.</div>';
+  const spans=cards.map(c=>{const s=utcDay(c.start),d=utcDay(c.due),a=s??d,z=d??s;return {c:c,start:Math.min(a,z),end:Math.max(a,z)}});
+  let min=Math.min(...spans.map(x=>x.start)),max=Math.max(...spans.map(x=>x.end));if(min===max){min--;max++}const range=max-min+1;
+  const tick=n=>dayIso(Math.round(min+(range-1)*n));
+  return '<div class="timeline"><div class="tlaxis"><span>'+tick(0)+'</span><span>'+tick(.25)+'</span><span>'+tick(.5)+'</span><span>'+tick(.75)+'</span><span>'+tick(1)+'</span></div>'
+    +spans.sort((a,z)=>a.start-z.start||a.c.id.localeCompare(z.c.id,undefined,{numeric:true})).map(x=>{const left=(x.start-min)/range*100,width=Math.max(100/range,(x.end-x.start+1)/range*100);
+      return '<div class="tlrow"><button class="tllabel" data-card="'+esc(x.c.id)+'"><code>'+esc(x.c.id)+'</code> '+esc(x.c.title)+'</button><div class="tltrack"><button class="tlbar" data-open-card="'+esc(x.c.id)+'" style="left:'+left+'%;width:'+width+'%;--state-color:var(--st-'+esc(x.c.state)+')" aria-label="'+esc(x.c.id+' '+x.c.title+', '+dayIso(x.start)+' through '+dayIso(x.end))+'"></button></div></div>'}).join('')+'</div>';
+}
+function avg(values){return values.length?Math.round(values.reduce((a,n)=>a+n,0)/values.length*10)/10:null}
+function metricsHtml(b){
+  const cards=visibleCards(b),active=cards.filter(c=>!['done','archive'].includes(c.state)),done=cards.filter(c=>c.state==='done'),overdue=cards.filter(c=>c.metrics&&c.metrics.due&&c.metrics.due.status==='overdue');
+  const cycle=cards.map(c=>c.metrics&&c.metrics.cycleDays).filter(n=>n!=null),lead=cards.map(c=>c.metrics&&c.metrics.leadDays).filter(n=>n!=null),idle=active.map(c=>c.metrics&&c.metrics.idleDays).filter(n=>n!=null);
+  const filtered=SEARCH_IDS!==null,boardThroughput=(b.flow&&b.flow.throughput)||[];
+  const completionDates=filtered?cards.map(c=>c.metrics&&c.metrics.completedAt&&c.metrics.completedAt.slice(0,10)).filter(Boolean):[];
+  const throughput=filtered?boardThroughput.map(x=>({date:x.date,count:completionDates.filter(date=>date===x.date).length})):boardThroughput;
+  const last7=throughput.slice(-7).reduce((n,x)=>n+x.count,0),last30=throughput.reduce((n,x)=>n+x.count,0),wip=(b.lanes||[]).filter(l=>l.wip!=null&&l.cards.length>l.wip).length;
+  const metric=(value,label)=>'<div class="metric"><b>'+esc(value)+'</b><span>'+esc(label)+'</span></div>';
+  const max=Math.max(1,...throughput.map(x=>x.count));
+  const bars='<div class="bars" aria-label="daily throughput">'+throughput.map(x=>'<i style="height:'+(x.count/max*100)+'%" title="'+esc(x.date+': '+x.count)+'"></i>').join('')+'</div>';
+  const flow=(b.flow&&b.flow.cumulativeFlow)||[],flowMax=Math.max(1,...flow.map(x=>ORDER.reduce((n,s)=>n+(x.distribution[s]||0),0)));
+  const cfbars='<div class="cfbars" aria-label="cumulative flow">'+flow.map(x=>'<div class="cfbar" title="'+esc(x.date)+'">'+ORDER.map(s=>{const n=x.distribution[s]||0;return n?'<i style="height:'+(n/flowMax*100)+'%;background:var(--st-'+s+')"></i>':''}).join('')+'</div>').join('')+'</div>';
+  const blockerTotals={};
+  if(filtered){for(const c of cards)for(const [id,days] of Object.entries(c.metrics&&c.metrics.blockerDays||{}))blockerTotals[id]=(blockerTotals[id]||0)+days}
+  else Object.assign(blockerTotals,(b.flow&&b.flow.blockerDays)||{});
+  const blockers=Object.entries(blockerTotals).sort((a,z)=>z[1]-a[1]);
+  const age=[0,1,2,3].map(level=>[level,active.filter(c=>(c.metrics&&c.metrics.agingLevel||0)===level).length]);
+  return (filtered?'<p class="hillnote">Card metrics reflect the active filter. Cumulative flow and WIP breaches remain whole-board measures.</p>':'')
+    +'<div class="metricgrid">'+metric(cards.length,'visible cards')+metric(active.length,'active')+metric((b.ready||[]).filter(id=>cards.some(c=>c.id===id)).length,'ready')+metric(overdue.length,'overdue')+metric(last7,'completed · 7d')+metric(last30,'completed · 30d')+metric(avg(cycle)??'—','average cycle days')+metric(avg(lead)??'—','average lead days')+metric(avg(idle)??'—','average active idle days')+metric(wip,'board WIP breaches')+metric(done.reduce((n,c)=>n+(c.estimate||0),0),'completed estimate')+'</div>'
+    +'<div class="chartgrid"><section class="chart"><h3>throughput · last 30 UTC days'+(filtered?' · visible cards':'')+'</h3>'+bars+'</section><section class="chart"><h3>cumulative flow · last 30 UTC days'+(filtered?' · whole board':'')+'</h3>'+cfbars+'</section>'
+    +'<section class="chart"><h3>active-card aging</h3><div class="metriclist">'+age.map(x=>'<div><span>'+(['fresh','7+ days','14+ days','28+ days'][x[0]])+'</span><b>'+x[1]+'</b></div>').join('')+'</div></section>'
+    +'<section class="chart"><h3>blocked days by named reason</h3>'+(blockers.length?'<div class="metriclist">'+blockers.map(x=>'<div><span>'+esc(x[0])+'</span><b>'+esc(x[1])+'d</b></div>').join('')+'</div>':'<div class="empty">no proven blocked intervals</div>')+'</section></div>';
+}
+function hillY(value){return 20+160*Math.pow((value-50)/50,2)}
+function hillDotStyle(c){const v=c.hill==null?0:c.hill;return 'left:'+(4+v*.92)+'%;top:'+hillY(v)+'px;--state-color:var(--st-'+esc(c.state)+')'}
+function hillHtml(b){
+  const cards=visibleCards(b).filter(c=>c.type!=='board'&&!['done','archive'].includes(c.state)),plotted=cards.filter(c=>c.hill!=null);
+  return '<div class="hillview"><p class="hillnote">Manual uncertainty, not automatic progress. Drag uphill while the approach is being figured out; cross the crest only when execution is understood.</p><div class="hillplot" data-hillplot>'
+    +'<svg viewBox="0 0 1000 200" preserveAspectRatio="none" aria-hidden="true"><path d="M 0 180 Q 250 20 500 20 Q 750 20 1000 180"></path></svg><i class="crest" aria-hidden="true"></i><span class="hillphase up">figuring it out · uphill</span><span class="hillphase down">making it happen · downhill</span>'
+    +plotted.map(c=>'<button class="hilldot" data-hill="'+esc(c.id)+'" style="'+hillDotStyle(c)+'" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="'+c.hill+'" aria-label="'+esc(c.id+' '+c.title+', hill position '+c.hill)+'" title="'+esc(c.id+' '+c.title+' · '+c.hill)+'"></button>').join('')+'</div>'
+    +'<div class="hilllegend">'+cards.map(c=>'<div class="hillitem" style="--state-color:var(--st-'+esc(c.state)+')"><i></i><button data-card="'+esc(c.id)+'">'+esc(c.id+' '+c.title)+'</button>'+(c.hill==null?(RO?'<code>unplotted</code>':'<button class="hillset" data-hill-init="'+esc(c.id)+'">plot at 0</button>'):'<code>'+c.hill+'</code>')+'</div>').join('')+'</div>'+(cards.length?'':'<div class="empty">no active task cards</div>')+'</div>';
+}
 function handoffTargets(){
   const here=SEL?findAny(SEL):null,targets=[];
   const walk=nodes=>{for(const node of nodes||[]){targets.push(node);walk(node.children)}};
@@ -1098,6 +1288,26 @@ function moveCardUi(card,to,forceRules,after){
   send('');
 }
 
+async function assignAxisUi(card,value){
+  const axis=chosenAxis(BOARD,GROUP_AXIS);if(axisValue(axis,card)===value)return;
+  if(axis.kind==='lane'){
+    const lane=(BOARD.lanes||[]).find(l=>l.id===value);if(!lane)return;
+    const to=lane.substates&&lane.substates.length?lane.id+'.'+lane.substates[0]:lane.id;
+    moveCardUi(card,to,false,()=>reloadOrg());return;
+  }
+  const patch={};
+  if(axis.kind==='assignee'||axis.kind==='delegate'||axis.kind==='priority')patch[axis.kind]=value||null;
+  else if(axis.kind==='label'){
+    patch.labels=(card.labels||[]).filter(id=>!(card.labelDetails||[]).some(l=>l.id===id&&l.group===axis.group));
+    if(value)patch.labels.push(axis.group+'/'+value);
+  }else{
+    let next=value||null;if(axis.field.type==='checkbox'&&value)next=value==='true';
+    patch.fields={[axis.field.id]:next};
+  }
+  try{await api('/api/projects/'+SEL+'/cards/'+card.id+'/edit',{method:'POST',body:JSON.stringify(patch)});await reloadOrg();toast(card.id+' · '+axis.label+' → '+(value||'unset'))}
+  catch(err){toast(err.message)}
+}
+
 // ---- drag to move ----
 // Pointer events rather than HTML5 drag-and-drop: the same code path then
 // covers mouse, pen and touch. Touch needs a press-and-hold to lift a card,
@@ -1131,6 +1341,8 @@ function dropRules(b,card){
 function dragTargetAt(x,y){
   const el=document.elementFromPoint(x,y);
   if(!el)return null;
+  const axis=el.closest('[data-axis-value]');
+  if(axis)return {axis:axis.dataset.axisValue,el:axis};
   const wormhole=el.closest('[data-wormhole]');
   if(wormhole)return {wormhole:wormhole.dataset.wormhole,el:wormhole};
   const group=el.closest('[data-sub]');
@@ -1158,11 +1370,13 @@ function dragCleanup(){
     el.classList.remove('candrop','nodrop','drop-on','drop-force');
   DRAG=null;
 }
+function refuseBlockedDrag(c){if(c.blocker){toast(c.id+' is blocked by '+blockerOf(c).name+'. Unblock it before moving.');return true}return false}
 function dragStart(card,ev){
   if(RO||!BOARD)return;
   const c=(BOARD.lanes||[]).flatMap(l=>l.cards).find(x=>x.id===card.dataset.card);
   if(!c)return;
-  if(c.blocker){toast(c.id+' is blocked by '+blockerOf(c).name+'. Unblock it before moving.');return}
+  const grouped=LAYOUT==='grouped',axis=grouped?chosenAxis(BOARD,GROUP_AXIS):null;
+  if((!grouped||axis.kind==='lane')&&refuseBlockedDrag(c))return;
   const rect=card.getBoundingClientRect();
   const ghost=card.cloneNode(true);
   ghost.classList.add('dragghost');ghost.removeAttribute('id');
@@ -1170,11 +1384,12 @@ function dragStart(card,ev){
   document.body.appendChild(ghost);
   const hint=document.createElement('div');
   hint.className='draghint';
-  hint.textContent=IS_OWNER?'drop to move · hold over a red zone to override · esc cancels':'drop to move · esc cancels';
+  hint.textContent=grouped?'drop to change '+axis.label+' · esc cancels':IS_OWNER?'drop to move · hold over a red zone to override · esc cancels':'drop to move · esc cancels';
   document.body.appendChild(hint);
   card.classList.add('dragging');
   document.body.classList.add('dragmode');
-  DRAG={id:c.id,card:c,src:card,ghost:ghost,hint:hint,legal:dropRules(BOARD,c),over:null,force:false};
+  DRAG={id:c.id,card:c,src:card,ghost:ghost,hint:hint,legal:dropRules(BOARD,c),over:null,force:false,axis:axis};
+  if(grouped){for(const col of document.querySelectorAll('[data-axis-value]'))col.classList.add('candrop');dragMove(ev);return}
   // Mark every zone once, so the whole board reads as legal or not at a glance.
   for(const g of document.querySelectorAll('[data-sub]')){
     const ok=DRAG.legal.get(g.dataset.lane+'\u0000'+g.dataset.sub);
@@ -1196,6 +1411,7 @@ function dragMove(ev){
   if(DRAG.over&&DRAG.over.el!==(t&&t.el))DRAG.over.el.classList.remove('drop-on','drop-force');
   DRAG.over=t;DRAG.force=false;
   if(!t)return;
+  if(t.axis!==undefined){t.el.classList.add('drop-on');DRAG.hint.textContent='drop to set '+DRAG.axis.label+' to '+(t.axis||'unset')+' · esc cancels';return}
   if(t.wormhole){
     t.el.classList.add('drop-on');
     DRAG.hint.textContent='drop to move this card through the wormhole · esc cancels';
@@ -1220,6 +1436,7 @@ async function dragDrop(){
   const id=DRAG.id;
   dragCleanup();
   if(!t)return;
+  if(t.axis!==undefined){assignAxisUi(card,t.axis);return}
   if(t.wormhole){
     try{
       const r=await api('/api/projects/'+SEL+'/cards/'+id+'/transfer',{method:'POST',body:JSON.stringify({target:t.wormhole,move:true})});
@@ -1234,6 +1451,17 @@ async function dragDrop(){
 }
 function boardClicks(e){
   if(Date.now()-DRAG_ENDED<400)return;
+  const hillInit=e.target.closest('[data-hill-init]');
+  if(hillInit){const card=visibleCards(BOARD).find(c=>c.id===hillInit.dataset.hillInit);if(card&&!RO)saveHill(card,0);return}
+  const sort=e.target.closest('[data-sort]');
+  if(sort){if(TABLE_SORT===sort.dataset.sort)TABLE_DESC=!TABLE_DESC;else{TABLE_SORT=sort.dataset.sort;TABLE_DESC=false}paintBoard();return}
+  const cal=e.target.closest('[data-cal]');
+  if(cal){
+    const now=new Date();
+    if(cal.dataset.cal==='today')CAL_MONTH=now.toISOString().slice(0,7);
+    else{const p=(CAL_MONTH||now.toISOString().slice(0,7)).split('-').map(Number),d=new Date(Date.UTC(p[0],p[1]-1+Number(cal.dataset.cal),1));CAL_MONTH=d.toISOString().slice(0,7)}
+    paintBoard();return;
+  }
   const ac=e.target.closest('[data-addcard]');
   if(ac){newCard(ac.dataset.addcard);e.stopPropagation();return}
   const sub=e.target.closest('[data-lanesub]');
@@ -1246,8 +1474,8 @@ function boardClicks(e){
   }
   const go=e.target.closest('[data-goto]');
   if(go&&!go.disabled){SEL=go.dataset.goto;VIEW='board';BOARD=null;renderSide();renderMain();e.stopPropagation();return}
-  const el=e.target.closest('[data-card]');
-  if(el)openCard(el.dataset.card);
+  const el=e.target.closest('[data-card],[data-open-card]');
+  if(el)openCard(el.dataset.card||el.dataset.openCard);
 }
 // Keyboard nav: cards are tabbable; arrows walk the deck, Enter/Space opens.
 // Moving a card without a pointer. Shift+Arrow rather than a grab mode: the
@@ -1293,11 +1521,22 @@ async function keyboardMove(el,dir){
   if(!IS_OWNER)return toast(lane.id+' is strict: '+id+' can only enter at '+lane.id+'.'+lane.substates[0]);
   moveCardUi(c,to,true,after);
 }
+function keyboardAxisMove(el,dir){
+  const card=visibleCards(BOARD).find(c=>c.id===el.dataset.card),axis=chosenAxis(BOARD,GROUP_AXIS);if(!card)return;
+  const values=[{id:'',label:'unset'}].concat(axis.values||[]),at=values.findIndex(v=>v.id===axisValue(axis,card)),next=values[at+(dir==='right'?1:-1)];
+  if(next)assignAxisUi(card,next.id);
+}
 function boardKeys(e){
+  const hill=e.target.closest('[data-hill]');
+  if(hill&&['ArrowLeft','ArrowRight','PageDown','PageUp','Home','End'].includes(e.key)){
+    e.preventDefault();const card=visibleCards(BOARD).find(c=>c.id===hill.dataset.hill);if(!card||RO)return;
+    let value=card.hill??0;if(e.key==='Home')value=0;else if(e.key==='End')value=100;else value=Math.max(0,Math.min(100,value+((e.key==='ArrowRight'?1:e.key==='PageUp'?10:e.key==='PageDown'?-10:-1))));
+    saveHill(card,value);return;
+  }
   const cur=e.target.closest('[data-card]');if(!cur)return;
   if(e.shiftKey&&e.key.startsWith('Arrow')){
     e.preventDefault();
-    keyboardMove(cur,e.key.slice(5).toLowerCase());
+    const dir=e.key.slice(5).toLowerCase();if(LAYOUT==='grouped'&&(dir==='left'||dir==='right'))keyboardAxisMove(cur,dir);else keyboardMove(cur,dir);
     return;
   }
   if(e.key==='Enter'||e.key===' '){e.preventDefault();openCard(cur.dataset.card);return}
@@ -1357,8 +1596,11 @@ function patchView(v,html){
 }
 function boardHtml(b){
   const errs=(b.findings||[]).filter(f=>f.severity==='error').length;
+  const body=LAYOUT==='table'?tableHtml(b):LAYOUT==='swimlane'?swimlaneHtml(b):LAYOUT==='calendar'?calendarHtml(b)
+    :LAYOUT==='timeline'?timelineHtml(b):LAYOUT==='grouped'?groupedHtml(b):LAYOUT==='metrics'?metricsHtml(b):LAYOUT==='hill'?hillHtml(b)
+    :colsHtml(b)+wormholesHtml();
   return '<div id="bstats">'+chips(b.distribution)+(errs?'<div class="err">'+errs+' lint error(s)</div>':'')+'</div>'
-    +'<div id="bcols">'+colsHtml(b)+wormholesHtml()+'</div>';
+    +'<div id="bcols" data-layout="'+esc(LAYOUT)+'">'+body+'</div>';
 }
 async function refreshBoard(quiet){
   let b;try{b=await api('/api/projects/'+SEL+'/board')}catch(err){if(!quiet)$('#view').innerHTML='<div class="err">'+esc(err.message)+'</div>';return}
@@ -1368,11 +1610,12 @@ async function refreshBoard(quiet){
   const pi=$('#pinfo');if(pi){pi.textContent=b.cards+' cards · '+pct(b.progress);pi.title='structural progress: every card is one unit; a sub-board fills its unit by its own fraction'}
   const v=$('#view');if(!v)return;
   syncSearchControls(b);
+  syncViewControls(b);
   patchView(v,boardHtml(b));
   v.onclick=boardClicks;
   v.onkeydown=boardKeys;
   v.onpointerdown=boardPointerDown;
-  requestAnimationFrame(()=>drawRelations(b));
+  if(LAYOUT==='kanban')requestAnimationFrame(()=>drawRelations(b));
   if(SEARCH_QUERY.trim()||SEARCH_SAVED)runSearch();
 }
 function drawRelations(b){
@@ -1403,12 +1646,25 @@ function drawRelations(b){
   }
   cols.prepend(svg);
 }
-window.addEventListener('resize',()=>{if(BOARD&&VIEW==='board')drawRelations(BOARD)});
+window.addEventListener('resize',()=>{if(BOARD&&VIEW==='board'&&LAYOUT==='kanban')drawRelations(BOARD)});
+function hillAt(ev,plot){const r=plot.getBoundingClientRect();return Math.max(0,Math.min(100,Math.round((ev.clientX-r.left-r.width*.04)/(r.width*.92)*100)))}
+function paintHillDot(dot,value){dot.style.left=(4+value*.92)+'%';dot.style.top=hillY(value)+'px';dot.setAttribute('aria-valuenow',String(value));dot.classList.remove('unset')}
+async function saveHill(card,value){
+  if(card.hill===value)return;
+  try{await api('/api/projects/'+SEL+'/cards/'+card.id+'/edit',{method:'POST',body:JSON.stringify({hill:value})});await reloadOrg();toast(card.id+' hill → '+value)}catch(err){toast(err.message);refreshBoard(true)}
+}
 // A press on a card is only a drag once it has proved itself: a mouse has to
 // travel past the slop threshold, and a finger has to stay put long enough
 // that it clearly is not a scroll. Until then the press is still a click.
 function boardPointerDown(e){
   if(RO||e.button!==0)return;
+  const hill=e.target.closest('[data-hill]');
+  if(hill&&LAYOUT==='hill'){
+    const card=visibleCards(BOARD).find(c=>c.id===hill.dataset.hill),plot=hill.closest('[data-hillplot]');if(!card||!plot)return;
+    e.preventDefault();try{hill.setPointerCapture(e.pointerId)}catch{}
+    const value=hillAt(e,plot);paintHillDot(hill,value);HILL_DRAG={dot:hill,plot:plot,card:card,value:value,pointerId:e.pointerId};return;
+  }
+  if(LAYOUT!=='kanban'&&LAYOUT!=='grouped')return;
   const card=e.target.closest('[data-card]');
   if(!card||e.target.closest('button,a,input,textarea,select'))return;
   const touch=e.pointerType!=='mouse';
@@ -1423,6 +1679,7 @@ function boardPointerDown(e){
   }
 }
 window.addEventListener('pointermove',e=>{
+  if(HILL_DRAG){e.preventDefault();HILL_DRAG.value=hillAt(e,HILL_DRAG.plot);paintHillDot(HILL_DRAG.dot,HILL_DRAG.value);return}
   if(PRESS){
     const dx=Math.abs(e.clientX-PRESS.x),dy=Math.abs(e.clientY-PRESS.y);
     if(PRESS.touch){
@@ -1439,8 +1696,8 @@ window.addEventListener('pointermove',e=>{
   }
   if(DRAG){e.preventDefault();dragMove(e)}
 },{passive:false});
-window.addEventListener('pointerup',()=>{if(DRAG)dragDrop();else dragCleanup()});
-window.addEventListener('pointercancel',dragCleanup);
+window.addEventListener('pointerup',()=>{if(HILL_DRAG){const h=HILL_DRAG;HILL_DRAG=null;saveHill(h.card,h.value)}else if(DRAG)dragDrop();else dragCleanup()});
+window.addEventListener('pointercancel',()=>{HILL_DRAG=null;dragCleanup()});
 // A drag in flight must survive the background poll: patchView would otherwise
 // reconcile the dragged node out from under the pointer.
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&DRAG)dragCleanup()});
@@ -1688,14 +1945,18 @@ function renderPublic(b){
   document.title=b.name+' · botflow';
   if(fresh){
     document.body.innerHTML='<header class="top"><h1>'+esc(b.name)+' <span class="sub">shared board · read only</span></h1>'
-      +'<div class="meter" id="hmeter" title="structural progress: every card is one unit; a sub-board fills its unit by its own fraction"></div><span id="hstrip"></span><span class="spacer"></span></header>'
+      +'<div class="meter" id="hmeter" title="structural progress: every card is one unit; a sub-board fills its unit by its own fraction"></div><span id="hstrip"></span><span class="spacer"></span>'
+      +'<div class="viewctl"><select id="boardlayout" aria-label="board view">'+[['kanban','board'],['table','table'],['swimlane','swimlanes'],['calendar','calendar'],['timeline','timeline'],['grouped','group by field'],['metrics','metrics'],['hill','hill chart']].map(x=>'<option value="'+x[0]+'"'+(LAYOUT===x[0]?' selected':'')+'>'+x[1]+'</option>').join('')+'</select><select id="axisctl" class="axisctl" aria-label="grouping axis" hidden></select></div></header>'
       +'<div class="view" id="view" style="flex:1;overflow:auto"></div>'
       +'<div class="pubfoot">shared with botflow: git-native kanban for AI agents. <a href="/about">learn more</a></div>';
     $('#view').onclick=boardClicks;
     $('#view').onkeydown=boardKeys;
+    $('#boardlayout').onchange=e=>{LAYOUT=e.target.value;localStorage.setItem('bf_layout',LAYOUT);syncViewControls(BOARD);paintBoard()};
+    $('#axisctl').onchange=e=>{if(LAYOUT==='grouped'){GROUP_AXIS=e.target.value;localStorage.setItem('bf_group_axis',GROUP_AXIS)}else{SWIM_AXIS=e.target.value;localStorage.setItem('bf_swim_axis',SWIM_AXIS)}paintBoard()};
   }
   $('#hmeter').innerHTML='<div class="track"><div class="fill" style="width:'+Math.round((b.progress||0)*100)+'%"></div></div><b>'+pct(b.progress)+'</b>';
   $('#hstrip').innerHTML=strip(b.distribution);
+  syncViewControls(b);
   patchView($('#view'),boardHtml(b));
 }
 // ---- the card modal ----
@@ -1813,6 +2074,7 @@ function paneCard(c){
   if(c.snooze)kv.push('<span><b>snoozed until</b> '+esc(c.snooze)+' · new activity wakes it</span>');
   if(c.blocker){const bd=blockerOf(c);kv.push('<span><b>blocker</b> '+esc(bd.name)+' <code>'+esc(c.blocker)+'</code></span>')}
   if(c.estimate!=null)kv.push('<span><b>estimate</b> '+esc(c.estimate)+'</span>');
+  if(c.hill!=null)kv.push('<span><b>hill</b> '+esc(c.hill)+' · '+(c.hill<50?'uphill discovery':c.hill===50?'uncertainty crest':'downhill execution')+'</span>');
   if(c.evergreen)kv.push('<span><b>aging</b> evergreen</span>');
   for(const f of c.fields||[])kv.push('<span><b>'+esc(f.name)+'</b> '+esc(fieldText(f.value))+'</span>');
   if(c.created)kv.push('<span><b>created</b> '+esc(c.created)+'</span>');
@@ -2039,6 +2301,7 @@ function wireCardModal(m,c,tab){
         {name:'repeat_from',label:'next dates from',type:'select',value:c.repeat&&c.repeat.from||'due',options:[{value:'due',label:'the prior due date'},{value:'completion',label:'completion time'}]},
         {name:'snooze',label:'snooze until (empty wakes)',value:c.snooze||''},
         {name:'estimate',label:'estimate (empty to clear)',type:'number',value:c.estimate??''},
+        {name:'hill',label:'hill position (0–100, empty to clear)',type:'number',value:c.hill??''},
         {name:'evergreen',label:'aging signal',type:'select',value:String(!!c.evergreen),options:[{value:'false',label:'normal'},{value:'true',label:'evergreen (hide aging)'}]},
         {name:'cover_color',label:'cover color (empty to clear)',value:c.coverColor||''},
       ].concat(customFormFields(defs,c.fields||[]));
@@ -2050,6 +2313,7 @@ function wireCardModal(m,c,tab){
           repeat:d.repeat_every?{every:Number(d.repeat_every),unit:d.repeat_unit,from:d.repeat_from}:null,
           snooze:d.snooze||null,
           estimate:d.estimate?Number(d.estimate):null,evergreen:d.evergreen==='true',cover_color:d.cover_color||null,
+          hill:d.hill===''?null:Number(d.hill),
           labels:d.labels?d.labels.split(',').map(s=>s.trim()).filter(Boolean):[],
           deps:d.deps?d.deps.split(',').map(s=>s.trim()).filter(Boolean):[],fields:customPayload(defs,d,true)})});
         openCard(c.id,'card');refreshBoard(true)});

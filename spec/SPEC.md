@@ -221,6 +221,7 @@ Frontmatter keys:
 | `repeat` | recurrence map | no | Materialize one independent next instance when this task first closes (§6b); requires `due` and is invalid on board-cards. |
 | `snooze` | date string | no | Hide otherwise-ready work until this UTC instant/date or genuine new card activity, whichever comes first (§6b). |
 | `estimate` | positive int | no | Board-local effort points. It is deliberately unitless; tools may sum it but MUST NOT reinterpret it as elapsed time. |
+| `hill` | int 0–100 | no | Manual Hill Chart position. `0` begins uphill discovery, `50` is the uncertainty crest, and `100` ends downhill execution (§6c). |
 | `evergreen` | bool | no (default `false`) | Suppresses stale-card aging signals for intentionally long-lived reference work. It does not suppress time metrics. |
 | `cover` | url \| `none` | no | Card art. Viewers show the image atop the card; when absent they MAY fall back to the first image attachment; `none` suppresses art entirely. |
 | `cover_color` | `#RGB` \| `#RRGGBB` | no | Color band or fallback art behind the compact card; independent of `cover`. |
@@ -410,6 +411,26 @@ offer an explicit automation command and SHOULD run the same lazy pass before `b
 Durable Object alarm set to the earliest pending reminder, snooze expiry, or sweep.
 Alarm/lazy state is a cache: tuple markers and card Logs make it completely rebuildable
 from board documents.
+
+### 6c. Views and manual uncertainty
+
+Board views are projections over the same cards, never alternate stores. Table,
+calendar, timeline, swimlane, field-grouped, and metrics views MUST therefore preserve
+card identity and MUST NOT write presentation-only ordering state. Calendar projection
+uses `due`; timeline projection uses `start` and `due`; metrics are derived under §6a.
+
+An implementation MAY group columns by a stored single-value axis: lane, assignee,
+delegate, priority, a scoped label group, or a declared `select`, `person`, or
+`checkbox` custom field. Moving a card between such columns changes that underlying
+field using the ordinary validated card mutation. It MUST NOT synthesize a generic
+rank field or silently treat a multi-value label/field as single-select.
+
+`hill` is a deliberately human-generated signal of uncertainty, independent of flow
+progress. Values `0` through `49` mean the work is uphill (figuring the approach out),
+`50` is the crest, and `51` through `100` mean it is downhill (executing a known
+approach). A missing value is unplotted. No move, claim, close, estimate, Log entry,
+automation rule, or elapsed-time process may change it. Only an explicit card edit may
+set or clear it, and that edit follows the normal Log and `updated` discipline.
 
 ## 7. Nesting & rollup
 

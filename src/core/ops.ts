@@ -8,7 +8,7 @@ import { addAttachmentLine, appendToSection, bodyHasSection, parseBody, removeAt
 import { analyze } from './analyze.ts';
 import { singleBoardTree } from './docs.ts';
 import { emitScalar } from './emit.ts';
-import { validCardDate, validEstimate } from './fields.ts';
+import { validCardDate, validEstimate, validHill } from './fields.ts';
 import { newHashId, nextSeqId, slugify } from './ids.ts';
 import { labelGroupConflict, validColor, validCustomFieldValue } from './presentation.ts';
 import { parseCardReference, relationInverse } from './refs.ts';
@@ -172,6 +172,7 @@ export interface AddOptions {
   repeat?: CardRepeat | undefined;
   snooze?: string | undefined;
   estimate?: number | undefined;
+  hill?: number | undefined;
   evergreen?: boolean | undefined;
   coverColor?: string | undefined;
   fields?: Record<string, unknown> | undefined;
@@ -225,6 +226,12 @@ function checkedRepeat(value: CardRepeat | null | undefined, due: string | null 
 function checkedEstimate(value: number | null | undefined): number | null | undefined {
   if (value === undefined || value === null) return value;
   if (!validEstimate(value)) throw new UsageError('estimate must be a positive integer');
+  return value;
+}
+
+function checkedHill(value: number | null | undefined): number | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (!validHill(value)) throw new UsageError('hill must be an integer from 0 to 100');
   return value;
 }
 
@@ -410,6 +417,7 @@ export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
     repeat,
     snooze,
     estimate: checkedEstimate(opts.estimate ?? template?.estimate) ?? null,
+    hill: checkedHill(opts.hill) ?? null,
     evergreen: opts.evergreen ?? template?.evergreen ?? false,
     cover: null,
     coverColor: checkedCoverColor(opts.coverColor ?? template?.coverColor) ?? null,
@@ -688,6 +696,7 @@ export interface EditPatch {
   repeat?: CardRepeat | null | undefined;
   snooze?: string | null | undefined;
   estimate?: number | null | undefined;
+  hill?: number | null | undefined;
   evergreen?: boolean | undefined;
   boardPath?: string | undefined;
   /** Image url, 'none' to suppress card art, or null to clear (auto fallback). */
@@ -716,6 +725,7 @@ export function opEdit(card: Card, patch: EditPatch, actor: string, board?: Load
     throw new UsageError('cannot clear due while repeat remains');
   }
   const estimate = patch.estimate === undefined ? undefined : (checkedEstimate(patch.estimate) ?? null);
+  const hill = patch.hill === undefined ? undefined : (checkedHill(patch.hill) ?? null);
   const coverColor = patch.coverColor === undefined ? undefined : (checkedCoverColor(patch.coverColor) ?? null);
   const fields = checkedCustomFields(board, patch.fields, true);
   const deps = patch.deps === undefined ? undefined : checkedCardReferences(patch.deps, 'deps');
@@ -777,6 +787,10 @@ export function opEdit(card: Card, patch: EditPatch, actor: string, board?: Load
   if (patch.estimate !== undefined && estimate !== card.estimate) {
     card.estimate = estimate!;
     changed.push('estimate');
+  }
+  if (patch.hill !== undefined && hill !== card.hill) {
+    card.hill = hill!;
+    changed.push('hill');
   }
   if (patch.evergreen !== undefined && patch.evergreen !== card.evergreen) {
     card.evergreen = patch.evergreen;

@@ -28,6 +28,7 @@ function cardAnnotations(card: Card, node: BoardNode, ba: BoardAnalysis, readySe
   if (card.delegate) parts.push(`delegate @${card.delegate}`);
   if (card.priority) parts.push(card.priority);
   if (card.estimate !== null) parts.push(`est ${card.estimate}`);
+  if (card.hill !== null) parts.push(`hill ${card.hill}`);
   if (card.due !== null && metrics.due !== null) parts.push(`due ${card.due} (${metrics.due.status})`);
   if (card.labels.length > 0) parts.push(card.labels.map((l) => `#${l}`).join(' '));
   if (card.blocked) parts.push(`⛔ ${card.blocked}`);
@@ -136,6 +137,7 @@ export function renderCard(card: Card, node: BoardNode, ba: BoardAnalysis): stri
   if (card.delegate) meta.push(`delegate ${card.delegate}`);
   if (card.priority) meta.push(card.priority);
   if (card.estimate !== null) meta.push(`estimate ${card.estimate}`);
+  if (card.hill !== null) meta.push(`hill ${card.hill}`);
   if (card.start) meta.push(`start ${card.start}`);
   if (card.due) meta.push(`due ${card.due}`);
   if (card.evergreen) meta.push('evergreen');

@@ -85,6 +85,7 @@ test('cli: structured scheduling, effort, Evergreen, and delegation fields round
     '--repeat', '2:week:due',
     '--snooze', '2099-01-01T00:00:00Z',
     '--estimate', '8',
+    '--hill', '0',
     '--evergreen',
   );
   let shown = JSON.parse(ok(dir, 'card', 'show', '001', '--json')) as Record<string, unknown>;
@@ -96,6 +97,7 @@ test('cli: structured scheduling, effort, Evergreen, and delegation fields round
   assert.deepEqual(shown['repeat'], { every: 2, unit: 'week', from: 'due' });
   assert.equal(shown['snooze'], '2099-01-01T00:00:00Z');
   assert.equal(shown['estimate'], 8);
+  assert.equal(shown['hill'], 0);
   assert.equal(shown['evergreen'], true);
 
   ok(
@@ -108,6 +110,7 @@ test('cli: structured scheduling, effort, Evergreen, and delegation fields round
     '--repeat', 'none',
     '--snooze', 'none',
     '--estimate', 'none',
+    '--hill', '76',
     '--evergreen', 'false',
   );
   shown = JSON.parse(ok(dir, 'card', 'show', '001', '--json')) as Record<string, unknown>;
@@ -118,10 +121,12 @@ test('cli: structured scheduling, effort, Evergreen, and delegation fields round
   assert.equal(shown['repeat'], null);
   assert.equal(shown['snooze'], null);
   assert.equal(shown['estimate'], null);
+  assert.equal(shown['hill'], 76);
   assert.equal(shown['evergreen'], false);
 
   assert.equal(bf(dir, 'card', 'add', 'Bad date', '--due', 'tomorrow').code, 1);
   assert.equal(bf(dir, 'card', 'add', 'Bad estimate', '--estimate', '1.5').code, 1);
+  assert.equal(bf(dir, 'card', 'add', 'Bad hill', '--hill', '101').code, 1);
 
   ok(dir, 'card', 'add', 'Delegate me');
   const claimed = JSON.parse(ok(dir, 'card', 'claim', '002', '--delegate', '--json')) as Record<string, unknown>;

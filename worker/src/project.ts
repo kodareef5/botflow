@@ -1207,6 +1207,10 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
             if (args['estimate'] !== null && typeof args['estimate'] !== 'number') throw new UsageError('estimate must be a number or null');
             patch.estimate = args['estimate'];
           }
+          if ('hill' in args) {
+            if (args['hill'] !== null && typeof args['hill'] !== 'number') throw new UsageError('hill must be a number or null');
+            patch.hill = args['hill'];
+          }
           if ('evergreen' in args) {
             if (typeof args['evergreen'] !== 'boolean') throw new UsageError('evergreen must be a boolean');
             patch.evergreen = args['evergreen'];

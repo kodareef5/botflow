@@ -7,6 +7,7 @@ delegate: agent-1
 start: 2026-08-02
 due: 2026-08-20
 estimate: 5
+hill: 38
 evergreen: true
 created: 2026-08-01
 ---

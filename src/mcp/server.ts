@@ -65,6 +65,7 @@ interface Tool {
 const str = { type: 'string' } as const;
 const bool = { type: 'boolean' } as const;
 const positiveInt = { type: 'integer', minimum: 1 } as const;
+const hillInt = { type: 'integer', minimum: 0, maximum: 100 } as const;
 const strList = { type: 'array', items: { type: 'string' } } as const;
 const fieldMap = { type: 'object', additionalProperties: true } as const;
 
@@ -100,6 +101,13 @@ function buildTools(root: string, defaultActor: string): Tool[] {
     if (v === undefined) return undefined;
     if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 1) {
       throw new UsageError(`invalid ${name}: expected a positive integer`);
+    }
+    return v;
+  };
+  const hillOf = (v: unknown): number | undefined => {
+    if (v === undefined) return undefined;
+    if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0 || v > 100) {
+      throw new UsageError('invalid hill: expected an integer from 0 to 100');
     }
     return v;
   };
@@ -280,7 +288,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       inputSchema: schema(['title'], {
         title: str, template: str, lane: str, type: { type: 'string', enum: ['task', 'board'] }, board_path: str,
         labels: strList, priority: { type: 'string', enum: PRIORITIES }, deps: strList,
-        assignee: str, delegate: str, start: str, due: str, estimate: positiveInt, evergreen: bool,
+        assignee: str, delegate: str, start: str, due: str, estimate: positiveInt, hill: hillInt, evergreen: bool,
         reminders: { type: 'array', items: { type: 'integer', minimum: 0 } }, repeat: fieldMap, snooze: str,
         cover_color: str, fields: fieldMap, force: bool, wip_reason: str, actor: str,
       }),
@@ -302,6 +310,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
           repeat: repeatOf(args['repeat']) ?? undefined,
           snooze: args['snooze'] === undefined ? undefined : strOf(args['snooze'], 'snooze'),
           estimate: positiveIntOf(args['estimate'], 'estimate'),
+          hill: hillOf(args['hill']),
           evergreen: args['evergreen'] === undefined ? undefined : args['evergreen'] === true,
           coverColor: args['cover_color'] === undefined ? undefined : strOf(args['cover_color'], 'cover_color'),
           fields: fieldsOf(args['fields']),
@@ -465,7 +474,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
         start: { type: ['string', 'null'] }, due: { type: ['string', 'null'] },
         reminders: { type: ['array', 'null'], items: { type: 'integer', minimum: 0 } },
         repeat: { type: ['object', 'null'] }, snooze: { type: ['string', 'null'] },
-        estimate: { type: ['integer', 'null'], minimum: 1 }, evergreen: bool, board_path: str,
+        estimate: { type: ['integer', 'null'], minimum: 1 }, hill: { type: ['integer', 'null'], minimum: 0, maximum: 100 }, evergreen: bool, board_path: str,
         cover: { type: ['string', 'null'] }, cover_color: { type: ['string', 'null'] }, fields: fieldMap, actor: str,
       }),
       run: (args) => {
@@ -482,6 +491,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
         if ('repeat' in args) patch.repeat = repeatOf(args['repeat']);
         if ('snooze' in args) patch.snooze = args['snooze'] === null ? null : strOf(args['snooze'], 'snooze');
         if ('estimate' in args) patch.estimate = args['estimate'] === null ? null : positiveIntOf(args['estimate'], 'estimate')!;
+        if ('hill' in args) patch.hill = args['hill'] === null ? null : hillOf(args['hill'])!;
         if ('evergreen' in args) {
           if (typeof args['evergreen'] !== 'boolean') throw new UsageError('invalid evergreen: expected a boolean');
           patch.evergreen = args['evergreen'];

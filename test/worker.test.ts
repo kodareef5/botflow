@@ -192,7 +192,7 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
       method: 'POST', token: admin, body: JSON.stringify({
         title: 'Scheduled API card', start: '2026-08-20', due: '2026-08-24T12:30Z',
         reminders: [60, 15], repeat: { every: 2, unit: 'week', from: 'due' }, snooze: '2099-01-01T00:00:00Z',
-        estimate: 5, evergreen: true, assignee: 'root', delegate: 'agent-a',
+        estimate: 5, hill: 0, evergreen: true, assignee: 'root', delegate: 'agent-a',
       }),
     });
     assert.equal(scheduledCreate.status, 200);
@@ -204,11 +204,12 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.deepEqual(scheduled['repeat'], { every: 2, unit: 'week', from: 'due' });
     assert.equal(scheduled['snooze'], '2099-01-01T00:00:00Z');
     assert.equal(scheduled['estimate'], 5);
+    assert.equal(scheduled['hill'], 0);
     assert.equal(scheduled['evergreen'], true);
     assert.equal(scheduled['assignee'], 'root');
     assert.equal(scheduled['delegate'], 'agent-a');
     const scheduledEdit = await call(`/api/projects/${sibA}/cards/${scheduledId}/edit`, {
-      method: 'POST', token: admin, body: JSON.stringify({ start: null, reminders: [], repeat: null, snooze: null, estimate: null, evergreen: false }),
+      method: 'POST', token: admin, body: JSON.stringify({ start: null, reminders: [], repeat: null, snooze: null, estimate: null, hill: 73, evergreen: false }),
     });
     assert.equal(scheduledEdit.status, 200);
     scheduled = (await call(`/api/projects/${sibA}/cards/${scheduledId}`, { token: admin })).body;
@@ -217,9 +218,13 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.equal(scheduled['repeat'], null);
     assert.equal(scheduled['snooze'], null);
     assert.equal(scheduled['estimate'], null);
+    assert.equal(scheduled['hill'], 73);
     assert.equal(scheduled['evergreen'], false);
     assert.equal((await call(`/api/projects/${sibA}/cards`, {
       method: 'POST', token: admin, body: JSON.stringify({ title: 'Bad types', estimate: true }),
+    })).status, 400);
+    assert.equal((await call(`/api/projects/${sibA}/cards`, {
+      method: 'POST', token: admin, body: JSON.stringify({ title: 'Bad hill', hill: 101 }),
     })).status, 400);
     assert.equal((await call(`/api/projects/${sibA}/cards`, {
       method: 'POST', token: admin, body: JSON.stringify({ title: 'Bad reminders', due: '2026-08-24', reminders: [30.5] }),

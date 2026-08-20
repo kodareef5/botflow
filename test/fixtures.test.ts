@@ -18,7 +18,7 @@ interface ExpectedBoard {
   ready: string[];
   progress: number | null;
   effort?: { total: number; completed: number; progress: number | null };
-  fields?: Record<string, { assignee: string | null; delegate: string | null; start: string | null; due: string | null; estimate: number | null; evergreen: boolean }>;
+  fields?: Record<string, { assignee: string | null; delegate: string | null; start: string | null; due: string | null; estimate: number | null; hill: number | null; evergreen: boolean }>;
   presentation?: {
     labels: { id: string; color: string | null }[];
     fields: { id: string; name: string; type: string; options: string[]; face: boolean }[];
@@ -87,6 +87,7 @@ for (const name of ['minimal', 'standard', 'substates', 'nested', 'card-features
           start: card.start,
           due: card.due,
           estimate: card.estimate,
+          hill: card.hill,
           evergreen: card.evergreen,
         }])), exp.fields, `${key}: feature fields`);
       }

@@ -34,6 +34,7 @@ export const SUPPORTED_BOARD_FEATURES = new Set([
   'relations', 'cross-board-deps', 'templates',
   'search', 'collaboration',
   'automation', 'named-blockers',
+  'hill-charts',
 ]);
 
 /** Serialize a BoardConfig back to board.yaml text. Defaults are omitted so

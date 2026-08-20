@@ -3,7 +3,7 @@
 import type { YamlValue } from './yaml.ts';
 import type { Card, CardRelation, CardRepeat, Finding } from './model.ts';
 import { RELATION_TYPES, SLUG_RE, finding } from './model.ts';
-import { validCardDate, validEstimate } from './fields.ts';
+import { validCardDate, validEstimate, validHill } from './fields.ts';
 import { BUILTIN_CARD_KEYS, validColor } from './presentation.ts';
 import { parseCardReference } from './refs.ts';
 
@@ -220,6 +220,12 @@ export function parseCard(
     else findings.push(finding('schema', id, `estimate must be a positive integer, got ${JSON.stringify(m['estimate'])}`));
   }
 
+  let hill: number | null = null;
+  if (m['hill'] !== undefined) {
+    if (validHill(m['hill'])) hill = m['hill'];
+    else findings.push(finding('schema', id, `hill must be an integer from 0 to 100, got ${JSON.stringify(m['hill'])}`));
+  }
+
   let evergreen = false;
   if (m['evergreen'] !== undefined) {
     if (typeof m['evergreen'] === 'boolean') evergreen = m['evergreen'];
@@ -269,6 +275,7 @@ export function parseCard(
     repeat,
     snooze,
     estimate,
+    hill,
     evergreen,
     cover: optString(m['cover']),
     coverColor,

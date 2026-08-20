@@ -35,6 +35,7 @@ export function serializeCard(card: Card): string {
   };
   if (card.snooze !== null) fm['snooze'] = card.snooze;
   if (card.estimate !== null) fm['estimate'] = card.estimate;
+  if (card.hill !== null) fm['hill'] = card.hill;
   if (card.evergreen) fm['evergreen'] = true;
   if (card.cover !== null) fm['cover'] = card.cover;
   if (card.coverColor !== null) fm['cover_color'] = card.coverColor;

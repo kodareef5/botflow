@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { get } from 'node:http';
 import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
 
 import { serveBoard } from '../src/viewer/serve.ts';
 import { viewerData, viewerHtml } from '../src/viewer/page.ts';
@@ -13,6 +14,7 @@ const NESTED = join(import.meta.dirname, 'fixtures', 'nested');
 const PRESENTATION = join(import.meta.dirname, 'fixtures', 'presentation');
 const RELATIONS = join(import.meta.dirname, 'fixtures', 'relations');
 const COLLABORATION = join(import.meta.dirname, 'fixtures', 'collaboration');
+const CARD_FEATURES = join(import.meta.dirname, 'fixtures', 'card-features');
 
 test('viewer: serve exposes page and live data', async () => {
   const { server, url } = await serveBoard(NESTED, 0);
@@ -107,6 +109,41 @@ test('viewer: collaboration signals have card-face and detail parity', () => {
   const html = viewerHtml(data, { live: false });
   for (const needle of ['title="watchers"', 'title="votes"', 'title="boosts"', "['mentions',", "['boosts',c.boostCount"])
     assert.ok(html.includes(needle), `local viewer collaboration surface missing: ${needle}`);
+});
+
+test('viewer: every manager layout has a read-only local projection, including Hill uncertainty', () => {
+  const tree = loadTree(CARD_FEATURES);
+  const data = viewerData(tree, analyze(tree));
+  const board = data.boards['.'] as { lanes: { cards: Record<string, unknown>[] }[] };
+  assert.equal(board.lanes.flatMap((lane) => lane.cards)[0]!['hill'], 38);
+  const html = viewerHtml(data, { live: false });
+  for (const hook of [
+    'id="layout"', 'function tableHtml(', 'function groupedHtml(', 'function swimlaneHtml(',
+    'function calendarHtml(', 'function timelineHtml(', 'function metricsHtml(', 'function hillHtml(',
+    'Manual uncertainty', "['hill',c.hill]", 'cumulative flow',
+  ]) assert.ok(html.includes(hook), `local viewer missing ${hook}`);
+});
+
+test('viewer: emitted calendar and timeline render structured dates', () => {
+  const tree = loadTree(CARD_FEATURES);
+  const data = viewerData(tree, analyze(tree));
+  const board = data.boards['.'];
+  const html = viewerHtml(data, { live: false });
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]!);
+  const app = scripts.at(-1)!;
+  const start = app.indexOf('function isoDay(');
+  const end = app.indexOf('function avg(', start);
+  assert.ok(start !== -1 && end > start, 'dated layout renderers found');
+  const context: Record<string, unknown> = {
+    CAL_MONTH: '2026-08',
+    flatCards: (value: { lanes: { cards: unknown[] }[] }) => value.lanes.flatMap((lane) => lane.cards),
+    esc: (value: unknown) => String(value ?? ''),
+    stateColor: () => '#369',
+  };
+  const rendered = runInNewContext(`(()=>{${app.slice(start, end)};return {calendar:calendarHtml(board),timeline:timelineHtml(board)}})()`, { ...context, board }) as { calendar: string; timeline: string };
+  assert.match(rendered.calendar, /data-card="001"/);
+  assert.match(rendered.timeline, /data-open-card="001"/);
+  assert.match(rendered.timeline, /2026-08-02 through 2026-08-20/);
 });
 
 test('viewer: serve answers only loopback Host headers (DNS-rebinding guard)', async () => {

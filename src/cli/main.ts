@@ -92,7 +92,7 @@ usage: botflow <command> [args]
   lint [--json]                         check the board; exit 1 on errors
   card add <title> [--template id] [--lane l] [--labels a,b] [--priority p0-p3] [--deps 1,2]
            [--type board --board-path <dir>] [--assignee name] [--delegate agent]
-           [--start YYYY-MM-DD] [--due YYYY-MM-DD] [--estimate n] [--evergreen]
+           [--start YYYY-MM-DD] [--due YYYY-MM-DD] [--estimate n] [--hill 0-100] [--evergreen]
            [--reminders 1440,60,0] [--repeat 1:week:due] [--snooze UTC-date]
            [--cover-color #RRGGBB] [--field id=value ...]
   card show <id> [--json]
@@ -108,7 +108,7 @@ usage: botflow <command> [args]
   card snooze <id> --until <UTC-date> | --off
   card edit <id> [--title t] [--labels a,b] [--priority p|none]
            [--assignee name|none] [--delegate name|none] [--deps 1,2]
-           [--start date|none] [--due date|none] [--estimate n|none]
+           [--start date|none] [--due date|none] [--estimate n|none] [--hill 0-100|none]
            [--reminders offsets|none] [--repeat every:unit:from|none]
            [--snooze UTC-date|none]
            [--evergreen true|false] [--board-path <dir>]
@@ -528,6 +528,7 @@ function runCard(argv: string[]): number {
         repeat: { type: 'string' },
         snooze: { type: 'string' },
         estimate: { type: 'string' },
+        hill: { type: 'string' },
         evergreen: { type: 'boolean' },
         'cover-color': { type: 'string' },
         field: { type: 'string', multiple: true },
@@ -556,6 +557,7 @@ function runCard(argv: string[]): number {
         repeat: repeatValue(values['repeat'] as string | undefined) ?? undefined,
         snooze: values['snooze'] as string | undefined,
         estimate: values['estimate'] === undefined ? undefined : Number(values['estimate']),
+        hill: values['hill'] === undefined ? undefined : Number(values['hill']),
         evergreen: values['evergreen'] === true ? true : undefined,
         coverColor: values['cover-color'] as string | undefined,
         fields: fieldAssignments(root, values['field'] as string[] | undefined),
@@ -666,6 +668,7 @@ function runCard(argv: string[]): number {
         repeat: { type: 'string' },
         snooze: { type: 'string' },
         estimate: { type: 'string' },
+        hill: { type: 'string' },
         evergreen: { type: 'string' },
         'board-path': { type: 'string' },
         cover: { type: 'string' },
@@ -690,6 +693,10 @@ function runCard(argv: string[]): number {
       if (values['estimate'] !== undefined) {
         const value = values['estimate'] as string;
         patch.estimate = value === 'none' ? null : Number(value);
+      }
+      if (values['hill'] !== undefined) {
+        const value = values['hill'] as string;
+        patch.hill = value === 'none' ? null : Number(value);
       }
       if (values['evergreen'] !== undefined) {
         const value = values['evergreen'];

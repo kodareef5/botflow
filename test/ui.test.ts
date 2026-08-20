@@ -333,6 +333,36 @@ test('ui: compact cards and editors expose structured presentation data', () => 
   assert.match(app, /ME\.kind==='bot'\?c\.delegate:c\.assignee/, 'bot ownership follows delegation rather than overwriting accountability');
 });
 
+test('ui: alternate views share card data, supported axes mutate their source field, and Hill dots stay manual', () => {
+  const app = scripts.join('\n');
+  for (const hook of [
+    'id="boardlayout"', "['kanban','table','swimlane','calendar','timeline','grouped','metrics','hill']",
+    'function tableHtml(', 'function groupedHtml(', 'function swimlaneHtml(', 'function calendarHtml(',
+    'function timelineHtml(', 'function metricsHtml(', 'function hillHtml(', 'function visibleCards(',
+    'data-axis-value=', 'function assignAxisUi(', 'data-hill=', 'function saveHill(',
+    'cumulative flow', 'average cycle days', 'Manual uncertainty',
+  ]) assert.ok(app.includes(hook), `view UI missing ${hook}`);
+  assert.match(app, /patch\.fields=\{\[axis\.field\.id\]:next\}/, 'grouping by a custom axis edits that declared field');
+  assert.match(app, /patch\.labels=.*axis\.group/, 'grouping by a scoped label edits the scoped label value');
+  assert.match(app, /body:JSON\.stringify\(\{hill:value\}\)/, 'a Hill drag persists only its explicit final position');
+  assert.match(app, /plotted=cards\.filter\(c=>c\.hill!=null\)/, 'unplotted work does not collapse into one inaccessible dot');
+  assert.match(app, /data-hill-init=/, 'an unplotted active card has an explicit keyboard-accessible starting action');
+  assert.match(app, /completionDates=filtered\?cards\.map/, 'filtered metrics derive completion counts from the visible cards');
+  assert.match(app, /Cumulative flow and WIP breaches remain whole-board measures/, 'metrics identify the historical aggregates that cannot be filtered client-side');
+  assert.match(app, /if\(LAYOUT==='kanban'\)requestAnimationFrame/, 'dependency strings are drawn only where card geometry is unambiguous');
+});
+
+test('ui: emitted calendar JavaScript recognizes ISO card dates', () => {
+  const app = scripts.join('\n');
+  const start = app.indexOf('function isoDay(');
+  const end = app.indexOf('function utcDay(', start);
+  assert.ok(start !== -1 && end > start, 'date projection helper found');
+  const context: Record<string, unknown> = {};
+  runInNewContext(`${app.slice(start, end)};valid=isoDay('2026-08-20');invalid=isoDay('August 20')`, context);
+  assert.equal(context['valid'], '2026-08-20');
+  assert.equal(context['invalid'], null);
+});
+
 test('ui: scheduling, WIP policy, named blockers, and safe automation are reachable', () => {
   const app = scripts.join('\n');
   for (const hook of [

@@ -64,6 +64,7 @@ export function cardJson(card: Card, node: BoardNode, ba: BoardAnalysis, nowValu
     repeat: card.repeat === null ? null : { every: card.repeat.every, unit: card.repeat.unit, from: card.repeat.from, ...card.repeat.extra },
     snooze: card.snooze,
     estimate: card.estimate,
+    hill: card.hill,
     evergreen: card.evergreen,
     blocked: card.blocked,
     blocker: card.blocker,

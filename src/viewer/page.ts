@@ -56,6 +56,7 @@ header{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--page) 
 h1{font:650 17px/1.2 var(--display);display:flex;gap:10px;align-items:baseline}
 h1 .sub{color:var(--muted);font-size:12px;font-weight:400}
 select,header button{font:inherit;color:var(--ink);background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:3px 8px;cursor:pointer}
+.viewctl{display:flex;gap:5px;align-items:center}.viewctl select{max-width:150px}.viewctl [hidden]{display:none}
 select:focus-visible,button:focus-visible,[data-card]:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
 .meter{display:flex;align-items:center;gap:8px}
 .meter .track{width:160px;height:8px;border-radius:4px;background:var(--grid);overflow:hidden}
@@ -75,7 +76,8 @@ select:focus-visible,button:focus-visible,[data-card]:focus-visible{outline:2px 
 .lintchips .w{color:#c47317;font-weight:650}
 .themectl{display:flex;gap:6px;align-items:center}
 .themectl .lbl{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
-main{display:flex;gap:12px;padding:16px 20px 40px;overflow-x:auto;align-items:flex-start;position:relative}
+main{display:block;padding:16px 20px 40px;overflow-x:auto;position:relative}
+main[data-layout=kanban]{display:flex;gap:12px;align-items:flex-start}
 .relsvg{position:absolute;inset:0;overflow:visible;pointer-events:none;z-index:1}
 .relsvg path{fill:none;stroke:var(--st-blocked);stroke-width:2;opacity:.58;vector-effect:non-scaling-stroke}
 .relsvg path.resolved{stroke:var(--muted);stroke-dasharray:4 4;opacity:.4}
@@ -127,12 +129,19 @@ footer h3{font-size:13px;margin-bottom:8px;color:var(--ink2)}
 #drawer .body pre{background:var(--page);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:10px;overflow-x:auto;font:12px ui-monospace,Menlo,monospace;margin:6px 0}
 .relations{display:flex;flex-direction:column;gap:5px;margin:8px 0 14px}.relation{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:5px 7px;font-size:12px}.relation .rtype{font-weight:650}.relation .rsrc{color:var(--muted);font-size:11px}
 .empty{color:var(--muted);font-size:12px;padding:6px 4px}
+.cardtable{border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);overflow:auto;background:var(--surface)}.cardtable table{border-collapse:collapse;width:100%;min-width:980px;font-size:13px}.cardtable td,.cardtable th{text-align:left;padding:7px 9px;border-bottom:var(--bw) var(--bs) var(--grid)}.cardtable th{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}.cardtable th button{border:0;background:none;padding:0;color:inherit;text-transform:inherit;letter-spacing:inherit}.cardtable tr[data-card]{cursor:pointer}.cardtable tr[data-card]:hover{background:var(--surface2)}.cardtable .mono{font:11px ui-monospace,Menlo,monospace}.cardtable .titlecell{min-width:210px;font-weight:600}
+.axiscols{display:flex;gap:12px;align-items:flex-start}.axiscol{background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);min-width:270px;width:270px;padding:10px;box-shadow:var(--shadow)}.axiscol h2{font:700 12px/1.25 var(--display);text-transform:uppercase;letter-spacing:.04em;color:var(--ink2);padding:2px 4px 8px}.axiscol h2 span{color:var(--muted);font-weight:400}
+.swimwrap{overflow:auto;border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);background:var(--surface)}.swim{display:grid;min-width:max-content}.swimhead,.swimlabel,.swimcell{padding:8px;border-right:var(--bw) var(--bs) var(--grid);border-bottom:var(--bw) var(--bs) var(--grid)}.swimhead{position:sticky;top:0;z-index:4;background:var(--surface2);font:700 11px var(--display);text-transform:uppercase;color:var(--ink2)}.swimlabel{position:sticky;left:0;z-index:3;background:var(--surface2);font-weight:650;min-width:150px}.swimlabel small{display:block;color:var(--muted);font-weight:400}.swimcell{width:240px;min-height:72px}.swimcell .card{margin:0 0 6px}
+.calendar .calbar{display:flex;justify-content:center;align-items:center;gap:8px;margin-bottom:8px}.calbar h2{font:700 14px var(--display);min-width:170px;text-align:center}.calgrid{display:grid;grid-template-columns:repeat(7,minmax(120px,1fr));min-width:840px;border-top:var(--bw) var(--bs) var(--grid);border-left:var(--bw) var(--bs) var(--grid);background:var(--surface)}.caldayname{padding:5px 7px;background:var(--surface2);font-size:10px;text-transform:uppercase;color:var(--muted);border-right:var(--bw) var(--bs) var(--grid);border-bottom:var(--bw) var(--bs) var(--grid)}.calday{min-height:110px;padding:5px;border-right:var(--bw) var(--bs) var(--grid);border-bottom:var(--bw) var(--bs) var(--grid)}.calday.out{background:var(--page);opacity:.62}.calday.today{box-shadow:inset 0 0 0 2px var(--acc)}.caldate{font:11px ui-monospace,Menlo,monospace;color:var(--muted);margin-bottom:4px}.calcard{display:block;width:100%;text-align:left;border:0;border-left:3px solid var(--state-color);background:var(--surface2);color:var(--ink);padding:3px 5px;margin:3px 0;font:11px var(--font);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.timeline{min-width:760px}.tlaxis{margin-left:230px;display:flex;justify-content:space-between;color:var(--muted);font:10px ui-monospace,Menlo,monospace;padding-bottom:5px}.tlrow{display:grid;grid-template-columns:220px minmax(520px,1fr);gap:10px;align-items:center;min-height:38px}.tllabel{border:0;background:none;text-align:left;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}.tllabel code{font-size:10px;color:var(--muted)}.tltrack{height:24px;position:relative;border-left:var(--bw) var(--bs) var(--grid);border-right:var(--bw) var(--bs) var(--grid);background:repeating-linear-gradient(90deg,var(--surface2) 0,var(--surface2) 1px,transparent 1px,transparent 10%)}.tlbar{position:absolute;top:4px;height:16px;min-width:5px;border:0;border-radius:999px;background:var(--state-color);cursor:pointer}
+.metricgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.metric{background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);padding:13px;box-shadow:var(--shadow)}.metric b{display:block;font:700 22px/1 var(--display)}.metric span{font-size:11px;color:var(--muted)}.chartgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin-top:12px}.chart{background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);padding:12px}.chart h2{font:700 12px var(--display);margin-bottom:8px}.bars{height:150px;display:flex;align-items:flex-end;gap:3px;border-bottom:var(--bw) var(--bs) var(--grid)}.bars i{flex:1;min-width:2px;background:var(--acc)}.cfbars{height:150px;display:flex;align-items:flex-end;gap:2px}.cfbar{flex:1;height:100%;display:flex;flex-direction:column-reverse}.cfbar i{display:block;min-height:1px}.metriclist{display:grid;gap:5px;font-size:12px}.metriclist div{display:flex;gap:10px}.metriclist b{margin-left:auto}
+.hillview{background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);padding:14px;box-shadow:var(--shadow)}.hillnote{color:var(--muted);font-size:12px;margin-bottom:8px}.hillplot{height:270px;position:relative;overflow:hidden;border-bottom:var(--bw) var(--bs) var(--grid)}.hillplot svg{position:absolute;inset:18px 4% 34px;width:92%;height:200px}.hillplot path{fill:none;stroke:var(--grid);stroke-width:5;vector-effect:non-scaling-stroke}.hillplot .crest{position:absolute;left:50%;top:17px;bottom:34px;border-left:1px dashed var(--grid)}.hillphase{position:absolute;bottom:8px;color:var(--muted);font-size:11px}.hillphase.up{left:10%}.hillphase.down{right:10%}.hilldot{position:absolute;width:18px;height:18px;border-radius:50%;transform:translate(-50%,-50%);background:var(--state-color);border:3px solid var(--surface);box-shadow:0 1px 5px rgba(0,0,0,.3)}.hilldot.unset{background:var(--muted);opacity:.7}.hilllegend{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:6px;margin-top:10px}.hillitem{display:flex;align-items:center;gap:7px;font-size:12px}.hillitem i{width:9px;height:9px;border-radius:50%;background:var(--state-color)}.hillitem button{border:0;background:none;padding:2px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.hillitem code{margin-left:auto;color:var(--muted);font-size:10px}
 
 @media (max-width: 760px){
   header{padding:10px 12px;gap:10px 16px}
   .meter .track{width:90px}
   .dist{min-width:0}
-  main{padding:10px 12px 30px;scroll-snap-type:x mandatory}
+  main{padding:10px 12px 30px}main[data-layout=kanban]{scroll-snap-type:x mandatory}
   .col{width:84vw;min-width:84vw;scroll-snap-align:start}
   #drawer{width:100vw}
   .themectl{order:9}
@@ -163,8 +172,11 @@ html[data-style=blockparty] .statechip{border:1px solid var(--grid);font-weight:
 const CLIENT_JS = `
 const ORDER=['wishlist','todo','blocked','doing','done','archive'];
 const $=(s,el)=>(el||document).querySelector(s);
-const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let DATA=window.__BOTFLOW__||null,CUR='.',LIVE=window.__LIVE__===true;
+let LAYOUT=localStorage.getItem('bfv_layout')||'kanban';
+if(!['kanban','table','swimlane','calendar','timeline','grouped','metrics','hill'].includes(LAYOUT))LAYOUT='kanban';
+let GROUP_AXIS=localStorage.getItem('bfv_group_axis')||'assignee',SWIM_AXIS=localStorage.getItem('bfv_swim_axis')||'assignee',CAL_MONTH=null,TABLE_SORT='id',TABLE_DESC=false;
 // ---- shared theme layer (same worlds as the hosted manager) ----
 const THEMES=window.__THEMES__;
 const mq=matchMedia('(prefers-color-scheme: dark)');
@@ -259,6 +271,41 @@ function cardHtml(c){
       +(child?'<div class="mini" title="child progress '+pct(child.progress)+'"><i style="width:'+Math.round((child.progress||0)*100)+'%"></i></div>':'')
       +'</div>':'')
     +'</div></div>'}
+function flatCards(b){return (b.lanes||[]).flatMap(l=>l.cards||[])}
+function cardField(c,id){const f=(c.fields||[]).find(x=>x.id===id);return f?f.value:null}
+function uniqValues(values){const seen=new Set(),out=[];for(const raw of values){if(raw===null||raw===undefined||raw==='')continue;const id=String(raw);if(!seen.has(id)){seen.add(id);out.push({id:id,label:id})}}return out.sort((a,z)=>a.label.localeCompare(z.label))}
+function axisDefs(b){
+  const cards=flatCards(b),defs=[{id:'lane',label:'lane',kind:'lane',values:(b.lanes||[]).map(l=>({id:l.id,label:l.name}))},
+    {id:'assignee',label:'assignee',kind:'assignee',values:uniqValues(cards.map(c=>c.assignee))},
+    {id:'delegate',label:'delegate',kind:'delegate',values:uniqValues(cards.map(c=>c.delegate))},
+    {id:'priority',label:'priority',kind:'priority',values:['p0','p1','p2','p3'].map(id=>({id:id,label:id}))}];
+  const groups=new Map();for(const c of cards)for(const l of c.labelDetails||[])if(l.group){if(!groups.has(l.group))groups.set(l.group,new Set());groups.get(l.group).add(l.value)}
+  for(const l of b.labels||[]){const at=l.id.indexOf('/');if(at>0&&at<l.id.length-1){const g=l.id.slice(0,at),v=l.id.slice(at+1);if(!groups.has(g))groups.set(g,new Set());groups.get(g).add(v)}}
+  for(const [group,values] of [...groups].sort((a,z)=>a[0].localeCompare(z[0])))defs.push({id:'label:'+group,label:'label · '+group,kind:'label',group:group,values:uniqValues([...values])});
+  for(const f of b.fields||[]){if(!['select','person','checkbox'].includes(f.type))continue;const values=f.type==='select'?(f.options||[]).map(id=>({id:id,label:id})):f.type==='checkbox'?[{id:'true',label:'yes'},{id:'false',label:'no'}]:uniqValues(cards.map(c=>cardField(c,f.id)));defs.push({id:'field:'+f.id,label:'field · '+f.name,kind:'field',field:f,values:values})}
+  return defs;
+}
+function axisValue(axis,c){if(axis.kind==='lane')return c.lane||'';if(axis.kind==='assignee'||axis.kind==='delegate'||axis.kind==='priority')return c[axis.kind]||'';if(axis.kind==='label'){const l=(c.labelDetails||[]).find(x=>x.group===axis.group);return l?String(l.value):''}const value=cardField(c,axis.field.id);return value===null||value===undefined||value===''?'':String(value)}
+function chosenAxis(b,id){const axes=axisDefs(b);return axes.find(a=>a.id===id)||axes[0]}
+function syncViewControls(b){
+  const layout=$('#layout');if(layout)layout.value=LAYOUT;const ctl=$('#axis');if(!ctl)return;const grouped=LAYOUT==='grouped'||LAYOUT==='swimlane';ctl.hidden=!grouped;if(!grouped)return;
+  const axes=axisDefs(b),wanted=LAYOUT==='grouped'?GROUP_AXIS:SWIM_AXIS,selected=axes.some(a=>a.id===wanted)?wanted:'assignee';if(LAYOUT==='grouped')GROUP_AXIS=selected;else SWIM_AXIS=selected;
+  ctl.innerHTML=axes.map(a=>'<option value="'+esc(a.id)+'"'+(a.id===selected?' selected':'')+'>'+esc(a.label)+'</option>').join('');
+}
+function tableValue(c,key){if(key==='title')return c.title||'';if(key==='state')return c.state||'';if(key==='lane')return c.position||'';if(key==='assignee')return c.assignee||'';if(key==='due')return c.due||'';if(key==='estimate')return c.estimate??-1;if(key==='hill')return c.hill??-1;return c.id||''}
+function tableHtml(b){const cards=[...flatCards(b)].sort((a,z)=>{const av=tableValue(a,TABLE_SORT),zv=tableValue(z,TABLE_SORT),n=typeof av==='number'&&typeof zv==='number'?av-zv:String(av).localeCompare(String(zv),undefined,{numeric:true});return TABLE_DESC?-n:n});const th=(key,label)=>'<th><button data-sort="'+key+'">'+label+(TABLE_SORT===key?(TABLE_DESC?' ↓':' ↑'):'')+'</button></th>';
+  return '<div class="cardtable"><table><thead><tr>'+th('id','id')+th('title','title')+th('state','state')+th('lane','position')+th('assignee','assignee')+'<th>delegate</th><th>priority</th>'+th('due','due')+th('estimate','estimate')+th('hill','hill')+'<th>labels</th><th>idle</th></tr></thead><tbody>'+cards.map(c=>'<tr data-card="'+esc(c.id)+'" tabindex="0"><td class="mono">'+esc(c.id)+'</td><td class="titlecell">'+esc(c.title)+'</td><td><span class="statechip" style="background:'+stateColor(c.state)+'">'+esc(c.state)+'</span></td><td class="mono">'+esc(c.position)+'</td><td>'+esc(c.assignee||'—')+'</td><td>'+esc(c.delegate||'—')+'</td><td>'+esc(c.priority||'—')+'</td><td class="mono">'+esc(c.due||'—')+'</td><td>'+esc(c.estimate??'—')+'</td><td>'+esc(c.hill??'—')+'</td><td>'+esc((c.labels||[]).join(', '))+'</td><td>'+esc(c.metrics&&c.metrics.idleDays!=null?c.metrics.idleDays+'d':'—')+'</td></tr>').join('')+'</tbody></table></div>'}
+function groupedHtml(b){const cards=flatCards(b),axis=chosenAxis(b,GROUP_AXIS),values=axis.kind==='lane'?(axis.values||[]):[{id:'',label:'unset'}].concat(axis.values||[]);return '<div class="axiscols">'+values.map(v=>{const cs=cards.filter(c=>axisValue(axis,c)===v.id);return '<section class="axiscol"><h2>'+esc(v.label)+' <span>'+cs.length+'</span></h2>'+(cs.length?cs.map(cardHtml).join(''):'<div class="empty">·</div>')+'</section>'}).join('')+'</div>'}
+function swimlaneHtml(b){const cards=flatCards(b),axis=chosenAxis(b,SWIM_AXIS),lanes=b.lanes||[];let values=(axis.kind==='lane'?(axis.values||[]):[{id:'',label:'unset'}].concat(axis.values||[])).filter(v=>cards.some(c=>axisValue(axis,c)===v.id));if(!values.length)values=[{id:'',label:'unset'}];let out='<div class="swimwrap"><div class="swim" style="grid-template-columns:160px repeat('+lanes.length+',240px)"><div class="swimhead">'+esc(axis.label)+'</div>'+lanes.map(l=>'<div class="swimhead">'+esc(l.name)+'</div>').join('');for(const v of values){const row=cards.filter(c=>axisValue(axis,c)===v.id);out+='<div class="swimlabel">'+esc(v.label)+'<small>'+row.length+' card'+(row.length===1?'':'s')+'</small></div>';for(const lane of lanes){const cs=row.filter(c=>c.lane===lane.id);out+='<div class="swimcell">'+(cs.length?cs.map(cardHtml).join(''):'<span class="empty">·</span>')+'</div>'}}return out+'</div></div>'}
+function isoDay(value){const s=String(value||'').slice(0,10);return /^\\d{4}-\\d{2}-\\d{2}$/.test(s)?s:null}function utcDay(value){const s=isoDay(value);return s?Math.floor(Date.parse(s+'T00:00:00Z')/86400000):null}function dayIso(day){return new Date(day*86400000).toISOString().slice(0,10)}
+function calendarHtml(b){const cards=flatCards(b).filter(c=>isoDay(c.due)),now=new Date(),fallback=now.toISOString().slice(0,7);if(!CAL_MONTH)CAL_MONTH=fallback;let p=CAL_MONTH.split('-').map(Number),year=p[0],month=p[1]-1;if(!Number.isInteger(year)||month<0||month>11){CAL_MONTH=fallback;p=CAL_MONTH.split('-').map(Number);year=p[0];month=p[1]-1}const first=Math.floor(Date.UTC(year,month,1)/86400000),start=first-new Date(first*86400000).getUTCDay(),today=now.toISOString().slice(0,10),name=new Intl.DateTimeFormat(undefined,{month:'long',year:'numeric',timeZone:'UTC'}).format(new Date(Date.UTC(year,month,1)));let out='<div class="calendar"><div class="calbar"><button data-cal="-1">←</button><h2>'+esc(name)+'</h2><button data-cal="today">today</button><button data-cal="1">→</button></div><div class="calgrid">'+['sun','mon','tue','wed','thu','fri','sat'].map(d=>'<div class="caldayname">'+d+'</div>').join('');for(let i=0;i<42;i++){const day=start+i,date=dayIso(day),inside=new Date(day*86400000).getUTCMonth()===month;out+='<div class="calday '+(inside?'':'out ')+(date===today?'today':'')+'"><div class="caldate">'+date.slice(8)+'</div>'+cards.filter(c=>isoDay(c.due)===date).map(c=>'<button class="calcard" style="--state-color:'+stateColor(c.state)+'" data-card="'+esc(c.id)+'">'+esc(c.id+' '+c.title)+'</button>').join('')+'</div>'}return out+'</div></div>'}
+function timelineHtml(b){const cards=flatCards(b).filter(c=>isoDay(c.start)||isoDay(c.due));if(!cards.length)return '<div class="empty">No cards have a start or due date.</div>';const spans=cards.map(c=>{const s=utcDay(c.start),d=utcDay(c.due),a=s??d,z=d??s;return {c:c,start:Math.min(a,z),end:Math.max(a,z)}});let min=Math.min(...spans.map(x=>x.start)),max=Math.max(...spans.map(x=>x.end));if(min===max){min--;max++}const range=max-min+1,tick=n=>dayIso(Math.round(min+(range-1)*n));return '<div class="timeline"><div class="tlaxis"><span>'+tick(0)+'</span><span>'+tick(.25)+'</span><span>'+tick(.5)+'</span><span>'+tick(.75)+'</span><span>'+tick(1)+'</span></div>'+spans.sort((a,z)=>a.start-z.start).map(x=>'<div class="tlrow"><button class="tllabel" data-card="'+esc(x.c.id)+'"><code>'+esc(x.c.id)+'</code> '+esc(x.c.title)+'</button><div class="tltrack"><button class="tlbar" data-open-card="'+esc(x.c.id)+'" style="left:'+((x.start-min)/range*100)+'%;width:'+Math.max(100/range,(x.end-x.start+1)/range*100)+'%;--state-color:'+stateColor(x.c.state)+'" aria-label="'+esc(dayIso(x.start)+' through '+dayIso(x.end))+'"></button></div></div>').join('')+'</div>'}
+function avg(values){return values.length?Math.round(values.reduce((a,n)=>a+n,0)/values.length*10)/10:null}
+function metricsHtml(b){const cards=flatCards(b),active=cards.filter(c=>!['done','archive'].includes(c.state)),done=cards.filter(c=>c.state==='done'),overdue=cards.filter(c=>c.metrics&&c.metrics.due&&c.metrics.due.status==='overdue'),cycle=cards.map(c=>c.metrics&&c.metrics.cycleDays).filter(n=>n!=null),lead=cards.map(c=>c.metrics&&c.metrics.leadDays).filter(n=>n!=null),idle=active.map(c=>c.metrics&&c.metrics.idleDays).filter(n=>n!=null),throughput=(b.flow&&b.flow.throughput)||[],last7=throughput.slice(-7).reduce((n,x)=>n+x.count,0),last30=throughput.reduce((n,x)=>n+x.count,0),wip=(b.lanes||[]).filter(l=>l.wip!=null&&l.cards.length>l.wip).length,metric=(value,label)=>'<div class="metric"><b>'+esc(value)+'</b><span>'+esc(label)+'</span></div>',max=Math.max(1,...throughput.map(x=>x.count)),flow=(b.flow&&b.flow.cumulativeFlow)||[],flowMax=Math.max(1,...flow.map(x=>ORDER.reduce((n,s)=>n+(x.distribution[s]||0),0))),blockers=Object.entries((b.flow&&b.flow.blockerDays)||{}).sort((a,z)=>z[1]-a[1]),age=[0,1,2,3].map(level=>[level,active.filter(c=>(c.metrics&&c.metrics.agingLevel||0)===level).length]);return '<div class="metricgrid">'+metric(cards.length,'cards')+metric(active.length,'active')+metric((b.ready||[]).length,'ready')+metric(overdue.length,'overdue')+metric(last7,'completed · 7d')+metric(last30,'completed · 30d')+metric(avg(cycle)??'—','average cycle days')+metric(avg(lead)??'—','average lead days')+metric(avg(idle)??'—','average active idle days')+metric(wip,'WIP breaches')+metric(done.reduce((n,c)=>n+(c.estimate||0),0),'completed estimate')+'</div><div class="chartgrid"><section class="chart"><h2>throughput · 30 UTC days</h2><div class="bars">'+throughput.map(x=>'<i style="height:'+(x.count/max*100)+'%" title="'+esc(x.date+': '+x.count)+'"></i>').join('')+'</div></section><section class="chart"><h2>cumulative flow · 30 UTC days</h2><div class="cfbars">'+flow.map(x=>'<div class="cfbar" title="'+esc(x.date)+'">'+ORDER.map(s=>{const n=x.distribution[s]||0;return n?'<i style="height:'+(n/flowMax*100)+'%;background:'+stateColor(s)+'"></i>':''}).join('')+'</div>').join('')+'</div></section><section class="chart"><h2>active-card aging</h2><div class="metriclist">'+age.map(x=>'<div><span>'+(['fresh','7+ days','14+ days','28+ days'][x[0]])+'</span><b>'+x[1]+'</b></div>').join('')+'</div></section><section class="chart"><h2>blocked days by reason</h2>'+(blockers.length?'<div class="metriclist">'+blockers.map(x=>'<div><span>'+esc(x[0])+'</span><b>'+x[1]+'d</b></div>').join('')+'</div>':'<div class="empty">no proven blocked intervals</div>')+'</section></div>'}
+function hillY(value){return 20+160*Math.pow((value-50)/50,2)}
+function hillHtml(b){const cards=flatCards(b).filter(c=>c.type!=='board'&&!['done','archive'].includes(c.state)),plotted=cards.filter(c=>c.hill!=null);return '<div class="hillview"><p class="hillnote">Manual uncertainty, not automatic progress. Uphill is discovery; downhill is execution after the approach is understood.</p><div class="hillplot"><svg viewBox="0 0 1000 200" preserveAspectRatio="none" aria-hidden="true"><path d="M 0 180 Q 250 20 500 20 Q 750 20 1000 180"></path></svg><i class="crest"></i><span class="hillphase up">figuring it out · uphill</span><span class="hillphase down">making it happen · downhill</span>'+plotted.map(c=>'<span class="hilldot" style="left:'+(4+c.hill*.92)+'%;top:'+hillY(c.hill)+'px;--state-color:'+stateColor(c.state)+'" title="'+esc(c.id+' '+c.title+' · '+c.hill)+'"></span>').join('')+'</div><div class="hilllegend">'+cards.map(c=>'<div class="hillitem" style="--state-color:'+stateColor(c.state)+'"><i></i><button data-card="'+esc(c.id)+'">'+esc(c.id+' '+c.title)+'</button><code>'+(c.hill==null?'unplotted':c.hill)+'</code></div>').join('')+'</div>'+(cards.length?'':'<div class="empty">no active task cards</div>')+'</div>'}
+function layoutHtml(b){return LAYOUT==='table'?tableHtml(b):LAYOUT==='swimlane'?swimlaneHtml(b):LAYOUT==='calendar'?calendarHtml(b):LAYOUT==='timeline'?timelineHtml(b):LAYOUT==='grouped'?groupedHtml(b):LAYOUT==='metrics'?metricsHtml(b):LAYOUT==='hill'?hillHtml(b):kanbanHtml(b)}
+function kanbanHtml(b){return b.lanes.map(lane=>{const n=lane.cards.length,wip=lane.wip!=null?'<span class="'+(n>lane.wip?'wipbad':'n')+'">'+n+'/'+lane.wip+(n>lane.wip?' WIP!':'')+'</span>':'<span class="n">'+n+'</span>',canon=lane.canonical!==lane.id?'<span class="canon">→'+lane.canonical+'</span>':'';let body='';if(lane.substates.length){for(const sub of lane.substates){const cs=lane.cards.filter(c=>c.substate===sub||(sub===lane.substates[0]&&c.substate==null));if(cs.length)body+='<div class="sub-h">· '+esc(sub)+'</div>'+cs.map(cardHtml).join('')}}else body=lane.cards.map(cardHtml).join('');if(!body)body='<div class="empty">·</div>';const estimate=lane.estimate?'<span class="n">est '+lane.estimate+'</span>':'';return '<section class="col"><h2>'+esc(lane.name)+' '+canon+' '+wip+' '+estimate+'</h2>'+body+'</section>'}).join('')}
 function render(){
   const b=DATA.boards[CUR];if(!b){CUR='.';return render()}
   READY=new Set(b.ready||[]);
@@ -277,22 +324,8 @@ function render(){
   const warns=(b.findings||[]).filter(f=>f.severity==='warning').length;
   $('#lint').innerHTML=(errs?'<a href="#findings"><span class="e">'+errs+' error'+(errs>1?'s':'')+'</span></a>':'')
     +(warns?'<a href="#findings"><span class="w">'+warns+' warning'+(warns>1?'s':'')+'</span></a>':'');
-  $('main').innerHTML=b.lanes.map(lane=>{
-    const n=lane.cards.length;
-    const wip=lane.wip!=null?'<span class="'+(n>lane.wip?'wipbad':'n')+'">'+n+'/'+lane.wip+(n>lane.wip?' WIP!':'')+'</span>':'<span class="n">'+n+'</span>';
-    const canon=lane.canonical!==lane.id?'<span class="canon">→'+lane.canonical+'</span>':'';
-    let body='';
-    if(lane.substates.length){
-      for(const sub of lane.substates){
-        const cs=lane.cards.filter(c=>c.substate===sub||(sub===lane.substates[0]&&c.substate==null));
-        if(cs.length)body+='<div class="sub-h">· '+esc(sub)+'</div>'+cs.map(cardHtml).join('');
-      }
-    }else body=lane.cards.map(cardHtml).join('');
-    if(!body)body='<div class="empty">·</div>';
-    const estimate=lane.estimate?'<span class="n">est '+lane.estimate+'</span>':'';
-    return '<section class="col"><h2>'+esc(lane.name)+' '+canon+' '+wip+' '+estimate+'</h2>'+body+'</section>'
-  }).join('');
-  requestAnimationFrame(()=>drawRelations(b));
+  const main=$('main');main.dataset.layout=LAYOUT;main.innerHTML=layoutHtml(b);syncViewControls(b);
+  if(LAYOUT==='kanban')requestAnimationFrame(()=>drawRelations(b));
   $('#findings').innerHTML=(b.findings||[]).length
     ?'<h3>findings: '+esc(CUR)+'</h3>'+(b.findings||[]).map(f=>'<div class="finding">'+(f.severity==='error'?'<b>error</b>':f.severity==='warning'?'<i>warning</i>':'info')
       +' '+esc(f.rule)+' <b style="color:var(--ink)">'+esc(f.ref)+'</b> · '+esc(f.message)+'</div>').join('')
@@ -325,11 +358,11 @@ function drawRelations(b){
   }
   cols.prepend(svg);
 }
-window.addEventListener('resize',()=>{const b=DATA&&DATA.boards&&DATA.boards[CUR];if(b)drawRelations(b)});
+window.addEventListener('resize',()=>{const b=DATA&&DATA.boards&&DATA.boards[CUR];if(b&&LAYOUT==='kanban')drawRelations(b)});
 function openDrawer(c){
   const d=$('#drawer');
   const rows=[['position',c.position],['state',c.state],['assignee',c.assignee],['delegate',c.delegate],['priority',c.priority],
-    ['start',c.start],['due',c.due],['estimate',c.estimate],['evergreen',c.evergreen?'yes':null],
+    ['start',c.start],['due',c.due],['estimate',c.estimate],['hill',c.hill],['evergreen',c.evergreen?'yes':null],
     ['labels',(c.labels||[]).join(', ')],['deps',(c.deps||[]).join(', ')],['blocked',c.blocked],
     ['watchers',(c.watchers||[]).map(x=>'@'+x).join(', ')],['votes',(c.votes||[]).map(x=>'@'+x).join(', ')],
     ['mentions',(c.mentions||[]).map(x=>'@'+x).join(', ')],['boosts',c.boostCount||null],
@@ -341,7 +374,7 @@ function openDrawer(c){
     ['lead',c.metrics&&c.metrics.leadDays!=null?c.metrics.leadDays+'d':null],
     ['blocked time',c.metrics&&c.metrics.blockedDays?c.metrics.blockedDays+'d':null],
     ['created',c.created],['updated',c.updated],['board',c.board],['file',c.file]]
-    .filter(r=>r[1]);
+    .filter(r=>r[1]!==null&&r[1]!==undefined&&r[1]!=='');
   d.innerHTML='<button class="close" title="close">✕</button>'
     +'<div class="cid">'+esc(c.id)+'</div><h2>'+esc(c.title)+'</h2>'
     +'<span class="statechip" style="background:'+stateColor(c.state)+'">'+c.state+'</span>'
@@ -352,16 +385,20 @@ function openDrawer(c){
   $('.close',d).onclick=()=>d.classList.remove('open');
 }
 document.addEventListener('click',e=>{
+  const sort=e.target.closest('[data-sort]');if(sort){if(TABLE_SORT===sort.dataset.sort)TABLE_DESC=!TABLE_DESC;else{TABLE_SORT=sort.dataset.sort;TABLE_DESC=false}render();return}
+  const cal=e.target.closest('[data-cal]');if(cal){const now=new Date();if(cal.dataset.cal==='today')CAL_MONTH=now.toISOString().slice(0,7);else{const p=(CAL_MONTH||now.toISOString().slice(0,7)).split('-').map(Number),d=new Date(Date.UTC(p[0],p[1]-1+Number(cal.dataset.cal),1));CAL_MONTH=d.toISOString().slice(0,7)}render();return}
   const go=e.target.closest('[data-goto]');
   if(go&&!go.disabled){CUR=go.dataset.goto;render();e.stopPropagation();return}
-  const el=e.target.closest('[data-card]');
-  if(el){const b=DATA.boards[CUR];for(const lane of b.lanes){const c=lane.cards.find(x=>x.id===el.dataset.card);if(c){openDrawer(c);return}}}
+  const el=e.target.closest('[data-card],[data-open-card]');
+  if(el){const id=el.dataset.card||el.dataset.openCard,b=DATA.boards[CUR];for(const lane of b.lanes){const c=lane.cards.find(x=>x.id===id);if(c){openDrawer(c);return}}}
 });
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape')$('#drawer').classList.remove('open');
-  if((e.key==='Enter'||e.key===' ')&&e.target.closest('[data-card]')){e.preventDefault();e.target.closest('[data-card]').click()}
+  if((e.key==='Enter'||e.key===' ')&&e.target.closest('[data-card],[data-open-card]')){e.preventDefault();e.target.closest('[data-card],[data-open-card]').click()}
 });
 $('#switch').addEventListener('change',e=>{CUR=e.target.value;render()});
+$('#layout').addEventListener('change',e=>{LAYOUT=e.target.value;localStorage.setItem('bfv_layout',LAYOUT);render()});
+$('#axis').addEventListener('change',e=>{if(LAYOUT==='grouped'){GROUP_AXIS=e.target.value;localStorage.setItem('bfv_group_axis',GROUP_AXIS)}else{SWIM_AXIS=e.target.value;localStorage.setItem('bfv_swim_axis',SWIM_AXIS)}render()});
 $('#tstyle').innerHTML=THEMES.map(s=>'<option value="'+s.id+'">'+esc(s.name)+'</option>').join('');
 $('#tstyle').addEventListener('change',e=>{THEME.style=e.target.value;THEME.accent=null;saveTheme()});
 $('#taccent').addEventListener('change',e=>{THEME.accent=e.target.value;saveTheme()});
@@ -396,6 +433,9 @@ export function viewerHtml(data: ViewerData | null, opts: { live: boolean; title
   <div class="meter" title="structural progress: every card is one unit; a sub-board fills its unit by its own fraction"><span class="lbl">progress</span><div class="track"><div class="fill" id="pfill" style="width:0"></div></div><span class="num" id="pnum">·</span></div>
   <div class="dist"><div class="strip" id="strip" role="img" aria-label="cards by state"></div><div class="chips" id="chips"></div></div>
   <div class="lintchips" id="lint"></div>
+  <div class="viewctl"><select id="layout" aria-label="board view">
+    <option value="kanban">board</option><option value="table">table</option><option value="swimlane">swimlanes</option><option value="calendar">calendar</option><option value="timeline">timeline</option><option value="grouped">group by field</option><option value="metrics">metrics</option><option value="hill">hill chart</option>
+  </select><select id="axis" aria-label="grouping axis" hidden></select></div>
   <div class="themectl"><span class="lbl">paint</span>
     <select id="tstyle" aria-label="visual style"></select>
     <select id="taccent" aria-label="accent"></select>

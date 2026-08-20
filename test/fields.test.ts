@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { boardFromDocuments } from '../src/core/docs.ts';
-import { validCardDate, validEstimate } from '../src/core/fields.ts';
+import { validCardDate, validEstimate, validHill } from '../src/core/fields.ts';
 import { opAdd, opEdit, UsageError } from '../src/core/ops.ts';
 
 const CONFIG = `botflow: 0
@@ -38,27 +38,39 @@ test('estimate validation is positive, integral, and safely representable', () =
   for (const value of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '5', null]) assert.equal(validEstimate(value), false);
 });
 
+test('Hill Chart positions accept every integer endpoint and nothing outside 0–100', () => {
+  for (const value of [0, 1, 50, 99, 100]) assert.equal(validHill(value), true);
+  for (const value of [-1, 50.5, 101, '50', null]) assert.equal(validHill(value), false);
+});
+
 test('card parser reports invalid structured fields without retaining bad values', () => {
   const board = boardFromDocuments(CONFIG, [{
     path: 'cards/001-bad.md',
-    text: `---\nid: 001\ntitle: bad\nlane: todo\ndelegate: true\nstart: 2026-02-29\ndue: tomorrow\nestimate: 0\nevergreen: yes\n---\n`,
+    text: `---\nid: 001\ntitle: bad\nlane: todo\ndelegate: true\nstart: 2026-02-29\ndue: tomorrow\nestimate: 0\nhill: 101\nevergreen: yes\n---\n`,
   }]);
-  assert.deepEqual(board.findings.map((finding) => finding.rule), ['schema', 'schema', 'schema', 'schema', 'schema']);
+  assert.deepEqual(board.findings.map((finding) => finding.rule), ['schema', 'schema', 'schema', 'schema', 'schema', 'schema']);
   assert.equal(board.cards[0]!.delegate, null);
   assert.equal(board.cards[0]!.start, null);
   assert.equal(board.cards[0]!.due, null);
   assert.equal(board.cards[0]!.estimate, null);
+  assert.equal(board.cards[0]!.hill, null);
   assert.equal(board.cards[0]!.evergreen, false);
 });
 
 test('mutation validation refuses bad dates and estimates before writing them', () => {
   const board = boardFromDocuments(CONFIG, []);
   assert.throws(() => opAdd(board, { title: 'bad', due: 'tomorrow', actor: 'test' }), UsageError);
-  const card = opAdd(board, { title: 'good', due: '2026-08-20', estimate: 3, actor: 'test' });
+  const card = opAdd(board, { title: 'good', due: '2026-08-20', estimate: 3, hill: 0, actor: 'test' });
   assert.equal(card.due, '2026-08-20');
   assert.equal(card.estimate, 3);
+  assert.equal(card.hill, 0);
   assert.throws(() => opEdit(card, { start: '2026-02-29' }, 'test'), UsageError);
   assert.throws(() => opEdit(card, { estimate: 1.5 }, 'test'), UsageError);
+  assert.throws(() => opEdit(card, { hill: 101 }, 'test'), UsageError);
+  opEdit(card, { hill: 100 }, 'test');
+  assert.equal(card.hill, 100);
+  opEdit(card, { hill: null }, 'test');
+  assert.equal(card.hill, null);
 });
 
 test('presentation mutations enforce scoped labels, colors, and typed fields atomically', () => {

@@ -1248,6 +1248,7 @@ export default {
           return json({ error: 'repeat must be an object' }, 400);
         }
         if (body['estimate'] !== undefined && typeof body['estimate'] !== 'number') return json({ error: 'estimate must be a number' }, 400);
+        if (body['hill'] !== undefined && typeof body['hill'] !== 'number') return json({ error: 'hill must be a number' }, 400);
         if (body['evergreen'] !== undefined && typeof body['evergreen'] !== 'boolean') return json({ error: 'evergreen must be a boolean' }, 400);
         if (body['force'] !== undefined && typeof body['force'] !== 'boolean') return json({ error: 'force must be a boolean' }, 400);
         if (body['fields'] !== undefined && (body['fields'] === null || typeof body['fields'] !== 'object' || Array.isArray(body['fields']))) {
@@ -1289,6 +1290,7 @@ export default {
             } : undefined,
             snooze: typeof body['snooze'] === 'string' ? body['snooze'] : undefined,
             estimate: body['estimate'] as number | undefined,
+            hill: body['hill'] as number | undefined,
             evergreen: body['evergreen'] as boolean | undefined,
             coverColor: body['cover_color'] as string | undefined,
             fields: body['fields'] as Record<string, unknown> | undefined,

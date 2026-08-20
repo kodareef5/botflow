@@ -21,3 +21,7 @@ export function validCardDate(value: string): boolean {
 export function validEstimate(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
+
+export function validHill(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 100;
+}

@@ -201,6 +201,30 @@ The CLI runs automation lazily before its work-discovery reads. Hosted projects 
 same on board fetch and schedule the next due action with a Durable Object alarm. The
 state remains rebuildable: exact reminder markers and card Logs are the source of truth.
 
+### Views, grouping, and manual uncertainty
+
+The hosted manager, public board shares, and local read-only viewer can project the
+same cards as a kanban board, sortable table, assignee/label/custom-field swimlanes,
+due-date calendar, start/due timeline, field-grouped columns, a flow-metrics dashboard,
+or a Hill Chart. Search and saved filters apply to the selected hosted layout too.
+Metrics remain derived from card Logs: daily throughput, cumulative flow, cycle/lead
+averages, active aging, WIP breaches, and blocked days by named reason.
+
+Field-grouped columns support lane, assignee, delegate, priority, scoped label groups,
+and declared `select`, `person`, or `checkbox` fields. Dropping a card into another
+group performs the ordinary validated edit of that source field; grouping does not
+create hidden rank or view state.
+
+`hill: 0` through `hill: 100` is different by design. It is a manual uncertainty
+signal: uphill (`0–49`) means the approach is still being figured out, `50` is the
+crest, and downhill (`51–100`) means execution is understood. Nothing advances it
+automatically. Drag its dot in the manager, or edit it explicitly:
+
+```sh
+botflow card edit 012 --hill 38
+botflow card edit 012 --hill none
+```
+
 ## Quickstart (template workspace)
 
 ```sh

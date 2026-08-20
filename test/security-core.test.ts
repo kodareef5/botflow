@@ -47,6 +47,7 @@ function bareCard(over: Partial<Card> = {}): Card {
     repeat: null,
     snooze: null,
     estimate: null,
+    hill: null,
     evergreen: false,
     cover: null,
     coverColor: null,

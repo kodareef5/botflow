@@ -238,6 +238,8 @@ export interface Card {
   snooze: string | null;
   /** Unitless board-local effort points. */
   estimate: number | null;
+  /** Manually placed Hill Chart position, 0–100; never advanced automatically. */
+  hill: number | null;
   /** Suppress stale-card presentation without suppressing metrics. */
   evergreen: boolean;
   /** Card-art cover: an image url, 'none' to suppress, or null (viewers fall
