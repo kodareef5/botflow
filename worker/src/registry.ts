@@ -14,6 +14,7 @@ import {
   validPassword,
   validRole,
   validScopeKind,
+  validStoredPasswordHash,
   validUsername,
   verifyPassword,
   type ProjectLocation,
@@ -94,6 +95,52 @@ export interface ResolvedCapability {
   memberUsername: string | null;
 }
 
+export interface RestoredMember {
+  username: string;
+  display: string;
+  kind: 'human' | 'bot';
+  role: Role;
+  scopeKind: ScopeKind;
+  scopeId: string | null;
+  passHash: string;
+  disabled: boolean;
+  created: string;
+}
+
+export interface RestoredKey {
+  hash: string;
+  username: string;
+  label: string;
+  created: string;
+  revoked: boolean;
+}
+
+export interface RestoredShare {
+  token: string;
+  projectId: string;
+  label: string;
+  created: string;
+  revoked: boolean;
+  cardId: string | null;
+  kind: 'page' | 'feed';
+  memberUsername: string | null;
+  laneId: string | null;
+  filterId: string | null;
+  lastViewed: string | null;
+}
+
+export interface CompanyRestorePlan {
+  name?: string;
+  theme?: Record<string, unknown>;
+  prefs?: Record<string, unknown>;
+  members: RestoredMember[];
+  keys: RestoredKey[];
+  shares: RestoredShare[];
+  importDetail: string;
+  credentialDetail?: string;
+  legacyKeysDetail?: string;
+}
+
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** How long a verified basic-auth credential stays cached in DO memory. A bot
  *  polling a board would otherwise pay a full PBKDF2 derivation every request. */
@@ -154,25 +201,25 @@ export class RegistryDO extends DurableObject {
       CREATE TABLE IF NOT EXISTS shares(id TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, label TEXT NOT NULL, created TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, card_id TEXT, kind TEXT NOT NULL DEFAULT 'page', member_id TEXT, lane_id TEXT, filter_id TEXT, last_viewed TEXT);
       CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL);
     `);
-    try {
-      // Upgrade path for instances created before card-scoped shares.
-      this.sql.exec('ALTER TABLE shares ADD COLUMN card_id TEXT');
-    } catch {
-      // Column already exists (fresh DDL above or a prior upgrade).
-    }
+    // Upgrade old share tables explicitly. A catch-all ALTER handler hides
+    // real migration failures (locked/corrupt tables look exactly like an
+    // already-present column), so inspect the schema and execute only missing
+    // additive changes.
+    const shareColumns = new Set(
+      this.sql.exec('PRAGMA table_info(shares)').toArray().map((row) => row['name'] as string),
+    );
     for (const migration of [
-      "ALTER TABLE shares ADD COLUMN kind TEXT NOT NULL DEFAULT 'page'",
-      'ALTER TABLE shares ADD COLUMN member_id TEXT',
-      'ALTER TABLE shares ADD COLUMN lane_id TEXT',
-      'ALTER TABLE shares ADD COLUMN filter_id TEXT',
-      'ALTER TABLE shares ADD COLUMN last_viewed TEXT',
+      { name: 'card_id', sql: 'ALTER TABLE shares ADD COLUMN card_id TEXT' },
+      { name: 'kind', sql: "ALTER TABLE shares ADD COLUMN kind TEXT NOT NULL DEFAULT 'page'" },
+      { name: 'member_id', sql: 'ALTER TABLE shares ADD COLUMN member_id TEXT' },
+      { name: 'lane_id', sql: 'ALTER TABLE shares ADD COLUMN lane_id TEXT' },
+      { name: 'filter_id', sql: 'ALTER TABLE shares ADD COLUMN filter_id TEXT' },
+      { name: 'last_viewed', sql: 'ALTER TABLE shares ADD COLUMN last_viewed TEXT' },
     ]) {
-      try {
-        this.sql.exec(migration);
-      } catch {
-        // Column already exists.
-      }
+      if (!shareColumns.has(migration.name)) this.sql.exec(migration.sql);
     }
+    this.sql.exec('CREATE INDEX IF NOT EXISTS shares_project_kind ON shares(project_id, kind, revoked, created)');
+    this.sql.exec('CREATE INDEX IF NOT EXISTS shares_member_kind ON shares(member_id, kind, revoked, created)');
     // The members model replaced the admin token and per-project agent keys
     // outright. An instance carrying the old table reports uninitialized (see
     // `initialized()`), re-runs setup behind SETUP_KEY, and keeps its spaces,
@@ -448,73 +495,136 @@ export class RegistryDO extends DurableObject {
       .map((r) => ({ hash: r['hash'] as string, username: r['username'] as string, label: r['label'] as string, created: r['created'] as string, revoked: r['revoked'] === 1 }));
   }
 
-  restoreMember(m: { username: string; display: string; kind: string; role: string; scopeKind: string; scopeId: string | null; passHash: string; disabled: boolean; created: string }): { ok: boolean } {
-    if (!validUsername(m.username) || !validRole(m.role) || !validScopeKind(m.scopeKind)) return { ok: false };
-    // An import is untrusted input that happens to arrive from an owner, so a
-    // restored row is held to the invariants a created one is. A stored hash
-    // must be one this deployment can actually verify, or the account is
-    // unusable-but-present. An owner is org-wide by construction: a row
-    // claiming `owner` with a project scope would render as project-scoped in
-    // the members table while passing every owner gate, since role checks do
-    // not consult scope.
-    if (!/^pbkdf2\$\d+\$[a-f0-9]+\$[a-f0-9]{64}$/.test(m.passHash)) return { ok: false };
-    const scope = this.resolveScope(m.role, m.role === 'owner' ? 'org' : m.scopeKind, m.scopeId);
-    if ('error' in scope) return { ok: false };
-    // Replacing somebody's password must not leave the previous holder logged
-    // in. Restoring the same hash (the ordinary same-instance restore) is not
-    // a credential change, so it must not log the operator out of their own
-    // restore either: compare before writing.
-    const prior = this.sql.exec('SELECT id, pass_hash FROM members WHERE username = ?', m.username).toArray()[0];
-    if (prior && prior['pass_hash'] !== m.passHash) this.endSessionsFor(prior['id'] as string);
-    // Upsert, not insert-or-ignore: a restore puts the company back the way
-    // the export found it. A member that still exists locally (disabled when
-    // its project was deleted, say) must come back live and correctly scoped,
-    // not be silently skipped because the username row survived.
-    this.sql.exec(
-      `INSERT INTO members(id, username, display, kind, role, scope_kind, scope_id, pass_hash, disabled, created)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(username) DO UPDATE SET
-         display = excluded.display, kind = excluded.kind, role = excluded.role,
-         scope_kind = excluded.scope_kind, scope_id = excluded.scope_id,
-         pass_hash = excluded.pass_hash, disabled = excluded.disabled`,
-      `m-${shortId()}`, m.username, cleanName(m.display, m.username), m.kind === 'bot' ? 'bot' : 'human',
-      m.role, scope.kind, scope.id, m.passHash, m.disabled ? 1 : 0, m.created,
+  /** Apply the credential-bearing half of a company restore in one RegistryDO
+   * SQLite transaction. Project trees and integrations are staged first by
+   * the Worker; every member scope and capability target is therefore fully
+   * resolvable before any password, key, share, session, or org setting moves.
+   * A returned error has no registry-side effects. */
+  restoreCompany(plan: CompanyRestorePlan, actor: string):
+    | { ok: true; members: number; keys: number; shares: number }
+    | { error: string } {
+    const memberNames = new Set<string>();
+    const members: RestoredMember[] = [];
+    for (const input of plan.members) {
+      if (memberNames.has(input.username)) return { error: `duplicate restored member "${input.username}"` };
+      memberNames.add(input.username);
+      if (!validUsername(input.username) || !validRole(input.role) || !validScopeKind(input.scopeKind) ||
+          (input.kind !== 'human' && input.kind !== 'bot') || typeof input.display !== 'string' ||
+          typeof input.created !== 'string' || !validStoredPasswordHash(input.passHash)) {
+        return { error: `malformed restored member "${input.username}"` };
+      }
+      const scope = this.resolveScope(input.role, input.role === 'owner' ? 'org' : input.scopeKind, input.role === 'owner' ? null : input.scopeId);
+      if ('error' in scope) return { error: `member "${input.username}": ${scope.error}` };
+      members.push({ ...input, scopeKind: scope.kind, scopeId: scope.id });
+    }
+
+    const projected = new Map<string, { role: Role; disabled: boolean }>();
+    for (const row of this.sql.exec('SELECT username, role, disabled FROM members').toArray()) {
+      if (validRole(row['role'])) projected.set(row['username'] as string, { role: row['role'], disabled: row['disabled'] === 1 });
+    }
+    for (const member of members) projected.set(member.username, { role: member.role, disabled: member.disabled });
+    if (![...projected.values()].some((member) => member.role === 'owner' && !member.disabled)) {
+      return { error: 'this import would leave the company with no live owner' };
+    }
+
+    const existingKeys = new Map(
+      this.sql.exec('SELECT k.hash AS hash, m.username AS username FROM member_keys k JOIN members m ON m.id = k.member_id')
+        .toArray().map((row) => [row['hash'] as string, row['username'] as string]),
     );
+    const keyHashes = new Set<string>();
+    for (const key of plan.keys) {
+      if (!/^[a-f0-9]{64}$/.test(key.hash) || typeof key.label !== 'string' || typeof key.created !== 'string' || !memberNames.has(key.username)) {
+        return { error: `malformed restored api key for "${key.username}"` };
+      }
+      if (keyHashes.has(key.hash)) return { error: `duplicate restored api key hash ${key.hash}` };
+      keyHashes.add(key.hash);
+      const owner = existingKeys.get(key.hash);
+      if (owner !== undefined && owner !== key.username) return { error: `api key hash already belongs to member "${owner}"` };
+    }
+
+    const existingShareTokens = new Set(this.sql.exec('SELECT token FROM shares').toArray().map((row) => row['token'] as string));
+    const shareTokens = new Set<string>();
+    const memberByUsername = new Map(members.map((member) => [member.username, member]));
+    for (const share of plan.shares) {
+      if (!/^[a-f0-9]{16,64}$/.test(share.token) || this.projectName(share.projectId) === null ||
+          typeof share.label !== 'string' || typeof share.created !== 'string') {
+        return { error: `malformed restored share ${share.token}` };
+      }
+      if (shareTokens.has(share.token)) return { error: `duplicate restored share token ${share.token}` };
+      if (existingShareTokens.has(share.token)) return { error: `share token ${share.token} already exists` };
+      shareTokens.add(share.token);
+      if (share.memberUsername !== null && !memberByUsername.has(share.memberUsername)) {
+        return { error: `share ${share.token} names an unknown restored member` };
+      }
+      if ([share.cardId, share.laneId, share.filterId].filter((value) => value !== null).length > 1) {
+        return { error: `share ${share.token} has more than one scope` };
+      }
+      if (share.kind === 'feed') {
+        const member = share.memberUsername === null ? undefined : memberByUsername.get(share.memberUsername);
+        const location = this.locate(share.projectId);
+        if (member === undefined || location === null || !scopeAllows({ kind: member.scopeKind, id: member.scopeId }, location)) {
+          return { error: `feed ${share.token} member does not reach its project` };
+        }
+      }
+    }
+
+    try {
+      this.ctx.storage.transactionSync(() => {
+        if (plan.name !== undefined) this.sql.exec('UPDATE org SET name = ? WHERE id = 1', cleanName(plan.name, 'company'));
+        if (plan.theme !== undefined) {
+          this.sql.exec(
+            "INSERT INTO settings(key, value) VALUES ('theme', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            JSON.stringify(validTheme(plan.theme)),
+          );
+        }
+        if (plan.prefs !== undefined) {
+          this.sql.exec(
+            "INSERT INTO settings(key, value) VALUES ('prefs', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            JSON.stringify({ gateShares: plan.prefs['gateShares'] === true }),
+          );
+        }
+
+        for (const member of members) {
+          const prior = this.sql.exec('SELECT id, pass_hash FROM members WHERE username = ?', member.username).toArray()[0];
+          this.sql.exec(
+            `INSERT INTO members(id, username, display, kind, role, scope_kind, scope_id, pass_hash, disabled, created)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(username) DO UPDATE SET
+               display = excluded.display, kind = excluded.kind, role = excluded.role,
+               scope_kind = excluded.scope_kind, scope_id = excluded.scope_id,
+               pass_hash = excluded.pass_hash, disabled = excluded.disabled, created = excluded.created`,
+            `m-${shortId()}`, member.username, cleanName(member.display, member.username), member.kind,
+            member.role, member.scopeKind, member.scopeId, member.passHash, member.disabled ? 1 : 0, member.created,
+          );
+          if (prior && (prior['pass_hash'] !== member.passHash || member.disabled)) this.endSessionsFor(prior['id'] as string);
+        }
+
+        const memberIds = new Map(this.sql.exec('SELECT id, username FROM members').toArray().map((row) => [row['username'] as string, row['id'] as string]));
+        for (const key of plan.keys) {
+          this.sql.exec(
+            `INSERT INTO member_keys(id, hash, member_id, label, created, revoked) VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(hash) DO UPDATE SET member_id = excluded.member_id, label = excluded.label,
+               created = excluded.created, revoked = excluded.revoked`,
+            `k-${shortId()}`, key.hash, memberIds.get(key.username)!, cleanName(key.label, 'api key'), key.created, key.revoked ? 1 : 0,
+          );
+        }
+        for (const share of plan.shares) {
+          const memberId = share.memberUsername === null ? null : memberIds.get(share.memberUsername) ?? null;
+          this.sql.exec(
+            'INSERT INTO shares(id, token, project_id, label, created, revoked, card_id, kind, member_id, lane_id, filter_id, last_viewed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            `sh-${shortId()}`, share.token, share.projectId, cleanName(share.label, share.kind === 'feed' ? 'activity feed' : 'public link'),
+            share.created, share.revoked ? 1 : 0, share.cardId, share.kind, memberId, share.laneId, share.filterId, share.lastViewed,
+          );
+        }
+        if (plan.legacyKeysDetail !== undefined) this.audit(actor, 'import-legacy-keys-dropped', plan.legacyKeysDetail);
+        if (plan.credentialDetail !== undefined) this.audit(actor, 'import-credentials', plan.credentialDetail);
+        this.audit(actor, 'import', plan.importDetail);
+      });
+    } catch (err) {
+      return { error: `credential restore failed: ${(err as Error).message}` };
+    }
     this.basicCache.clear();
-    return { ok: true };
-  }
-
-  restoreKey(hash: string, username: string, label: string, created: string, revoked: boolean): { ok: boolean } {
-    const row = this.sql.exec('SELECT id FROM members WHERE username = ?', username).toArray()[0];
-    if (!row) return { ok: false };
-    this.sql.exec(
-      'INSERT OR IGNORE INTO member_keys(id, hash, member_id, label, created, revoked) VALUES (?, ?, ?, ?, ?, ?)',
-      `k-${shortId()}`, hash, row['id'] as string, cleanName(label, 'api key'), created, revoked ? 1 : 0,
-    );
-    return { ok: true };
-  }
-
-  restoreShare(
-    token: string,
-    projectId: string,
-    label: string,
-    created: string,
-    revoked: boolean,
-    cardId: string | null = null,
-    kind: 'page' | 'feed' = 'page',
-    memberUsername: string | null = null,
-    laneId: string | null = null,
-    filterId: string | null = null,
-    lastViewed: string | null = null,
-  ): { ok: boolean } {
-    const member = memberUsername === null ? null : this.sql.exec('SELECT id FROM members WHERE username = ?', memberUsername).toArray()[0];
-    if (kind === 'feed' && !member) return { ok: false };
-    this.sql.exec(
-      'INSERT OR IGNORE INTO shares(id, token, project_id, label, created, revoked, card_id, kind, member_id, lane_id, filter_id, last_viewed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      `sh-${shortId()}`, token, projectId, cleanName(label, kind === 'feed' ? 'activity feed' : 'public link'), created, revoked ? 1 : 0,
-      cardId, kind, member?.['id'] ?? null, laneId, filterId, lastViewed,
-    );
-    return { ok: true };
+    return { ok: true, members: members.length, keys: plan.keys.length, shares: plan.shares.length };
   }
 
   resolveShare(token: string, expectedKind: 'page' | 'feed' = 'page'): ResolvedCapability | null {

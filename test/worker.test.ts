@@ -5,14 +5,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
 
-import { setupAccess } from '../worker/src/security.ts';
+import { hashPassword, setupAccess } from '../worker/src/security.ts';
 
 let U = '';
 const SETUP_KEY = 'test-setup-key';
@@ -1216,6 +1216,54 @@ vendor:
       ...exportedParent.integrations.emailSubscriptions,
     ].every((item) => item.active), 'revoked integration tombstones are omitted from restore configuration');
 
+    const beforeCredentialFailure = (await call('/api/org', { token: admin })).body as Record<string, unknown>;
+    const beforeCredentialSettings = (await call('/api/settings', { token: admin })).body;
+    const invalidHash = structuredClone(exported);
+    const invalidHashMembers = invalidHash['members'] as Record<string, unknown>[];
+    invalidHashMembers.find((member) => member['username'] === 'root')!['passHash'] =
+      `pbkdf2$0$${'a'.repeat(32)}$${'b'.repeat(64)}`;
+    const invalidHashImport = await call('/api/org/import', { method: 'PUT', token: admin, body: JSON.stringify(invalidHash) });
+    assert.equal(invalidHashImport.status, 400);
+    assert.match(String(invalidHashImport.body['error']), /malformed member metadata/);
+    assert.deepEqual((await call('/api/org', { token: admin })).body['spaces'], beforeCredentialFailure['spaces'],
+      'an unusable password hash is rejected before staging registry rows');
+
+    const missingScope = structuredClone(exported);
+    const scopedMember = (missingScope['members'] as Record<string, unknown>[]).find((member) => member['username'] === 'watcher')!;
+    scopedMember['scopeKind'] = 'project';
+    scopedMember['scopeId'] = 'project-not-in-export';
+    const missingScopeImport = await call('/api/org/import', { method: 'PUT', token: admin, body: JSON.stringify(missingScope) });
+    assert.equal(missingScopeImport.status, 400);
+    assert.match(String(missingScopeImport.body['error']), /scope does not name an exported project/);
+    assert.deepEqual((await call('/api/org', { token: admin })).body['spaces'], beforeCredentialFailure['spaces']);
+
+    const duplicateKey = structuredClone(exported);
+    (duplicateKey['keys'] as Record<string, unknown>[]).push({ ...(duplicateKey['keys'] as Record<string, unknown>[])[0]! });
+    const duplicateKeyImport = await call('/api/org/import', { method: 'PUT', token: admin, body: JSON.stringify(duplicateKey) });
+    assert.equal(duplicateKeyImport.status, 400);
+    assert.match(String(duplicateKeyImport.body['error']), /duplicate api key hash/);
+
+    const ownerless = structuredClone(exported);
+    ownerless['name'] = 'must not replace the company';
+    ownerless['theme'] = { style: 'harbor', accent: 'pacific', mode: 'light', density: 'relaxed' };
+    for (const member of ownerless['members'] as Record<string, unknown>[]) {
+      if (member['role'] === 'owner') member['disabled'] = true;
+    }
+    const ownerlessImport = await call('/api/org/import', { method: 'PUT', token: admin, body: JSON.stringify(ownerless) });
+    assert.equal(ownerlessImport.status, 400);
+    assert.match(String(ownerlessImport.body['error']), /no live owner/);
+    const afterOwnerless = (await call('/api/org', { token: admin })).body as Record<string, unknown>;
+    assert.equal(afterOwnerless['name'], beforeCredentialFailure['name'], 'failed restore leaves org metadata unchanged');
+    assert.deepEqual(afterOwnerless['spaces'], beforeCredentialFailure['spaces'], 'failed restore removes every staged space');
+    assert.deepEqual(await call('/api/settings', { token: admin }).then((result) => result.body), beforeCredentialSettings,
+      'theme and preferences remain unchanged');
+    assert.equal((await call('/api/whoami', { token: admin })).status, 200, 'failed restore does not revoke the owner session');
+    assert.equal((await call('/api/whoami', { token: key })).status, 200, 'failed restore does not alter existing api keys');
+    const afterFailedCredentialExport = (await call('/api/org/export', { token: admin })).body as Record<string, unknown>;
+    for (const field of ['name', 'theme', 'prefs', 'members', 'keys', 'shares']) {
+      assert.deepEqual(afterFailedCredentialExport[field], exported[field], `failed restore preserves registry ${field}`);
+    }
+
     const malformedV4 = structuredClone(exported);
     const malformedParent = (malformedV4['spaces'] as typeof exportedSpaces)
       .flatMap((item) => item.projects).find((item) => item.id === parent)!;
@@ -1365,6 +1413,9 @@ vendor:
     const exportedNow = (await call('/api/org/export', { token: admin })).body as Record<string, unknown>;
     const narrowed = {
       ...exportedNow,
+      // This case is about owner-scope normalization. Reusing a live share
+      // token for a second restored tree is a deliberate restore conflict.
+      shares: [],
       members: (exportedNow['members'] as Record<string, unknown>[]).map((m) =>
         m['role'] === 'owner' ? { ...m, scopeKind: 'project', scopeId: 'p-anything' } : m),
     };
@@ -1386,26 +1437,49 @@ vendor:
           id: 'old-parent', name: 'mention-parent',
           board: { config: 'botflow: 0\nname: mention-parent\n', cards: [{
             path: 'cards/001-note.md',
-            text: '---\nid: 001\ntitle: Note\nlane: todo\n---\nmentions project:old-child in prose\n',
+            text: `---
+id: 001
+title: Note about project:old-child and project:old-childish
+lane: todo
+deps: ["project:old-child#001", "project:old-childish#001"]
+relations:
+  - type: relates
+    target: "project:old-childish#002"
+---
+mentions project:old-child and project:old-childish in prose
+URL https://example.com/project:old-childish must remain literal.
+Explicit [[project:old-child#001]] and [[project:old-childish#001]] do remap.
+`,
           }] },
-          children: [{ id: 'old-child', name: 'mention-child', children: [] }],
+          children: [
+            { id: 'old-child', name: 'mention-child', children: [] },
+            { id: 'old-childish', name: 'mention-childish', children: [] },
+          ],
         }] }],
       }),
     });
     assert.equal(mentionImport.status, 200, JSON.stringify(mentionImport.body));
     const org3 = (await call('/api/org', { token: admin })).body as {
-      spaces: { name: string; projects: { id: string; children: { id: string }[] }[] }[];
+      spaces: { name: string; projects: { id: string; children: { id: string; name: string }[] }[] }[];
     };
     const mentionParent = org3.spaces.find((s) => s.name === 'mention-space')!.projects[0]!;
-    const mentionChild = mentionParent.children[0]!.id;
+    const mentionChild = mentionParent.children.find((child) => child.name === 'mention-child')!.id;
+    const mentionChildish = mentionParent.children.find((child) => child.name === 'mention-childish')!.id;
     const mentionBoard = (await call(`/api/projects/${mentionParent.id}/board`, { token: admin })).body as {
       lanes: { cards: { type: string; child: string | null }[] }[];
     };
-    assert.equal(
-      mentionBoard.lanes.flatMap((l) => l.cards).filter((c) => c.type === 'board' && c.child === mentionChild).length,
-      1,
-      'restore creates the missing project card based on parsed frontmatter',
-    );
+    const mentionProjectCards = mentionBoard.lanes.flatMap((lane) => lane.cards).filter((card) => card.type === 'board');
+    assert.equal(mentionProjectCards.filter((card) => card.child === mentionChild).length, 1);
+    assert.equal(mentionProjectCards.filter((card) => card.child === mentionChildish).length, 1,
+      'prefix-related ids each create exactly one correctly remapped project card');
+    const mentionNote = (await call(`/api/projects/${mentionParent.id}/cards/001`, { token: admin })).body as Record<string, unknown>;
+    assert.equal(mentionNote['title'], 'Note about project:old-child and project:old-childish', 'titles are prose, not rewrite targets');
+    assert.deepEqual(mentionNote['deps'], [`project:${mentionChild}#001`, `project:${mentionChildish}#001`]);
+    assert.equal((mentionNote['relations'] as { target: string }[])[0]!.target, `project:${mentionChildish}#002`);
+    assert.match(String(mentionNote['body']), /mentions project:old-child and project:old-childish in prose/);
+    assert.match(String(mentionNote['body']), /https:\/\/example\.com\/project:old-childish/);
+    assert.match(String(mentionNote['body']), new RegExp(`\\[\\[project:${mentionChild}#001\\]\\]`));
+    assert.match(String(mentionNote['body']), new RegExp(`\\[\\[project:${mentionChildish}#001\\]\\]`));
 
     // Registry snapshot + delete is one serialized transaction. Children that
     // win the race are included; later creates see no parent. None may survive.
@@ -1532,10 +1606,16 @@ vendor:
   }
 });
 
-test('existing ProjectDO storage gains additive integration tables without losing its board', { timeout: 180_000 }, async () => {
+test('legacy RegistryDO and ProjectDO schemas migrate additively without losing auth, shares, or boards', { timeout: 180_000 }, async () => {
   const state = mkdtempSync(join(tmpdir(), 'botflow-upgrade-'));
   const configPath = join(state, 'wrangler.json');
   const legacyPath = join(state, 'legacy-worker.js');
+  const legacyPassword = 'legacy-password-1';
+  const legacyPassHash = await hashPassword(legacyPassword);
+  const legacySession = `bfu_${'1'.repeat(40)}`;
+  const legacyKey = `bfk_${'2'.repeat(40)}`;
+  const legacyShare = '3'.repeat(40);
+  const digest = (value: string): string => createHash('sha256').update(value).digest('hex');
   const legacySource = String.raw`
 import { DurableObject } from 'cloudflare:workers';
 export class RegistryDO extends DurableObject {
@@ -1543,13 +1623,25 @@ export class RegistryDO extends DurableObject {
     super(ctx, env);
     this.sql = ctx.storage.sql;
     this.sql.exec(
+      'CREATE TABLE IF NOT EXISTS org(id INTEGER PRIMARY KEY CHECK (id = 1), name TEXT NOT NULL, admin_hash TEXT NOT NULL DEFAULT "", created TEXT NOT NULL);' +
       'CREATE TABLE IF NOT EXISTS spaces(id TEXT PRIMARY KEY, name TEXT NOT NULL, created TEXT NOT NULL);' +
-      'CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, space_id TEXT NOT NULL, parent_id TEXT, name TEXT NOT NULL, created TEXT NOT NULL);'
+      'CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, space_id TEXT NOT NULL, parent_id TEXT, name TEXT NOT NULL, created TEXT NOT NULL);' +
+      'CREATE TABLE IF NOT EXISTS members(id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display TEXT NOT NULL, kind TEXT NOT NULL, role TEXT NOT NULL, scope_kind TEXT NOT NULL, scope_id TEXT, pass_hash TEXT NOT NULL, disabled INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL);' +
+      'CREATE TABLE IF NOT EXISTS member_keys(id TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, member_id TEXT NOT NULL, label TEXT NOT NULL, created TEXT NOT NULL, last_used TEXT, revoked INTEGER NOT NULL DEFAULT 0);' +
+      'CREATE TABLE IF NOT EXISTS sessions(hash TEXT PRIMARY KEY, member_id TEXT NOT NULL, created TEXT NOT NULL, expires TEXT NOT NULL);' +
+      'CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);' +
+      'CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL);' +
+      'CREATE TABLE IF NOT EXISTS shares(id TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, label TEXT NOT NULL, created TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);'
     );
   }
   seed() {
+    this.sql.exec("INSERT OR IGNORE INTO org(id, name, admin_hash, created) VALUES (1, 'legacy company', '', '2026-01-01T00:00:00.000Z')");
     this.sql.exec("INSERT OR IGNORE INTO spaces(id, name, created) VALUES ('legacy-space', 'legacy space', '2026-01-01T00:00:00.000Z')");
     this.sql.exec("INSERT OR IGNORE INTO projects(id, space_id, parent_id, name, created) VALUES ('legacy-project', 'legacy-space', NULL, 'legacy project', '2026-01-01T00:00:00.000Z')");
+    this.sql.exec("INSERT OR IGNORE INTO members(id, username, display, kind, role, scope_kind, scope_id, pass_hash, disabled, created) VALUES ('legacy-owner', 'root', 'Legacy Root', 'human', 'owner', 'org', NULL, ?, 0, '2026-01-01T00:00:00.000Z')", ${JSON.stringify(legacyPassHash)});
+    this.sql.exec("INSERT OR IGNORE INTO member_keys(id, hash, member_id, label, created, revoked) VALUES ('legacy-key', ?, 'legacy-owner', 'legacy agent', '2026-01-01T00:00:00.000Z', 0)", ${JSON.stringify(digest(legacyKey))});
+    this.sql.exec("INSERT OR IGNORE INTO sessions(hash, member_id, created, expires) VALUES (?, 'legacy-owner', '2026-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z')", ${JSON.stringify(digest(legacySession))});
+    this.sql.exec("INSERT OR IGNORE INTO shares(id, token, project_id, label, created, revoked) VALUES ('legacy-share', ?, 'legacy-project', 'legacy public board', '2026-01-01T00:00:00.000Z', 0)", ${JSON.stringify(legacyShare)});
     return { ok: true };
   }
 }
@@ -1624,15 +1716,23 @@ export default {
       if (!ready) await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     assert.ok(ready, 'current worker reopened the persisted namespace');
-    const setup = await at('/api/setup', {
-      method: 'POST', body: JSON.stringify({ name: 'upgraded', username: 'root', password: 'upgrade-password-1', setupKey: SETUP_KEY }),
-    });
-    assert.equal(setup.status, 200, JSON.stringify(setup.body));
-    const token = setup.body['token'] as string;
+    assert.equal((await at('/api/org', { token: legacySession })).status, 200, 'a pre-upgrade session survives schema migration');
+    assert.equal((await at('/api/whoami', { token: legacyKey })).status, 200, 'a pre-upgrade api key survives schema migration');
+    const login = await at('/api/login', { method: 'POST', body: JSON.stringify({ username: 'root', password: legacyPassword }) });
+    assert.equal(login.status, 200, 'the existing password hash still authenticates');
+    const token = login.body['token'] as string;
     const board = await at('/api/projects/legacy-project/board', { token });
     assert.equal(board.status, 200, JSON.stringify(board.body));
     assert.ok(((board.body['lanes'] as unknown as { cards: { title: string }[] }[])
       .flatMap((lane) => lane.cards)).some((card) => card.title === 'Kept through upgrade'));
+    assert.equal((await at(`/api/public/${legacyShare}/board`)).status, 200, 'the old page share defaults to kind=page');
+    const shares = (await at('/api/projects/legacy-project/shares', { token })).body as unknown as { token: string; cardId: string | null }[];
+    assert.deepEqual(shares.find((share) => share.token === legacyShare), {
+      id: 'legacy-share', token: legacyShare, label: 'legacy public board', created: '2026-01-01T00:00:00.000Z', revoked: false, cardId: null,
+    });
+    assert.equal((await at('/api/projects/legacy-project/feeds', {
+      method: 'POST', token, body: JSON.stringify({ label: 'after upgrade feed' }),
+    })).status, 200, 'new capability columns and indexes accept writes after migration');
     assert.deepEqual((await at('/api/projects/legacy-project/webhooks', { token })).body['webhooks'], [],
       'new additive tables initialize empty');
     const hook = await at('/api/projects/legacy-project/webhooks', {

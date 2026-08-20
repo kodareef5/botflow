@@ -118,17 +118,39 @@ export async function hashPassword(password: string): Promise<string> {
   return `pbkdf2$${PBKDF2_ITERATIONS}$${toHex(salt)}$${hash}`;
 }
 
+export interface StoredPasswordHash {
+  iterations: number;
+  salt: Uint8Array<ArrayBuffer>;
+  hash: string;
+}
+
+/** One strict parser for every stored-password trust boundary. The salt size
+ * matches hashes this application has ever minted; the iteration ceiling
+ * prevents a hostile import from turning the next login into an unbounded
+ * WebCrypto job. */
+export function parseStoredPasswordHash(stored: unknown): StoredPasswordHash | null {
+  if (typeof stored !== 'string') return null;
+  const parts = stored.split('$');
+  if (parts.length !== 4 || parts[0] !== 'pbkdf2' || !/^[1-9]\d*$/.test(parts[1]!)) return null;
+  const iterations = Number(parts[1]);
+  if (!Number.isSafeInteger(iterations) || iterations < 1 || iterations > 10_000_000) return null;
+  if (parts[2]!.length !== SALT_BYTES * 2 || parts[3]!.length !== KEY_BITS / 4) return null;
+  const salt = fromHex(parts[2]!);
+  if (salt === null || fromHex(parts[3]!) === null) return null;
+  return { iterations, salt, hash: parts[3]! };
+}
+
+export function validStoredPasswordHash(stored: unknown): stored is string {
+  return parseStoredPasswordHash(stored) !== null;
+}
+
 /** Fail closed on anything that is not a well-formed stored hash: a corrupt
  *  or empty pass_hash must never authenticate, least of all against "". */
 export async function verifyPassword(password: string, stored: unknown): Promise<boolean> {
-  if (typeof password !== 'string' || password === '' || typeof stored !== 'string') return false;
-  const parts = stored.split('$');
-  if (parts.length !== 4 || parts[0] !== 'pbkdf2') return false;
-  const iterations = Number(parts[1]);
-  if (!Number.isInteger(iterations) || iterations < 1 || iterations > 10_000_000) return false;
-  const salt = fromHex(parts[2]!);
-  if (salt === null || parts[3]!.length !== KEY_BITS / 4 || fromHex(parts[3]!) === null) return false;
-  return sameSecret(await derive(password, salt, iterations), parts[3]!);
+  if (typeof password !== 'string' || password === '') return false;
+  const parsed = parseStoredPasswordHash(stored);
+  if (parsed === null) return false;
+  return sameSecret(await derive(password, parsed.salt, parsed.iterations), parsed.hash);
 }
 
 let absent: Promise<string> | null = null;

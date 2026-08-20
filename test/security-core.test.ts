@@ -22,7 +22,8 @@ import { UsageError, opAdd, opAttach, opBlock, opChecklistAdd, opComment, opDesc
 import { logMutation, sanitizeActor, sanitizeInline, serializeCard } from '../src/core/write.ts';
 import { YamlError, parseYaml } from '../src/core/yaml.ts';
 import {
-  absentPasswordHash, hashPassword, parseBasic, roleAllows, scopeAllows, unfurlTarget, validUsername, verifyPassword,
+  absentPasswordHash, hashPassword, parseBasic, parseStoredPasswordHash, roleAllows, scopeAllows, unfurlTarget,
+  validStoredPasswordHash, validUsername, verifyPassword,
 } from '../worker/src/security.ts';
 
 function bareCard(over: Partial<Card> = {}): Card {
@@ -422,12 +423,17 @@ test('password hashes round-trip and reject everything malformed', async () => {
   assert.equal(await verifyPassword('correct horse battery staple', stored), true);
   assert.equal(await verifyPassword('correct horse battery stapl', stored), false);
   assert.notEqual(stored, await hashPassword('correct horse battery staple'), 'each hash is separately salted');
+  assert.equal(validStoredPasswordHash(stored), true);
+  assert.equal(parseStoredPasswordHash(stored)?.salt.byteLength, 16);
 
   // A corrupt, empty, or truncated pass_hash must never authenticate: an
   // empty stored value is what a half-written member row would look like.
-  for (const bad of ['', 'garbage', 'pbkdf2$100000$zz$ff', 'pbkdf2$0$aa$' + 'f'.repeat(64),
-    'pbkdf2$100000$aa', stored.slice(0, -1), stored.replace('pbkdf2', 'sha256'),
-    'pbkdf2$-1$aa$' + 'f'.repeat(64), 'pbkdf2$1e9$aa$' + 'f'.repeat(64)]) {
+  for (const bad of ['', 'garbage', 'pbkdf2$100000$zz$ff', 'pbkdf2$0$' + 'a'.repeat(32) + '$' + 'f'.repeat(64),
+    'pbkdf2$100000$aa$' + 'f'.repeat(64), 'pbkdf2$100000$' + 'a'.repeat(34) + '$' + 'f'.repeat(64),
+    stored.slice(0, -1), stored.replace('pbkdf2', 'sha256'), 'pbkdf2$01$' + 'a'.repeat(32) + '$' + 'f'.repeat(64),
+    'pbkdf2$-1$' + 'a'.repeat(32) + '$' + 'f'.repeat(64), 'pbkdf2$1e9$' + 'a'.repeat(32) + '$' + 'f'.repeat(64),
+    'pbkdf2$10000001$' + 'a'.repeat(32) + '$' + 'f'.repeat(64)]) {
+    assert.equal(validStoredPasswordHash(bad), false, `stored ${JSON.stringify(bad)} must fail import validation too`);
     assert.equal(await verifyPassword('anything', bad), false, `stored ${JSON.stringify(bad)} must not authenticate`);
   }
   assert.equal(await verifyPassword('', stored), false, 'an empty password is not a password');

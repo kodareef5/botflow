@@ -12,13 +12,15 @@ import {
 } from '../../src/core/model.ts';
 import { resolvePosition } from '../../src/core/ops.ts';
 import type { BoardDocument } from '../../src/core/docs.ts';
+import { parseCardReference } from '../../src/core/refs.ts';
+import { serializeCard } from '../../src/core/write.ts';
 import { ProjectDO, validateImportDocuments } from './project.ts';
-import { RegistryDO, type Identity, type OrgTree, type ProjectNode } from './registry.ts';
+import { RegistryDO, type Identity, type OrgTree, type ProjectNode, type RestoredMember, type RestoredShare } from './registry.ts';
 import { atomFeed, calendarFeed, rssFeed } from './feeds.ts';
 import { ABOUT_HTML } from './about.ts';
 import { DEMO, type OrgImport, type ProjectImport } from './demo.ts';
 import { readIntegrationSnapshot } from './integration-snapshot.ts';
-import { roleAllows, setupAccess, validRole, validScopeKind, validUsername } from './security.ts';
+import { roleAllows, setupAccess, validRole, validScopeKind, validStoredPasswordHash, validUsername } from './security.ts';
 import { fetchImage, fetchOg } from './unfurl.ts';
 import { uiHtml } from './ui.ts';
 
@@ -221,6 +223,45 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function remapProjectReference(value: string, idMap: ReadonlyMap<string, string>): string {
+  const parsed = parseCardReference(value);
+  if (parsed === null || parsed.boardRef === null || !parsed.boardRef.startsWith('project:')) return value;
+  const restored = idMap.get(parsed.boardRef.slice('project:'.length));
+  return restored === undefined ? value : `project:${restored}#${parsed.cardId}`;
+}
+
+/** Remap only fields whose schema declares them to be project references.
+ * Titles, URLs, comments, descriptions, and logs are ordinary prose; only an
+ * explicit `[[project:<id>#<card>]]` token inside body text is rewritten. */
+function remapImportDocuments(
+  config: string,
+  docs: BoardDocument[],
+  idMap: ReadonlyMap<string, string>,
+): { config: string; docs: BoardDocument[] } | { error: string } {
+  const original = validateImportDocuments(config, docs);
+  if ('error' in original) return original;
+  const remapped = original.board.cards.map((card): BoardDocument => {
+    if (card.boardPath?.startsWith('project:')) {
+      const restored = idMap.get(card.boardPath.slice('project:'.length));
+      if (restored !== undefined) card.boardPath = `project:${restored}`;
+    }
+    card.deps = card.deps.map((reference) => remapProjectReference(reference, idMap));
+    card.relations = card.relations.map((relation) => ({
+      ...relation,
+      target: remapProjectReference(relation.target, idMap),
+      extra: { ...relation.extra },
+    }));
+    card.body = card.body.replace(/\[\[([^\]\r\n]+)\]\]/g, (whole, inner: string) => {
+      const reference = inner.trim();
+      const rewritten = remapProjectReference(reference, idMap);
+      return rewritten === reference ? whole : whole.replace(reference, rewritten);
+    });
+    return { path: card.file, text: serializeCard(card) };
+  });
+  const checked = validateImportDocuments(config, remapped);
+  return 'error' in checked ? checked : { config, docs: remapped };
+}
+
 /** Validate a company import completely before pass 1 creates any registry
  *  rows. Version 1 remains accepted for old/demo payloads; restore-grade v2+
  *  require stable, unique exported project ids. v3 added members and
@@ -233,6 +274,7 @@ function validateOrgImportPayload(value: unknown, allowPrivate = false): string 
   if (!Array.isArray(value['spaces'])) return 'spaces required';
   const version = value['version'] as number;
   const ids = new Set<string>();
+  const spaceIds = new Set<string>();
   const visit = (node: unknown, ref: string): string | null => {
     if (!isRecord(node)) return `${ref} must be a project object`;
     if (typeof node['name'] !== 'string' || node['name'].trim() === '') return `${ref}.name required`;
@@ -279,6 +321,11 @@ function validateOrgImportPayload(value: unknown, allowPrivate = false): string 
     const space = value['spaces'][si];
     if (!isRecord(space)) return `spaces[${si}] must be an object`;
     if (typeof space['name'] !== 'string' || space['name'].trim() === '') return `spaces[${si}].name required`;
+    if (space['id'] !== undefined) {
+      if (typeof space['id'] !== 'string' || space['id'] === '') return `spaces[${si}].id must be a string`;
+      if (spaceIds.has(space['id'])) return `duplicate exported space id: ${space['id']}`;
+      spaceIds.add(space['id']);
+    }
     if (!Array.isArray(space['projects'])) return `spaces[${si}].projects must be a list`;
     for (let pi = 0; pi < space['projects'].length; pi++) {
       const error = visit(space['projects'][pi], `spaces[${si}].projects[${pi}]`);
@@ -292,8 +339,18 @@ function validateOrgImportPayload(value: unknown, allowPrivate = false): string 
       if (!isRecord(m) || !validUsername(m['username']) || typeof m['display'] !== 'string' ||
           (m['kind'] !== 'human' && m['kind'] !== 'bot') || !validRole(m['role']) || !validScopeKind(m['scopeKind']) ||
           (m['scopeId'] !== null && typeof m['scopeId'] !== 'string') ||
-          typeof m['passHash'] !== 'string' || !/^pbkdf2\$\d+\$[a-f0-9]+\$[a-f0-9]{64}$/.test(m['passHash']) ||
+          !validStoredPasswordHash(m['passHash']) ||
           typeof m['disabled'] !== 'boolean' || typeof m['created'] !== 'string') return 'malformed member metadata';
+      if (usernames.has(m['username'])) return `duplicate member username: ${m['username']}`;
+      if (m['role'] !== 'owner') {
+        if (m['scopeKind'] === 'org' && m['scopeId'] !== null) return `member ${m['username']}: org scope must have a null id`;
+        if (m['scopeKind'] === 'space' && (typeof m['scopeId'] !== 'string' || !spaceIds.has(m['scopeId']))) {
+          return `member ${m['username']}: space scope does not name an exported space`;
+        }
+        if (m['scopeKind'] === 'project' && (typeof m['scopeId'] !== 'string' || !ids.has(m['scopeId']))) {
+          return `member ${m['username']}: project scope does not name an exported project`;
+        }
+      }
       usernames.add(m['username']);
     }
   }
@@ -301,14 +358,18 @@ function validateOrgImportPayload(value: unknown, allowPrivate = false): string 
   // that never existed, so they are dropped by the restore, not validated.
   if (version >= 3 && value['keys'] !== undefined) {
     if (!Array.isArray(value['keys'])) return 'keys must be a list';
+    const hashes = new Set<string>();
     for (const key of value['keys']) {
       if (!isRecord(key) || typeof key['hash'] !== 'string' || !/^[a-f0-9]{64}$/.test(key['hash']) ||
           typeof key['username'] !== 'string' || !usernames.has(key['username']) || typeof key['label'] !== 'string' ||
           typeof key['created'] !== 'string' || typeof key['revoked'] !== 'boolean') return 'malformed key metadata';
+      if (hashes.has(key['hash'])) return `duplicate api key hash: ${key['hash']}`;
+      hashes.add(key['hash']);
     }
   }
   if (value['shares'] !== undefined) {
     if (!Array.isArray(value['shares'])) return 'shares must be a list';
+    const tokens = new Set<string>();
     for (const share of value['shares']) {
       if (!isRecord(share) || typeof share['token'] !== 'string' || !/^[a-f0-9]{16,64}$/.test(share['token']) ||
           typeof share['projectId'] !== 'string' || !ids.has(share['projectId']) || typeof share['label'] !== 'string' ||
@@ -319,8 +380,11 @@ function validateOrgImportPayload(value: unknown, allowPrivate = false): string 
           (share['laneId'] !== undefined && share['laneId'] !== null && typeof share['laneId'] !== 'string') ||
           (share['filterId'] !== undefined && share['filterId'] !== null && typeof share['filterId'] !== 'string') ||
           (share['lastViewed'] !== undefined && share['lastViewed'] !== null && typeof share['lastViewed'] !== 'string')) return 'malformed share metadata';
+      if (tokens.has(share['token'])) return `duplicate share token: ${share['token']}`;
+      tokens.add(share['token']);
+      if (typeof share['memberUsername'] === 'string' && !usernames.has(share['memberUsername'])) return 'capability names an unknown member';
       if (share['kind'] === 'feed') {
-        if (typeof share['memberUsername'] !== 'string' || !usernames.has(share['memberUsername'])) return 'feed capability names an unknown member';
+        if (typeof share['memberUsername'] !== 'string') return 'feed capability names an unknown member';
         if ([share['cardId'], share['laneId'], share['filterId']].filter((scope) => typeof scope === 'string' && scope !== '').length > 1) {
           return 'feed capability has more than one scope';
         }
@@ -726,12 +790,6 @@ export default {
         const spaceMap = new Map<string, string>(); // exported space id → restored
         const createdSpaceIds: string[] = [];
         let projects = 0;
-        const previousMetadata = isDemo ? null : {
-          name: status.name ?? 'company',
-          theme: await registry.getTheme(),
-          prefs: await registry.getPrefs(),
-        };
-
         // Pass 1: recreate the tree so every exported id has a new id.
         interface CreatedNode { node: ProjectImport; id: string; children: CreatedNode[] }
         const createTree = async (spaceId: string, parentId: string | null, node: ProjectImport): Promise<CreatedNode> => {
@@ -749,18 +807,14 @@ export default {
         const fillTree = async (created: CreatedNode): Promise<void> => {
           const importedRefs = new Set<string>();
           if (created.node.board) {
-            const rewrite = (text: string): string => {
-              let out = text;
-              for (const [oldId, newId] of idMap) out = out.split(`project:${oldId}`).join(`project:${newId}`);
-              return out;
-            };
-            const docs = created.node.board.cards.map((d) => ({ path: d.path, text: rewrite(d.text) }));
-            const checked = validateImportDocuments(created.node.board.config, docs);
+            const remapped = remapImportDocuments(created.node.board.config, created.node.board.cards, idMap);
+            if ('error' in remapped) throw new Error(remapped.error);
+            const checked = validateImportDocuments(remapped.config, remapped.docs);
             if ('error' in checked) throw new Error(checked.error);
             for (const card of checked.board.cards) {
               if (card.type === 'board' && card.boardPath !== null) importedRefs.add(card.boardPath);
             }
-            const res = (await project(created.id).importDocs(created.node.board.config, docs, actor)) as { error?: unknown };
+            const res = (await project(created.id).importDocs(remapped.config, remapped.docs, actor)) as { error?: unknown };
             if (res.error) throw new Error(String(res.error));
           }
           for (const child of created.children) {
@@ -779,55 +833,82 @@ export default {
           }
         };
         try {
+          const stagedRoots: CreatedNode[][] = [];
           for (const space of payload.spaces) {
             const s = await registry.createSpace(space.name);
             createdSpaceIds.push(s.id);
             if (typeof space.id === 'string') spaceMap.set(space.id, s.id);
             const roots: CreatedNode[] = [];
             for (const p of space.projects) roots.push(await createTree(s.id, null, p));
-            for (const r of roots) await fillTree(r);
+            stagedRoots.push(roots);
           }
+          // All ids exist before any document is rewritten, so forward and
+          // cross-space references remap just as reliably as backward ones.
+          for (const roots of stagedRoots) for (const root of roots) await fillTree(root);
           // Restore-grade metadata: name, theme, prefs, members
           // (password hashes included, or the restore locks its owner out),
           // key hashes (original tokens stay valid), and share links. Members
           // land before keys, which are attached to them by username.
           if (!isDemo) {
-            if (typeof payload.name === 'string') await registry.setOrgName(payload.name);
-            if (payload.theme) await registry.setTheme(payload.theme);
-            if (payload.prefs) await registry.setPrefs(payload.prefs);
-            if ((payload.version as number) < 3 && Array.isArray(payload.keys) && payload.keys.length > 0) {
-              await registry.audit(actor, 'import-legacy-keys-dropped',
-                `${payload.keys.length} pre-members api key(s) in this v${payload.version} export could not be restored; re-issue them from the member's account`);
-            }
-            for (const m of (payload.version as number) >= 3 ? payload.members ?? [] : []) {
-              await registry.restoreMember({
-                ...m,
-                scopeId: m.scopeKind === 'org' || m.scopeId === null
-                  ? null
-                  : (m.scopeKind === 'space' ? spaceMap.get(m.scopeId) : idMap.get(m.scopeId)) ?? null,
+            const members: RestoredMember[] = [];
+            for (const member of (payload.version as number) >= 3 ? payload.members ?? [] : []) {
+              let scopeId: string | null = null;
+              const scopeKind = member.role === 'owner' ? 'org' : member.scopeKind as RestoredMember['scopeKind'];
+              if (scopeKind !== 'org') {
+                if (member.scopeId === null) throw new Error(`member "${member.username}" has no ${scopeKind} scope id`);
+                const mapped = scopeKind === 'space' ? spaceMap.get(member.scopeId) : idMap.get(member.scopeId);
+                if (mapped === undefined) throw new Error(`member "${member.username}" scope was not restored`);
+                scopeId = mapped;
+              }
+              members.push({
+                ...member,
+                kind: member.kind as RestoredMember['kind'],
+                role: member.role as RestoredMember['role'],
+                scopeKind,
+                scopeId,
               });
             }
-            for (const k of (payload.version as number) >= 3 ? payload.keys ?? [] : []) {
-              await registry.restoreKey(k.hash, k.username, k.label, k.created, k.revoked);
+            const shares: RestoredShare[] = [];
+            for (const share of payload.shares ?? []) {
+              const projectId = idMap.get(share.projectId);
+              if (projectId === undefined) throw new Error(`share ${share.token} project was not restored`);
+              shares.push({
+                token: share.token,
+                projectId,
+                label: share.label,
+                created: share.created,
+                revoked: share.revoked,
+                cardId: share.cardId ?? null,
+                kind: share.kind ?? 'page',
+                memberUsername: share.memberUsername ?? null,
+                laneId: share.laneId ?? null,
+                filterId: share.filterId ?? null,
+                lastViewed: share.lastViewed ?? null,
+              });
             }
-            for (const s of payload.shares ?? []) {
-              const pid = idMap.get(s.projectId);
-              if (pid) await registry.restoreShare(
-                s.token, pid, s.label, s.created, s.revoked, s.cardId ?? null,
-                s.kind ?? 'page', s.memberUsername ?? null, s.laneId ?? null, s.filterId ?? null, s.lastViewed ?? null,
-              );
-            }
-            if ((await registry.liveOwners()) === 0) {
-              throw new Error('this import would leave the company with no live owner');
-            }
+            const keys = (payload.version as number) >= 3 ? payload.keys ?? [] : [];
             // Itemize what the payload brought with it. A company export is a
             // credential bundle: restoring one can overwrite passwords, add
             // api keys, and publish share urls, and "1 space(s)" in the audit
             // log does not tell an operator any of that happened.
-            const restored = payload.version >= 3
-              ? `${(payload.members ?? []).length} member(s): ${(payload.members ?? []).map((m) => `${m.username}/${m.role}`).join(', ') || 'none'}; ${(payload.keys ?? []).length} api key(s); ${(payload.shares ?? []).length} share link(s)${payload.version >= 4 ? '; project integration configuration (delivery state reset)' : ''}`
-              : `${(payload.shares ?? []).length} share link(s)`;
-            if (restored !== '') await registry.audit(actor, 'import-credentials', restored);
+            const credentialDetail = payload.version >= 3
+              ? `${members.length} member(s): ${members.map((member) => `${member.username}/${member.role}`).join(', ') || 'none'}; ${keys.length} api key(s); ${shares.length} share link(s)${payload.version >= 4 ? '; project integration configuration (delivery state reset)' : ''}`
+              : `${shares.length} share link(s)`;
+            const legacyKeysDetail = (payload.version as number) < 3 && Array.isArray(payload.keys) && payload.keys.length > 0
+              ? `${payload.keys.length} pre-members api key(s) in this v${payload.version} export could not be restored; re-issue them from the member's account`
+              : undefined;
+            const restored = await registry.restoreCompany({
+              ...(typeof payload.name === 'string' ? { name: payload.name } : {}),
+              ...(payload.theme ? { theme: payload.theme } : {}),
+              ...(payload.prefs ? { prefs: payload.prefs } : {}),
+              members,
+              keys,
+              shares,
+              importDetail: `${payload.spaces.length} space(s), ${projects} project(s)`,
+              credentialDetail,
+              ...(legacyKeysDetail === undefined ? {} : { legacyKeysDetail }),
+            }, actor);
+            if ('error' in restored) throw new Error(restored.error);
           }
         } catch (err) {
           const message = (err as Error).message;
@@ -837,18 +918,13 @@ export default {
             const storageCleanup = await Promise.allSettled(rolledBack.ids.map((id) => project(id).destroy()));
             const storageFailures = storageCleanup.filter((result) => result.status === 'rejected').length;
             if (storageFailures > 0) cleanup = `registry rollback complete; ${storageFailures} unreachable storage cleanup failure(s)`;
-            if (previousMetadata) {
-              await registry.setOrgName(previousMetadata.name);
-              await registry.setTheme(previousMetadata.theme);
-              await registry.setPrefs(previousMetadata.prefs);
-            }
           } catch (rollbackErr) {
             cleanup = `rollback failed: ${(rollbackErr as Error).message}`;
           }
           await registry.audit(actor, 'import-failed', `${message}; ${cleanup}`);
           return json({ error: message }, 400);
         }
-        await registry.audit(actor, isDemo ? 'demo' : 'import', `${payload.spaces.length} space(s), ${projects} project(s)`);
+        if (isDemo) await registry.audit(actor, 'demo', `${payload.spaces.length} space(s), ${projects} project(s)`);
         return json({ imported: { spaces: payload.spaces.length, projects } });
       }
       if (req.method === 'POST' && url.pathname === '/api/spaces') {
