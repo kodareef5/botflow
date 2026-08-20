@@ -1,0 +1,62 @@
+{
+  "now": "2026-08-20T12:00:00Z",
+  "boards": {
+    ".": {
+      "lint": [],
+      "cards": {
+        "001": "todo",
+        "002": "todo",
+        "003": "blocked",
+        "004": "done",
+        "005": "done",
+        "006": "todo"
+      },
+      "distribution": { "wishlist": 0, "todo": 3, "doing": 0, "blocked": 1, "done": 2, "archive": 0 },
+      "ready": ["002", "006"],
+      "progress": 0.3333,
+      "automation": {
+        "blockers": [
+          { "id": "external-review", "name": "External review", "color": "#d97706" }
+        ],
+        "lanes": {
+          "doing": { "wip": 1, "mode": "justify" }
+        },
+        "archiveDoneAfter": 7,
+        "buttons": [
+          { "id": "finish", "name": "Finish", "scope": "card", "filter": null, "action": "close", "value": null },
+          { "id": "review-open", "name": "Review open operations", "scope": "board", "filter": "open-ops", "action": "label", "value": "reviewed" }
+        ],
+        "rules": [
+          { "id": "own-doing", "event": "enter", "lane": "doing", "filter": null, "action": "assign", "value": "sam" },
+          { "id": "explain-block", "event": "block", "lane": null, "filter": null, "action": "comment", "value": "Waiting on the named dependency." }
+        ],
+        "cards": {
+          "001": {
+            "reminders": [1440, 60, 0],
+            "repeat": { "every": 1, "unit": "week", "from": "due" },
+            "snooze": "2026-08-22T00:00:00Z",
+            "blocker": null
+          },
+          "003": {
+            "reminders": [],
+            "repeat": null,
+            "snooze": null,
+            "blocker": "external-review"
+          },
+          "006": {
+            "reminders": [],
+            "repeat": null,
+            "snooze": "2026-08-19",
+            "blocker": null
+          }
+        },
+        "blockerDays": { "external-review": 8 },
+        "plan": [
+          { "kind": "sweep", "cardId": "004", "at": "2026-08-17T12:00:00.000Z" },
+          { "kind": "snooze-expired", "cardId": "006", "at": "2026-08-19T00:00:00.000Z" },
+          { "kind": "reminder", "cardId": "001", "at": "2026-08-20T12:00:00.000Z", "offset": 1440 }
+        ]
+      }
+    }
+  }
+}

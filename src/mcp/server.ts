@@ -27,17 +27,21 @@ import {
   promoteCard,
   mergeDuplicateCards,
   quickAddCards,
+  runAutomation,
+  runButton,
   bulkCards,
   transferCard,
   moveCard,
   removeFilter,
   saveFilter,
+  snoozeCard,
   subscribeLane,
   unblockCard,
   voteCard,
   watchCard,
   type EditPatch,
 } from '../core/mutate.ts';
+import type { CardRepeat } from '../core/model.ts';
 import { boardJson, cardJson, renderPrime, rollupJson } from '../cli/render.ts';
 import { cardDetailJson } from '../core/json.ts';
 import { queryCards } from '../core/query.ts';
@@ -45,7 +49,7 @@ import { queryCards } from '../core/query.ts';
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_INFO = { name: 'botflow', version: '0.1.0' };
 const PRIORITIES: readonly string[] = ['p0', 'p1', 'p2', 'p3'];
-const RELATIONS = ['relates', 'duplicates', 'supersedes', 'parent', 'subtask', 'copied-from', 'copied-to'] as const;
+const RELATIONS = ['relates', 'duplicates', 'supersedes', 'parent', 'subtask', 'copied-from', 'copied-to', 'recurs-from', 'recurs-to'] as const;
 /** Cap on the pending stdin buffer: a client that never sends '\n' would otherwise grow it until the host OOMs. */
 const MAX_BUFFER_BYTES = 8 * 1024 * 1024;
 
@@ -105,8 +109,33 @@ function buildTools(root: string, defaultActor: string): Tool[] {
     return v as Record<string, unknown>;
   };
 
+  const offsetsOf = (v: unknown): number[] | undefined => {
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v) || !v.every((value) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)) {
+      throw new UsageError('invalid reminders: expected an array of nonnegative integers');
+    }
+    return v as number[];
+  };
+
+  const repeatOf = (v: unknown): CardRepeat | null | undefined => {
+    if (v === undefined || v === null) return v;
+    if (typeof v !== 'object' || Array.isArray(v)) throw new UsageError('invalid repeat: expected an object or null');
+    const value = v as Record<string, unknown>;
+    return {
+      every: positiveIntOf(value['every'], 'repeat.every')!,
+      unit: strOf(value['unit'], 'repeat.unit') as CardRepeat['unit'],
+      from: (value['from'] === undefined ? 'due' : strOf(value['from'], 'repeat.from')) as CardRepeat['from'],
+      extra: {},
+    };
+  };
+
   const view = () => {
-    const tree = loadTree(root);
+    let tree = loadTree(root);
+    const board = tree.boards.get('.')!.board;
+    if (board.config.mutationBlocked === null && (board.config.automation.archiveDoneAfter !== null || board.cards.some((card) => card.snooze !== null || card.reminders.length > 0))) {
+      runAutomation(root);
+      tree = loadTree(root);
+    }
     return { tree, analysis: analyze(tree) };
   };
 
@@ -193,6 +222,34 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       },
     },
     {
+      name: 'automation_run',
+      description: 'Run one bounded pass of due reminders, snooze expiry, and lazy archive sweeps.',
+      inputSchema: schema([], {}),
+      run: () => {
+        const result = runAutomation(root);
+        return { actions: result.actions, changed: result.cards.map((card) => card.id), remaining: result.remaining, nextAt: result.nextAt };
+      },
+    },
+    {
+      name: 'buttons_list',
+      description: 'List safe declarative card and board buttons.',
+      inputSchema: schema([], {}),
+      run: () => view().tree.boards.get('.')!.board.config.buttons.map(({ id, name, scope, filter, action, value }) => ({ id, name, scope, filter, action, value })),
+    },
+    {
+      name: 'button_run',
+      description: 'Invoke a configured safe button. Card buttons require card_id; board buttons use their saved filter and affect at most 100 cards.',
+      inputSchema: schema(['id'], { id: str, card_id: str, force: bool, wip_reason: str, actor: str }),
+      run: (args) => {
+        const result = runButton(root, strOf(args['id'], 'id'), actorOf(args), {
+          cardId: opt(args['card_id']),
+          force: args['force'] === true,
+          wipJustification: opt(args['wip_reason']),
+        });
+        return { button: result.button.id, changed: result.cards.map((card) => card.id), warnings: result.warnings };
+      },
+    },
+    {
       name: 'lint',
       description: 'Board findings (errors, warnings, info) across the board tree.',
       inputSchema: schema([], {}),
@@ -224,7 +281,8 @@ function buildTools(root: string, defaultActor: string): Tool[] {
         title: str, template: str, lane: str, type: { type: 'string', enum: ['task', 'board'] }, board_path: str,
         labels: strList, priority: { type: 'string', enum: PRIORITIES }, deps: strList,
         assignee: str, delegate: str, start: str, due: str, estimate: positiveInt, evergreen: bool,
-        cover_color: str, fields: fieldMap, actor: str,
+        reminders: { type: 'array', items: { type: 'integer', minimum: 0 } }, repeat: fieldMap, snooze: str,
+        cover_color: str, fields: fieldMap, force: bool, wip_reason: str, actor: str,
       }),
       run: (args) => {
         const card = addCard(root, {
@@ -240,10 +298,15 @@ function buildTools(root: string, defaultActor: string): Tool[] {
           delegate: args['delegate'] === undefined ? undefined : strOf(args['delegate'], 'delegate'),
           start: args['start'] === undefined ? undefined : strOf(args['start'], 'start'),
           due: args['due'] === undefined ? undefined : strOf(args['due'], 'due'),
+          reminders: offsetsOf(args['reminders']),
+          repeat: repeatOf(args['repeat']) ?? undefined,
+          snooze: args['snooze'] === undefined ? undefined : strOf(args['snooze'], 'snooze'),
           estimate: positiveIntOf(args['estimate'], 'estimate'),
           evergreen: args['evergreen'] === undefined ? undefined : args['evergreen'] === true,
           coverColor: args['cover_color'] === undefined ? undefined : strOf(args['cover_color'], 'cover_color'),
           fields: fieldsOf(args['fields']),
+          force: args['force'] === true,
+          wipJustification: opt(args['wip_reason']),
           actor: actorOf(args),
         });
         return { id: card.id, file: card.file, lane: card.laneId };
@@ -321,15 +384,15 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       description: 'Atomically move, close, or label a set of cards; any invalid member rejects the complete batch.',
       inputSchema: schema(['ids', 'action'], {
         ids: strList, action: { type: 'string', enum: ['move', 'close', 'label'] }, to: str, force: bool,
-        reason: str, add_labels: strList, remove_labels: strList, actor: str,
+        reason: str, wip_reason: str, add_labels: strList, remove_labels: strList, actor: str,
       }),
       run: (args) => {
         const ids = list(args['ids'], 'ids') ?? [];
         const action = strOf(args['action'], 'action');
         const op = action === 'move'
-          ? { kind: 'move' as const, to: strOf(args['to'], 'to'), force: args['force'] === true }
+          ? { kind: 'move' as const, to: strOf(args['to'], 'to'), force: args['force'] === true, wipJustification: opt(args['wip_reason']) }
           : action === 'close'
-            ? { kind: 'close' as const, reason: opt(args['reason']) }
+            ? { kind: 'close' as const, reason: opt(args['reason']), force: args['force'] === true, wipJustification: opt(args['wip_reason']) }
             : action === 'label'
               ? { kind: 'label' as const, add: list(args['add_labels'], 'add_labels'), remove: list(args['remove_labels'], 'remove_labels') }
               : (() => { throw new UsageError('action must be move, close, or label'); })();
@@ -340,9 +403,9 @@ function buildTools(root: string, defaultActor: string): Tool[] {
     {
       name: 'card_move',
       description: 'Move a card to lane[.substate]. Strict lanes advance one substate at a time unless force.',
-      inputSchema: schema(['id', 'to'], { id: str, to: str, force: bool, actor: str }),
+      inputSchema: schema(['id', 'to'], { id: str, to: str, force: bool, wip_reason: str, actor: str }),
       run: (args) => {
-        const res = moveCard(root, strOf(args['id'], 'id'), strOf(args['to'], 'to'), actorOf(args), args['force'] === true);
+        const res = moveCard(root, strOf(args['id'], 'id'), strOf(args['to'], 'to'), actorOf(args), args['force'] === true, opt(args['wip_reason']));
         return { id: res.card.id, from: res.from, to: res.to, warnings: res.warnings };
       },
     },
@@ -350,29 +413,29 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       name: 'card_claim',
       description:
         'Atomically claim a ready card and move it into doing. By default sets accountable assignee; delegate:true sets the executing agent without replacing assignee. Same-role races have one winner; force overrides.',
-      inputSchema: schema(['id'], { id: str, actor: str, force: bool, delegate: bool }),
+      inputSchema: schema(['id'], { id: str, actor: str, force: bool, delegate: bool, wip_reason: str }),
       run: (args) => {
-        const res = claimCard(root, strOf(args['id'], 'id'), actorOf(args), args['force'] === true, args['delegate'] === true ? 'delegate' : 'assign');
+        const res = claimCard(root, strOf(args['id'], 'id'), actorOf(args), args['force'] === true, args['delegate'] === true ? 'delegate' : 'assign', opt(args['wip_reason']));
         if (res.alreadyYours) return { id: res.card.id, at: res.to, assignee: res.card.assignee, delegate: res.card.delegate, alreadyYours: true };
         return { id: res.card.id, from: res.from, to: res.to, assignee: res.card.assignee, delegate: res.card.delegate, warnings: res.warnings };
       },
     },
     {
       name: 'card_close',
-      description: 'Close a card: move to done, clear any blocked flag, log the reason.',
-      inputSchema: schema(['id'], { id: str, reason: str, actor: str }),
+      description: 'Close a card, clear blocking, and materialize one successor when repeat is configured.',
+      inputSchema: schema(['id'], { id: str, reason: str, force: bool, wip_reason: str, actor: str }),
       run: (args) => {
-        const res = closeCard(root, strOf(args['id'], 'id'), actorOf(args), opt(args['reason']));
-        return { id: res.card.id, from: res.from, to: res.to };
+        const res = closeCard(root, strOf(args['id'], 'id'), actorOf(args), opt(args['reason']), opt(args['wip_reason']), args['force'] === true);
+        return { id: res.card.id, from: res.from, to: res.to, created: res.created?.id ?? null };
       },
     },
     {
       name: 'card_block',
       description: 'Set the blocked flag with a reason. Use instead of silently stalling.',
-      inputSchema: schema(['id', 'reason'], { id: str, reason: str, actor: str }),
+      inputSchema: schema(['id', 'reason'], { id: str, reason: str, blocker: str, actor: str }),
       run: (args) => {
-        const card = blockCard(root, strOf(args['id'], 'id'), actorOf(args), strOf(args['reason'], 'reason'));
-        return { id: card.id, blocked: card.blocked };
+        const card = blockCard(root, strOf(args['id'], 'id'), actorOf(args), strOf(args['reason'], 'reason'), opt(args['blocker']));
+        return { id: card.id, blocked: card.blocked, blocker: card.blocker };
       },
     },
     {
@@ -385,12 +448,23 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       },
     },
     {
+      name: 'card_snooze',
+      description: 'Snooze a card until a UTC date/datetime; pass until:null to wake it explicitly.',
+      inputSchema: schema(['id', 'until'], { id: str, until: { type: ['string', 'null'] }, actor: str }),
+      run: (args) => {
+        const card = snoozeCard(root, strOf(args['id'], 'id'), actorOf(args), args['until'] === null ? null : strOf(args['until'], 'until'));
+        return { id: card.id, snooze: card.snooze };
+      },
+    },
+    {
       name: 'card_edit',
       description: 'Edit card fields. Pass null for nullable fields to clear them.',
       inputSchema: schema(['id'], {
         id: str, title: str, labels: strList, priority: { type: ['string', 'null'], enum: [...PRIORITIES, null] },
         assignee: { type: ['string', 'null'] }, delegate: { type: ['string', 'null'] }, deps: strList,
         start: { type: ['string', 'null'] }, due: { type: ['string', 'null'] },
+        reminders: { type: ['array', 'null'], items: { type: 'integer', minimum: 0 } },
+        repeat: { type: ['object', 'null'] }, snooze: { type: ['string', 'null'] },
         estimate: { type: ['integer', 'null'], minimum: 1 }, evergreen: bool, board_path: str,
         cover: { type: ['string', 'null'] }, cover_color: { type: ['string', 'null'] }, fields: fieldMap, actor: str,
       }),
@@ -404,6 +478,9 @@ function buildTools(root: string, defaultActor: string): Tool[] {
         if ('deps' in args) patch.deps = list(args['deps'], 'deps') ?? [];
         if ('start' in args) patch.start = args['start'] === null ? null : strOf(args['start'], 'start');
         if ('due' in args) patch.due = args['due'] === null ? null : strOf(args['due'], 'due');
+        if ('reminders' in args) patch.reminders = args['reminders'] === null ? [] : offsetsOf(args['reminders'])!;
+        if ('repeat' in args) patch.repeat = repeatOf(args['repeat']);
+        if ('snooze' in args) patch.snooze = args['snooze'] === null ? null : strOf(args['snooze'], 'snooze');
         if ('estimate' in args) patch.estimate = args['estimate'] === null ? null : positiveIntOf(args['estimate'], 'estimate')!;
         if ('evergreen' in args) {
           if (typeof args['evergreen'] !== 'boolean') throw new UsageError('invalid evergreen: expected a boolean');

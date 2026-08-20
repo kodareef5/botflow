@@ -68,6 +68,7 @@ test('card flow metrics preserve lane re-entry and do not reset on block activit
     cycleDays: 9,
     leadDays: 11,
     blockedDays: 2,
+    blockerDays: { unclassified: 2 },
     completedAt: '2026-08-12T00:00:00.000Z',
     due: null,
   });

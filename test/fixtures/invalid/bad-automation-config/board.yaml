@@ -1,0 +1,8 @@
+botflow: 0
+name: invalid automation config
+features: [automation]
+lanes:
+  - id: todo
+    wip_mode: deny
+  - id: done
+  - id: archive

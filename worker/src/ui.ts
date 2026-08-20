@@ -109,6 +109,7 @@ aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
 .col h3{font:700 11px/1.25 var(--display);text-transform:uppercase;letter-spacing:.04em;color:var(--ink2);padding:2px 4px 7px;display:flex;gap:6px}
 .col h3 .n{color:var(--muted);font-weight:400}
 .col h3 .wipbad{color:var(--st-blocked)}
+.col h3 .wipmode{font-size:9px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
 .lanefoot{display:flex;align-items:center;gap:5px;margin-top:7px;padding-top:7px;border-top:1px dashed transparent;opacity:0;transform:translateY(-2px);pointer-events:none;transition:opacity .12s ease,transform .12s ease,border-color .12s ease}
 .laneadd{flex:1;text-align:left;background:transparent;border-color:transparent;color:var(--muted);padding:4px 7px}
 .lanesub{flex:none;background:transparent;border-color:transparent;color:var(--muted);padding:4px 7px}
@@ -120,6 +121,7 @@ aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
 .card:hover{border-color:var(--baseline)}
 .card:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
 .card.blocked{border-left:3px solid var(--st-blocked)}
+.card.namedblocked{cursor:not-allowed}
 .card.has-color::before{content:"";display:block;height:5px;background:var(--cover-color)}
 .card.age-1:not(:hover):not(:focus-within){opacity:.9}
 .card.age-2:not(:hover):not(:focus-within){opacity:.8}
@@ -135,6 +137,8 @@ aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
 .badges .p0{color:var(--st-blocked);font-weight:650}
 .badges .p1{color:#c47317;font-weight:650}
 .badges .blk{color:var(--st-blocked)}
+.badges .namedblk{color:var(--blocker-color,var(--st-blocked));font-weight:650}
+.badges .snoozed{color:var(--muted)}
 .badges .ok{color:var(--st-done)}
 .badges .due-overdue,.badges .due-today{color:var(--st-blocked);font-weight:650}
 .badges .due-soon{color:#c47317;font-weight:650}
@@ -192,6 +196,7 @@ table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink2)}
 .registryrow{display:flex;gap:6px;align-items:center;margin:5px 0;flex-wrap:wrap}
 .registryrow input,.registryrow select{padding:3px 7px;font-size:12.5px}
 .registryrow .rid{width:145px}.registryrow .rname{width:120px}.registryrow .ropts{flex:1;min-width:130px}.registryrow .rcolor{width:105px}
+.registryrow .rwide{flex:1;min-width:150px}
 .registryrow .rface{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:var(--ink2)}
 .registryrow .rface input{width:auto;margin:0}
 .templaterow{border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:8px;margin:6px 0;background:var(--page)}
@@ -737,6 +742,7 @@ function renderMain(){
     +'<span class="searchstatus" id="searchstatus" aria-live="polite"></span></div>':'';
   main.innerHTML='<div class="phead"><h2>'+esc(p.name)+'</h2><span class="pct" id="pinfo"></span>'
     +search
+    +(CAN_WRITE?'<span id="boardbuttons"></span><button id="automate" class="ghost" title="run reminders, wake snoozed cards, and sweep completed work">↻ automate</button>':'')
     +(CAN_WRITE?'<button id="newcard" class="ghost" title="add a card to this board">+ card</button>':'')
     +(CAN_WRITE?'<button id="quickcard" class="ghost" title="create several cards with quick-add syntax">+ quick</button><button id="bulkcard" class="ghost" title="move, close, or label several card ids">bulk</button>':'')
     +(IS_OWNER?'<button id="editboard" class="ghost" title="edit lanes, substates, wip, rollup">✎ edit board</button>':'')
@@ -748,10 +754,42 @@ function renderMain(){
   const nc=$('#newcard');if(nc)nc.onclick=()=>newCard();
   const qc=$('#quickcard');if(qc)qc.onclick=quickCards;
   const bc=$('#bulkcard');if(bc)bc.onclick=bulkCardsUi;
+  const automate=$('#automate');if(automate)automate.onclick=async()=>{
+    automate.disabled=true;
+    try{const r=await api('/api/projects/'+SEL+'/automate',{method:'POST',body:'{}'});await reloadOrg();toast('Automation applied '+((r.actions||[]).length)+' action(s).')}
+    catch(err){toast(err.message)}finally{if(document.contains(automate))automate.disabled=false}
+  };
   if(VIEW==='board'){wireSearchControls();refreshBoard()}
   else if(VIEW==='activity')refreshActivity();
   else if(VIEW==='feeds')refreshFeeds();
   else refreshSharing();
+}
+
+function renderBoardButtons(){
+  const host=$('#boardbuttons');if(!host)return;
+  const buttons=((BOARD&&BOARD.buttons)||[]).filter(b=>b.scope==='board');
+  host.innerHTML=buttons.map(b=>'<button class="ghost" data-boardbutton="'+esc(b.id)+'" title="'+esc(b.action+(b.value?' '+b.value:''))+'">'+esc(b.name)+'</button>').join('');
+  host.onclick=e=>{const b=e.target.closest('[data-boardbutton]');if(b)invokeButton(b.dataset.boardbutton,null)};
+}
+
+async function invokeButton(id,cardId,args){
+  const body={...(args||{}),...(cardId?{card:cardId}:{})};
+  try{
+    const r=await api('/api/projects/'+SEL+'/buttons/'+encodeURIComponent(id),{method:'POST',body:JSON.stringify(body)});
+    await reloadOrg();
+    if(cardId)setTimeout(()=>openCard(cardId,'card'),0);
+    toast((r.changed||[]).length+' card(s) changed by '+id+'.');
+    return r;
+  }catch(err){
+    const wip=/WIP justification|WIP overflow/i.test(err.message);
+    if(!wip)throw err;
+    const denied=/denies WIP overflow/i.test(err.message);
+    if(denied&&!IS_OWNER){toast(err.message);return null}
+    formModal('Run '+id,[{name:'reason',label:denied?'owner override justification':'WIP justification',required:true}],'run',async d=>{
+      await invokeButton(id,cardId,{wipReason:d.reason,...(denied?{force:true}:{})});
+    });
+    return null;
+  }
 }
 
 function syncSearchControls(b){
@@ -830,6 +868,9 @@ function newCard(lane){
   if(!CAN_WRITE)return;
   const defs=(BOARD&&BOARD.fields)||[];
   const templates=(BOARD&&BOARD.templates)||[];
+  const target=(BOARD&&BOARD.lanes||[]).find(l=>l.id===lane)||((BOARD&&BOARD.lanes||[]).find(l=>l.canonical==='todo'));
+  const overflow=!!target&&target.wip!=null&&target.cards.length>=target.wip;
+  if(overflow&&target.wipMode==='deny'&&!IS_OWNER){toast(target.name+' is at its WIP limit. Only an owner can override it.');return}
   const fields=(templates.length?[{name:'template',label:'template (optional)',type:'select',options:[{value:'',label:'none'}].concat(templates.map(t=>({value:t.id,label:t.name})))}]:[]).concat([
     {name:'title',label:'title',required:true},
     {name:'priority',label:'priority (p0-p3, optional)'},
@@ -838,15 +879,24 @@ function newCard(lane){
     {name:'delegate',label:'executing delegate (bot username, optional)'},
     {name:'start',label:'start (YYYY-MM-DD or UTC datetime)'},
     {name:'due',label:'due (YYYY-MM-DD or UTC datetime)'},
+    {name:'reminders',label:'reminders before due (minutes, comma separated)'},
+    {name:'repeat_every',label:'repeat every (empty for no recurrence)',type:'number'},
+    {name:'repeat_unit',label:'repeat unit',type:'select',options:[{value:'day',label:'days'},{value:'week',label:'weeks'},{value:'month',label:'months'}]},
+    {name:'repeat_from',label:'next dates from',type:'select',options:[{value:'due',label:'the prior due date'},{value:'completion',label:'completion time'}]},
+    {name:'snooze',label:'snooze until (YYYY-MM-DD or UTC datetime)'},
     {name:'estimate',label:'estimate (positive points)',type:'number'},
     {name:'evergreen',label:'aging signal',type:'select',options:[{value:'',label:'normal'},{value:'true',label:'evergreen (hide aging)'}]},
     {name:'cover_color',label:'cover color (#RGB or #RRGGBB)'},
-  ]).concat(customFormFields(defs,[]));
+  ]).concat(overflow&&target.wipMode!=='allow'?[{name:'wipReason',label:(target.wipMode==='deny'?'owner override':'WIP')+' justification',required:true}]:[]).concat(customFormFields(defs,[]));
   formModal('New card',fields,'create',async d=>{
     const labels=d.labels?d.labels.split(',').map(x=>x.trim()).filter(Boolean):undefined;
+    const reminders=d.reminders?d.reminders.split(',').map(x=>Number(x.trim())):undefined;
+    const repeat=d.repeat_every?{every:Number(d.repeat_every),unit:d.repeat_unit,from:d.repeat_from}:undefined;
     const r=await api('/api/projects/'+SEL+'/cards',{method:'POST',body:JSON.stringify({
       title:d.title,template:d.template||undefined,lane:lane||undefined,priority:d.priority||undefined,labels:labels,
       assignee:d.assignee||undefined,delegate:d.delegate||undefined,start:d.start||undefined,due:d.due||undefined,
+      reminders:reminders,repeat:repeat,snooze:d.snooze||undefined,wipReason:d.wipReason||undefined,
+      force:overflow&&target.wipMode==='deny'&&IS_OWNER,
       estimate:d.estimate?Number(d.estimate):undefined,evergreen:d.evergreen===''?undefined:d.evergreen==='true',
       cover_color:d.cover_color||undefined,fields:customPayload(defs,d,false)})});
     await reloadOrg();
@@ -866,11 +916,14 @@ function bulkCardsUi(){
     {name:'kind',label:'action',type:'select',options:[{value:'move',label:'move'},{value:'close',label:'close'},{value:'label',label:'label'}]},
     {name:'to',label:'target lane for move'},
     {name:'reason',label:'close reason (optional)'},
+    {name:'wipReason',label:'WIP justification (when the target lane requires one)'},
+    ...(IS_OWNER?[{name:'force',label:'owner override',type:'select',options:[{value:'',label:'do not force'},{value:'true',label:'force strict/WIP rules'}]}]:[]),
     {name:'add',label:'labels to add (comma separated)'},
     {name:'remove',label:'labels to remove (comma separated)'},
   ],'apply',async d=>{
     const split=v=>v?v.split(',').map(x=>x.trim()).filter(Boolean):undefined;
-    const action={kind:d.kind,to:d.to||undefined,reason:d.reason||undefined,add:split(d.add),remove:split(d.remove)};
+    const action={kind:d.kind,to:d.to||undefined,reason:d.reason||undefined,wipReason:d.wipReason||undefined,
+      force:d.force==='true',add:split(d.add),remove:split(d.remove)};
     const r=await api('/api/projects/'+SEL+'/cards/bulk',{method:'POST',body:JSON.stringify({ids:split(d.ids)||[],action})});
     await reloadOrg();BOARD=null;refreshBoard();toast('Changed '+((r.changed||[]).length)+' card(s).');
   });
@@ -918,6 +971,9 @@ function fieldText(v){return Array.isArray(v)?v.join(', '):v===true?'yes':v===fa
 function labelBadge(l){
   return '<span class="lbl" style="--lc:'+esc(l.color||'var(--grid)')+'" title="'+esc(l.group?l.group+': '+l.value:l.id)+'">#'+esc(l.value||l.id)+'</span>';
 }
+function blockerOf(c){
+  return ((BOARD&&BOARD.blockers)||[]).find(b=>b.id===c.blocker)||{id:c.blocker,name:c.blocker,color:null};
+}
 function dueFace(c){
   const d=c.metrics&&c.metrics.due;if(!d||d.status==='complete')return null;
   const text=d.status==='overdue'?Math.abs(d.days)+'d late':d.status==='today'?'due today':d.days+'d';
@@ -926,7 +982,10 @@ function dueFace(c){
 function faceBadges(b,c){
   const ready=new Set(b.ready||[]),items=[];
   if(c.priority)items.push('<span class="'+(c.priority==='p0'?'p0':c.priority==='p1'?'p1':'')+'">'+esc(c.priority)+'</span>');
-  if(c.blocked)items.push('<span class="blk" title="'+esc(c.blocked)+'">⛔ blocked</span>');
+  if(c.blocked){const bd=blockerOf(c);items.push(c.blocker
+    ?'<span class="namedblk" style="--blocker-color:'+esc(bd.color||'var(--st-blocked)')+'" title="'+esc(c.blocked)+'">⛔ '+esc(bd.name)+'</span>'
+    :'<span class="blk" title="'+esc(c.blocked)+'">⛔ blocked</span>')}
+  if(c.snooze)items.push('<span class="snoozed" title="snoozed until '+esc(c.snooze)+'">☾ snoozed</span>');
   const due=dueFace(c);if(due)items.push(due);
   if(c.assignee)items.push('<span title="accountable assignee">@'+esc(who(c.assignee))+'</span>');
   if(c.delegate)items.push('<span title="executing delegate">⇢ @'+esc(who(c.delegate))+'</span>');
@@ -948,7 +1007,7 @@ function faceBadges(b,c){
 function cardHtml(b,c){
   const board=c.type==='board';
   const age=c.metrics&&c.metrics.agingLevel||0;
-  return '<div class="card '+(c.blocked?'blocked ':'')+(c.coverColor?'has-color ':'')+(age?'age-'+age:'')+'"'+(c.coverColor?' style="--cover-color:'+esc(c.coverColor)+'"':'')+' data-card="'+esc(c.id)+'" tabindex="0" role="button" aria-label="'+esc(c.id+' '+c.title)+'"'
+  return '<div class="card '+(c.blocked?'blocked ':'')+(c.blocker?'namedblocked ':'')+(c.coverColor?'has-color ':'')+(age?'age-'+age:'')+'"'+(c.coverColor?' style="--cover-color:'+esc(c.coverColor)+'"':'')+' data-card="'+esc(c.id)+'" tabindex="0" role="button" aria-label="'+esc(c.id+' '+c.title)+'"'
     +(RO?'':' aria-keyshortcuts="Shift+ArrowLeft Shift+ArrowRight Shift+ArrowUp Shift+ArrowDown"')+'>'
     +((cov=>cov?'<img class="art" src="'+esc(cov)+'" alt="" loading="lazy">':'')(coverOf(c)))
     +'<div class="inner"><div class="cid">'+esc(c.id)+'</div><div class="t">'+esc(c.title)+'</div>'
@@ -964,7 +1023,7 @@ function colsHtml(b){
   return '<div class="cols" style="margin-top:12px">'+b.lanes.map(lane=>{
     const cards=SEARCH_IDS===null?lane.cards:lane.cards.filter(c=>SEARCH_IDS.has(c.id));
     const n=cards.length;
-    const wip=lane.wip!=null?'<span class="'+(n>lane.wip?'wipbad':'n')+'">'+n+'/'+lane.wip+'</span>':'<span class="n">'+n+'</span>';
+    const wip=lane.wip!=null?'<span class="'+(n>lane.wip?'wipbad':'n')+'">'+n+'/'+lane.wip+'</span><span class="wipmode">'+esc(lane.wipMode||'allow')+'</span>':'<span class="n">'+n+'</span>';
     const estimateValue=SEARCH_IDS===null?lane.estimate:cards.reduce((sum,c)=>sum+(c.estimate||0),0);
     const estimate=estimateValue?'<span class="n">est '+estimateValue+'</span>':'';
     let body='';
@@ -1003,11 +1062,40 @@ function conflictHtml(conflict,detail){
   const r=conflict&&conflict.reason;
   const lead=r==='assigned'?'<b>'+esc(who(conflict.holder))+'</b> already holds this card.'
     :r==='blocked'?'This card is parked as blocked.'
+    :r==='snoozed'?'This card is snoozed until activity wakes it or its time arrives.'
     :r==='deps'?'This card is waiting on work that is not done yet.'
     :r==='not-ready'?'This card is not ready to be claimed: it sits in <b>'+esc(conflict.position||'')+'</b>.'
     :'This card cannot be claimed right now.';
   return '<p style="font-size:13px;color:var(--ink2);line-height:1.55">'+lead+'</p>'
     +(detail?'<p style="font-size:12px;color:var(--muted);margin-top:6px">'+esc(detail)+'</p>':'');
+}
+
+function moveCardUi(card,to,forceRules,after){
+  if(card.blocker){toast(card.id+' is blocked by '+blockerOf(card).name+'. Unblock it before moving.');return}
+  const laneId=to.split('.')[0];
+  const lane=(BOARD&&BOARD.lanes||[]).find(l=>l.id===laneId);
+  const overflow=!!lane&&card.lane!==lane.id&&lane.wip!=null&&lane.cards.length>=lane.wip;
+  const mode=lane&&lane.wipMode||'allow';
+  if(overflow&&mode==='deny'&&!IS_OWNER){toast(lane.name+' denies WIP overflow ('+(lane.cards.length+1)+'/'+lane.wip+').');return}
+  const force=forceRules||(overflow&&mode==='deny');
+  const send=async reason=>{
+    const payload={to:to,...(force?{force:true}:{}),...(reason?{wipReason:reason}:{})};
+    try{await api('/api/projects/'+SEL+'/cards/'+card.id+'/move',{method:'POST',body:JSON.stringify(payload)});await after()}
+    catch(err){toast(err.message)}
+  };
+  if(overflow&&mode!=='allow'){
+    formModal(force?'Override WIP limit':'Explain WIP overflow',[
+      {name:'reason',label:force?'owner override justification':'written WIP justification',required:true},
+    ],force?'force the move':'move card',d=>send(d.reason));
+    return;
+  }
+  if(forceRules){
+    confirmModal('Override the lane rules',
+      'Moving '+esc(card.id)+' to <b>'+esc(to)+'</b> breaks the order this lane declares. Forcing is recorded as an override in the activity log.',
+      'force the move',()=>send(''));
+    return;
+  }
+  send('');
 }
 
 // ---- drag to move ----
@@ -1074,6 +1162,7 @@ function dragStart(card,ev){
   if(RO||!BOARD)return;
   const c=(BOARD.lanes||[]).flatMap(l=>l.cards).find(x=>x.id===card.dataset.card);
   if(!c)return;
+  if(c.blocker){toast(c.id+' is blocked by '+blockerOf(c).name+'. Unblock it before moving.');return}
   const rect=card.getBoundingClientRect();
   const ghost=card.cloneNode(true);
   ghost.classList.add('dragghost');ghost.removeAttribute('id');
@@ -1141,19 +1230,7 @@ async function dragDrop(){
   const to=t.sub===null?t.lane:t.lane+'.'+t.sub;
   const from=card.substate?card.lane+'.'+card.substate:card.lane;
   if(to===from)return;
-  const send=async f=>{
-    await api('/api/projects/'+SEL+'/cards/'+id+'/move',{method:'POST',body:JSON.stringify(f?{to:to,force:true}:{to:to})});
-    await reloadOrg();
-  };
-  if(force){
-    // The lane's own rules forbid this. Say which rule, and make taking the
-    // override a separate, deliberate act.
-    return confirmModal('Override the lane rules',
-      'Moving '+esc(id)+' to <b>'+esc(to)+'</b> breaks the order this lane declares. Forcing is recorded as an override in the activity log.',
-      'force the move',()=>send(true));
-  }
-  try{await send(false)}
-  catch(err){toast(err.message)}
+  moveCardUi(card,to,force,()=>reloadOrg());
 }
 function boardClicks(e){
   if(Date.now()-DRAG_ENDED<400)return;
@@ -1203,23 +1280,18 @@ async function keyboardMove(el,dir){
   const to=sub?lane.id+'.'+sub:lane.id;
   const from=c.substate?c.lane+'.'+c.substate:c.lane;
   if(to===from)return;
-  const send=async force=>{
-    try{
-      await api('/api/projects/'+SEL+'/cards/'+id+'/move',{method:'POST',body:JSON.stringify(force?{to:to,force:true}:{to:to})});
+  const after=async()=>{
       await reloadOrg();
       // The card lives in another column now; put focus back on it so a run
       // of moves does not strand the keyboard at the old position.
       const again=document.querySelector('[data-card="'+id+'"]');
       if(again)again.focus();
       toast(id+' moved to '+to);
-    }catch(err){toast(err.message)}
   };
   const legal=dropRules(BOARD,c).get(lane.id+'\u0000'+(sub||''))!==false;
-  if(legal)return send(false);
+  if(legal)return moveCardUi(c,to,false,after);
   if(!IS_OWNER)return toast(lane.id+' is strict: '+id+' can only enter at '+lane.id+'.'+lane.substates[0]);
-  confirmModal('Override the lane rules',
-    'Moving '+esc(id)+' to <b>'+esc(to)+'</b> breaks the order this lane declares. Forcing is recorded as an override in the activity log.',
-    'force the move',()=>send(true));
+  moveCardUi(c,to,true,after);
 }
 function boardKeys(e){
   const cur=e.target.closest('[data-card]');if(!cur)return;
@@ -1292,6 +1364,7 @@ async function refreshBoard(quiet){
   let b;try{b=await api('/api/projects/'+SEL+'/board')}catch(err){if(!quiet)$('#view').innerHTML='<div class="err">'+esc(err.message)+'</div>';return}
   if(quiet&&JSON.stringify(b)===JSON.stringify(BOARD))return;
   BOARD=b;
+  renderBoardButtons();
   const pi=$('#pinfo');if(pi){pi.textContent=b.cards+' cards · '+pct(b.progress);pi.title='structural progress: every card is one unit; a sub-board fills its unit by its own fraction'}
   const v=$('#view');if(!v)return;
   syncSearchControls(b);
@@ -1390,6 +1463,7 @@ async function boardEditor(){
     +'<input class="lsub" value="'+esc((l.substates||[]).join(', '))+'" placeholder="substates (comma separated)" aria-label="substates">'
     +'<select class="lord" aria-label="substate order"><option '+(l.order!=='strict'?'selected':'')+'>free</option><option '+(l.order==='strict'?'selected':'')+'>strict</option></select>'
     +'<input class="lwip" type="number" min="1" value="'+(l.wip==null?'':l.wip)+'" placeholder="wip" aria-label="wip limit">'
+    +'<select class="lwipmode" aria-label="WIP enforcement"><option '+(l.wipMode!=='justify'&&l.wipMode!=='deny'?'selected':'')+'>allow</option><option '+(l.wipMode==='justify'?'selected':'')+'>justify</option><option '+(l.wipMode==='deny'?'selected':'')+'>deny</option></select>'
     +'<button type="button" class="ghost" data-rm aria-label="remove lane">✕</button>'
     +'<span class="mig" hidden>→ move its cards to <select class="mtarget" aria-label="migration target"></select></span>'
     +'</div>';
@@ -1421,6 +1495,27 @@ async function boardEditor(){
     +'<input class="tfields" value="'+esc(JSON.stringify(t.fields||{}))+'" placeholder="custom fields JSON" aria-label="template custom fields">'
     +'<button type="button" class="ghost" data-rmtemplate aria-label="remove template">✕ remove</button>'
     +'<textarea class="tbody" placeholder="initial markdown body" aria-label="template body">'+esc(t.body||'')+'</textarea></div></details>';
+  const blockerRow=b=>'<div class="registryrow" data-blockerdef>'
+    +'<input class="rid" value="'+esc(b.id||'')+'" placeholder="blocker-id" aria-label="blocker id">'
+    +'<input class="rname" value="'+esc(b.name||'')+'" placeholder="display name" aria-label="blocker name">'
+    +'<input class="rcolor" value="'+esc(b.color||'')+'" placeholder="#RRGGBB" aria-label="blocker color">'
+    +'<button type="button" class="ghost" data-rmblocker aria-label="remove blocker">✕</button></div>';
+  const buttonRow=b=>'<div class="registryrow" data-buttondef>'
+    +'<input class="rid" value="'+esc(b.id||'')+'" placeholder="button-id" aria-label="button id">'
+    +'<input class="rname" value="'+esc(b.name||'')+'" placeholder="label" aria-label="button label">'
+    +'<select class="bscope" aria-label="button scope"><option '+(b.scope!=='board'?'selected':'')+'>card</option><option '+(b.scope==='board'?'selected':'')+'>board</option></select>'
+    +'<input class="bfilter" value="'+esc(b.filter||'')+'" placeholder="saved filter (board)" aria-label="button saved filter">'
+    +'<select class="baction" aria-label="button action">'+['move','close','label'].map(a=>'<option '+(a===b.action?'selected':'')+'>'+a+'</option>').join('')+'</select>'
+    +'<input class="rwide bvalue" value="'+esc(b.value||'')+'" placeholder="lane or label (close is empty)" aria-label="button value">'
+    +'<button type="button" class="ghost" data-rmbutton aria-label="remove button">✕</button></div>';
+  const ruleRow=r=>'<div class="registryrow" data-ruledef>'
+    +'<input class="rid" value="'+esc(r.id||'')+'" placeholder="rule-id" aria-label="rule id">'
+    +'<select class="revent" aria-label="rule event">'+['enter','close','block'].map(v=>'<option '+(v===r.event?'selected':'')+'>'+v+'</option>').join('')+'</select>'
+    +'<input class="rlane" value="'+esc(r.lane||'')+'" placeholder="lane for enter" aria-label="rule lane">'
+    +'<input class="rfilter" value="'+esc(r.filter||'')+'" placeholder="saved filter" aria-label="rule saved filter">'
+    +'<select class="raction" aria-label="rule action">'+['label','unlabel','assign','delegate','comment'].map(v=>'<option '+(v===r.action?'selected':'')+'>'+v+'</option>').join('')+'</select>'
+    +'<input class="rwide rvalue" value="'+esc(r.value||'')+'" placeholder="action value" aria-label="rule value">'
+    +'<button type="button" class="ghost" data-rmrule aria-label="remove rule">✕</button></div>';
   const m=overlay('<h3>Edit board</h3>'
     +'<div class="field"><label>board name<input id="bname" value="'+esc(cfg.name)+'"></label></div>'
     +'<h4>lanes</h4><p class="setting-note">Every lane projects onto one canonical state; lanes named after a canonical state map to themselves. Removing a lane migrates its cards, and each move is logged on the card.</p>'
@@ -1432,6 +1527,13 @@ async function boardEditor(){
     +'<div id="fielddefs">'+(cfg.fields||[]).map(fieldRow).join('')+'</div><button type="button" id="addfield">+ field</button>'
     +'<h4>card templates</h4><p class="setting-note">Templates copy defaults into a new ordinary card. Use {{title}} in the initial markdown body.</p>'
     +'<div id="templatedefs">'+(cfg.templates||[]).map(templateRow).join('')+'</div><button type="button" id="addtemplate">+ template</button>'
+    +'<h4>named blockers</h4><p class="setting-note">Reusable blocker reasons make blocked time comparable. A card with a named blocker cannot be dragged until it is unblocked.</p>'
+    +'<div id="blockerdefs">'+(cfg.blockers||[]).map(blockerRow).join('')+'</div><button type="button" id="addblocker">+ blocker</button>'
+    +'<h4>one-click buttons</h4><p class="setting-note">Card buttons affect one open card. Board buttons affect at most 100 cards selected by a saved filter.</p>'
+    +'<div id="buttondefs">'+(cfg.buttons||[]).map(buttonRow).join('')+'</div><button type="button" id="addbutton">+ button</button>'
+    +'<h4>event rules</h4><p class="setting-note">Rules run locally after enter, close, or block events. They cannot move cards, call the network, or recursively trigger rules.</p>'
+    +'<div id="ruledefs">'+(cfg.rules||[]).map(ruleRow).join('')+'</div><button type="button" id="addrule">+ rule</button>'
+    +'<h4>scheduled automation</h4><div class="field"><label>archive done cards after this many days (empty disables)<input id="archiveafter" type="number" min="1" value="'+esc(cfg.automation&&cfg.automation.archiveDoneAfter||'')+'"></label></div>'
     +'<h4>rollup policy</h4><div class="rollups">'
     +'<label>blocked when<select id="rbw"><option '+(cfg.rollup.blockedWhen==='any-blocked'?'selected':'')+'>any-blocked</option><option '+(cfg.rollup.blockedWhen==='never'?'selected':'')+'>never</option></select></label>'
     +'<label>doing when<select id="rdw"><option '+(cfg.rollup.doingWhen==='any-started'?'selected':'')+'>any-started</option><option '+(cfg.rollup.doingWhen==='any-doing'?'selected':'')+'>any-doing</option></select></label>'
@@ -1448,13 +1550,19 @@ async function boardEditor(){
       sel.innerHTML=liveIds.map(i=>'<option '+(i===cur?'selected':'')+'>'+esc(i)+'</option>').join('');
     }
   };
-  $('#addlane',m).onclick=()=>{$('#lanes',m).insertAdjacentHTML('beforeend',laneRow({id:'',canonical:'todo',substates:[],order:'free',wip:null}));$('#lanes',m).lastElementChild.querySelector('.lid').focus()};
+  $('#addlane',m).onclick=()=>{$('#lanes',m).insertAdjacentHTML('beforeend',laneRow({id:'',canonical:'todo',substates:[],order:'free',wip:null,wipMode:'allow'}));$('#lanes',m).lastElementChild.querySelector('.lid').focus()};
   $('#addlabel',m).onclick=()=>{$('#labeldefs',m).insertAdjacentHTML('beforeend',labelRow({id:'',color:''}));$('#labeldefs',m).lastElementChild.querySelector('.rid').focus()};
   $('#addfield',m).onclick=()=>{$('#fielddefs',m).insertAdjacentHTML('beforeend',fieldRow({id:'',name:'',type:'text',options:[],face:false}));$('#fielddefs',m).lastElementChild.querySelector('.rid').focus()};
   $('#addtemplate',m).onclick=()=>{$('#templatedefs',m).insertAdjacentHTML('beforeend',templateRow({id:'',name:'',labels:[],fields:{},body:''}));$('#templatedefs',m).lastElementChild.querySelector('.tid').focus()};
+  $('#addblocker',m).onclick=()=>{$('#blockerdefs',m).insertAdjacentHTML('beforeend',blockerRow({id:'',name:'',color:''}));$('#blockerdefs',m).lastElementChild.querySelector('.rid').focus()};
+  $('#addbutton',m).onclick=()=>{$('#buttondefs',m).insertAdjacentHTML('beforeend',buttonRow({id:'',name:'',scope:'card',action:'move',value:''}));$('#buttondefs',m).lastElementChild.querySelector('.rid').focus()};
+  $('#addrule',m).onclick=()=>{$('#ruledefs',m).insertAdjacentHTML('beforeend',ruleRow({id:'',event:'enter',action:'label',value:''}));$('#ruledefs',m).lastElementChild.querySelector('.rid').focus()};
   $('#labeldefs',m).onclick=e=>{const x=e.target.closest('[data-rmlabel]');if(x)x.closest('[data-labeldef]').remove()};
   $('#fielddefs',m).onclick=e=>{const x=e.target.closest('[data-rmfield]');if(x)x.closest('[data-fielddef]').remove()};
   $('#templatedefs',m).onclick=e=>{const x=e.target.closest('[data-rmtemplate]');if(x)x.closest('[data-template]').remove()};
+  $('#blockerdefs',m).onclick=e=>{const x=e.target.closest('[data-rmblocker]');if(x)x.closest('[data-blockerdef]').remove()};
+  $('#buttondefs',m).onclick=e=>{const x=e.target.closest('[data-rmbutton]');if(x)x.closest('[data-buttondef]').remove()};
+  $('#ruledefs',m).onclick=e=>{const x=e.target.closest('[data-rmrule]');if(x)x.closest('[data-ruledef]').remove()};
   $('#lanes',m).oninput=refreshMigTargets;
   $('#lanes',m).onclick=e=>{
     const rm=e.target.closest('[data-rm]');if(!rm)return;
@@ -1467,7 +1575,7 @@ async function boardEditor(){
     refreshMigTargets();
   };
   $('#bsave',m).onclick=async()=>{
-    const lanes=[],labels=[],fields=[],templates=[],migrations={};
+    const lanes=[],labels=[],fields=[],templates=[],blockers=[],buttons=[],rules=[],migrations={};
     for(const row of m.querySelectorAll('[data-lane]')){
       const id=row.querySelector('.lid').value.trim();
       if(row.classList.contains('dead')){
@@ -1479,7 +1587,7 @@ async function boardEditor(){
       const wip=row.querySelector('.lwip').value.trim();
       lanes.push({id,canonical:row.querySelector('.lcan').value,
         substates:row.querySelector('.lsub').value.split(',').map(s=>s.trim()).filter(Boolean),
-        order:row.querySelector('.lord').value,wip:wip===''?null:Number(wip)});
+        order:row.querySelector('.lord').value,wip:wip===''?null:Number(wip),wipMode:row.querySelector('.lwipmode').value});
     }
     for(const row of m.querySelectorAll('[data-labeldef]')){
       const id=row.querySelector('.rid').value.trim();if(!id)continue;
@@ -1505,9 +1613,27 @@ async function boardEditor(){
         estimate:estimate?Number(estimate):undefined,evergreen:row.querySelector('.tevergreen').checked,
         cover_color:row.querySelector('.tcolor').value.trim()||undefined,fields:templateFields,body:row.querySelector('.tbody').value});
     }
+    for(const row of m.querySelectorAll('[data-blockerdef]')){
+      const id=row.querySelector('.rid').value.trim();if(!id)continue;
+      blockers.push({id,name:row.querySelector('.rname').value.trim()||id,color:row.querySelector('.rcolor').value.trim()||undefined});
+    }
+    for(const row of m.querySelectorAll('[data-buttondef]')){
+      const id=row.querySelector('.rid').value.trim();if(!id)continue;
+      const action=row.querySelector('.baction').value;
+      buttons.push({id,name:row.querySelector('.rname').value.trim()||id,scope:row.querySelector('.bscope').value,
+        filter:row.querySelector('.bfilter').value.trim()||undefined,action,value:action==='close'?undefined:row.querySelector('.bvalue').value.trim()||undefined});
+    }
+    for(const row of m.querySelectorAll('[data-ruledef]')){
+      const id=row.querySelector('.rid').value.trim();if(!id)continue;
+      const event=row.querySelector('.revent').value;
+      rules.push({id,event,lane:event==='enter'?row.querySelector('.rlane').value.trim()||undefined:undefined,
+        filter:row.querySelector('.rfilter').value.trim()||undefined,action:row.querySelector('.raction').value,value:row.querySelector('.rvalue').value.trim()});
+    }
+    const archiveAfter=$('#archiveafter',m).value.trim();
     try{
       await api('/api/projects/'+SEL+'/config',{method:'PUT',body:JSON.stringify({
-        name:$('#bname',m).value,lanes,labels,fields,templates,
+        name:$('#bname',m).value,lanes,labels,fields,templates,blockers,buttons,rules,
+        automation:{archiveDoneAfter:archiveAfter===''?null:Number(archiveAfter)},
         rollup:{blockedWhen:$('#rbw',m).value,doingWhen:$('#rdw',m).value,elseState:$('#rel',m).value},migrations})});
       closeOverlay();BOARD=null;refreshBoard();reloadOrg();
     }catch(err){$('.err',m).textContent=err.message}
@@ -1590,7 +1716,8 @@ function cardModalHtml(c,tab){
   for(const l of c.labelDetails||[])meta.push('<span class="badges">'+labelBadge(l)+'</span>');
   if(!(c.labelDetails||[]).length)for(const l of c.labels||[])meta.push('<span class="badges"><span>#'+esc(l)+'</span></span>');
   const due=dueFace(c);if(due)meta.push('<span class="badges">'+due+'</span>');
-  if(c.blocked)meta.push('<span class="badges"><span class="blk">⛔ '+esc(c.blocked)+'</span></span>');
+  if(c.blocked){const bd=blockerOf(c);meta.push('<span class="badges"><span class="'+(c.blocker?'namedblk':'blk')+'"'+(c.blocker?' style="--blocker-color:'+esc(bd.color||'var(--st-blocked)')+'"':'')+'>⛔ '+esc(c.blocker?bd.name:c.blocked)+'</span></span>')}
+  if(c.snooze)meta.push('<span class="badges"><span class="snoozed" title="until '+esc(c.snooze)+'">☾ snoozed</span></span>');
   if(!RO){
     const mine=ME&&(ME.kind==='bot'?c.delegate:c.assignee)===ME.username;
     const settled=c.state==='done'||c.state==='archive';
@@ -1602,9 +1729,13 @@ function cardModalHtml(c,tab){
     acts.push(c.blocked
       ?'<button class="ghost" data-unblock title="clear the blocked flag">unblock</button>'
       :'<button class="ghost" data-block title="park this card with a reason">⛔ block</button>');
+    acts.push(c.snooze
+      ?'<button class="ghost" data-wake title="wake this card now">☀ wake</button>'
+      :'<button class="ghost" data-snooze title="hide this card from ready work until a time or new activity">☾ snooze</button>');
     acts.push('<button class="ghost" data-watch data-on="'+watching+'" aria-pressed="'+watching+'" title="'+(watching?'stop watching':'watch this card')+'">'+(watching?'◉ watching':'○ watch')+'</button>');
     acts.push('<button class="ghost" data-vote data-on="'+voted+'" aria-pressed="'+voted+'" title="'+(voted?'withdraw your vote':'vote for this card')+'">▲ '+(voted?'voted':'vote')+'</button>');
     acts.push('<button class="ghost" data-boost title="leave a short boost">✦ boost</button>');
+    for(const b of ((BOARD&&BOARD.buttons)||[]).filter(b=>b.scope==='card'))acts.push('<button class="ghost" data-cardbutton="'+esc(b.id)+'" title="'+esc(b.action+(b.value?' '+b.value:''))+'">'+esc(b.name)+'</button>');
     meta.push(acts.join(''));
     meta.push('<button class="ghost" data-editcard title="edit card fields">✎ edit</button>'
       +'<button class="ghost" data-mergecard title="merge this duplicate into another card">merge duplicate</button>'
@@ -1677,6 +1808,10 @@ function paneCard(c){
   if(c.delegate)kv.push('<span><b>delegate</b> '+esc(who(c.delegate))+'</span>');
   if(c.start)kv.push('<span><b>start</b> '+esc(c.start)+'</span>');
   if(c.due)kv.push('<span><b>due</b> '+esc(c.due)+'</span>');
+  if((c.reminders||[]).length)kv.push('<span><b>reminders</b> '+c.reminders.map(m=>esc(m+'m before due')).join(', ')+'</span>');
+  if(c.repeat)kv.push('<span><b>repeat</b> every '+esc(c.repeat.every)+' '+esc(c.repeat.unit)+(c.repeat.every===1?'':'s')+' from '+esc(c.repeat.from)+'</span>');
+  if(c.snooze)kv.push('<span><b>snoozed until</b> '+esc(c.snooze)+' · new activity wakes it</span>');
+  if(c.blocker){const bd=blockerOf(c);kv.push('<span><b>blocker</b> '+esc(bd.name)+' <code>'+esc(c.blocker)+'</code></span>')}
   if(c.estimate!=null)kv.push('<span><b>estimate</b> '+esc(c.estimate)+'</span>');
   if(c.evergreen)kv.push('<span><b>aging</b> evergreen</span>');
   for(const f of c.fields||[])kv.push('<span><b>'+esc(f.name)+'</b> '+esc(fieldText(f.value))+'</span>');
@@ -1690,6 +1825,7 @@ function paneCard(c){
   if(fm.cycleDays!=null)kv.push('<span><b>cycle</b> '+fm.cycleDays+'d</span>');
   if(fm.leadDays!=null)kv.push('<span><b>lead</b> '+fm.leadDays+'d</span>');
   if(fm.blockedDays)kv.push('<span><b>blocked</b> '+fm.blockedDays+'d</span>');
+  if(fm.blockerDays)for(const [id,days] of Object.entries(fm.blockerDays))kv.push('<span><b>blocked · '+esc(id)+'</b> '+esc(days)+'d</span>');
   kv.push('<span><b>file</b> '+esc(c.file)+'</span>');
   out+='<div class="kv">'+kv.join('')+'</div>';
   return out;
@@ -1705,6 +1841,17 @@ function paneActivity(c){
   return '<div class="actlist">'+(list.length?list.map(e=>'<div class="a"><span class="when">'+esc(e.when)+'</span><span><span class="who">'+esc(e.actor)+'</span> '+esc(e.text)+'</span></div>').join('')
     :'<div class="empty">no activity</div>')+'</div>';
 }
+function maybeWipPrompt(card,canonical,verb,run){
+  const lane=(BOARD&&BOARD.lanes||[]).find(l=>l.canonical===canonical);
+  const overflow=!!lane&&card.lane!==lane.id&&lane.wip!=null&&lane.cards.length>=lane.wip;
+  if(!overflow||lane.wipMode==='allow')return false;
+  const denied=lane.wipMode==='deny';
+  if(denied&&!IS_OWNER){toast(lane.name+' denies WIP overflow ('+(lane.cards.length+1)+'/'+lane.wip+').');return true}
+  formModal(denied?'Override WIP limit':verb+' with WIP overflow',[
+    {name:'reason',label:denied?'owner override justification':'written WIP justification',required:true},
+  ],denied?'override and '+verb.toLowerCase():verb.toLowerCase(),d=>run({wipReason:d.reason,...(denied?{force:true}:{})}));
+  return true;
+}
 function wireCardModal(m,c,tab){
   $('[data-x]',m).onclick=()=>{closeOverlay();if(!PUB)refreshBoard(true)};
   m.querySelector('.tabbar').onclick=e=>{const b=e.target.closest('[data-ctab]');if(b)openCard(c.id,b.dataset.ctab)};
@@ -1714,6 +1861,8 @@ function wireCardModal(m,c,tab){
     if(go&&!go.disabled){closeOverlay();SEL=go.dataset.goto2;VIEW='board';BOARD=null;renderSide();renderMain();return}
     const open=e.target.closest('[data-opencard]');
     if(open){const target=open.dataset.opencard;if(!target.includes('#'))openCard(target,'card');return}
+    const cardButton=e.target.closest('[data-cardbutton]');
+    if(cardButton){try{await invokeButton(cardButton.dataset.cardbutton,c.id)}catch(err){toast(err.message)}return}
     const watch=e.target.closest('[data-watch]');
     if(watch){
       await api(cardApi(c.id)+'/watch',{method:'POST',body:JSON.stringify({active:watch.dataset.on!=='true'})});
@@ -1814,11 +1963,12 @@ function wireCardModal(m,c,tab){
     // error, so a lost claim explains itself and (for owners only) offers the
     // override the spec allows a human operator.
     if(e.target.closest('[data-claim]')){
-      const act=async force=>{
-        const r=await api(cardApi(c.id)+'/claim',{method:'POST',body:JSON.stringify(force?{force:true}:{})});
-        closeOverlay();await reloadOrg();openCard(c.id,'card');
+      const act=async(force,wipReason)=>{
+        const r=await api(cardApi(c.id)+'/claim',{method:'POST',body:JSON.stringify({...(force?{force:true}:{}),...(wipReason?{wipReason:wipReason}:{})})});
+        closeOverlay();await reloadOrg();setTimeout(()=>openCard(c.id,'card'),0);
         if(r&&r.alreadyYours)toast('You already hold '+c.id+'.');
       };
+      if(maybeWipPrompt(c,'doing','Claim',x=>act(x.force===true,x.wipReason)))return;
       try{await act(false)}
       catch(err){
         if(err.status!==409)return toast(err.message);
@@ -1835,15 +1985,26 @@ function wireCardModal(m,c,tab){
       }
       return}
     if(e.target.closest('[data-close]')){
-      formModal('Close '+c.id,[{name:'reason',label:'what holds now (optional)'}],'close',async d=>{
-        await api(cardApi(c.id)+'/close',{method:'POST',body:JSON.stringify(d.reason?{reason:d.reason}:{})});
+      const lane=(BOARD&&BOARD.lanes||[]).find(l=>l.canonical==='done');
+      const overflow=!!lane&&c.lane!==lane.id&&lane.wip!=null&&lane.cards.length>=lane.wip;
+      const denied=overflow&&lane.wipMode==='deny';
+      if(denied&&!IS_OWNER){toast(lane.name+' denies WIP overflow ('+(lane.cards.length+1)+'/'+lane.wip+').');return}
+      const fields=[{name:'reason',label:'what holds now (optional)'}]
+        .concat(overflow&&lane.wipMode!=='allow'?[{name:'wipReason',label:denied?'owner override justification':'written WIP justification',required:true}]:[]);
+      formModal('Close '+c.id,fields,'close',async d=>{
+        await api(cardApi(c.id)+'/close',{method:'POST',body:JSON.stringify({...(d.reason?{reason:d.reason}:{}),
+          ...(d.wipReason?{wipReason:d.wipReason}:{}),...(denied?{force:true}:{})})});
         await reloadOrg();
         setTimeout(()=>openCard(c.id,'card'),0); // after the form modal closes itself
       });
       return}
     if(e.target.closest('[data-block]')){
-      formModal('Block '+c.id,[{name:'reason',label:'why it is parked',required:true}],'block',async d=>{
-        await api(cardApi(c.id)+'/block',{method:'POST',body:JSON.stringify({reason:d.reason})});
+      const blockers=(BOARD&&BOARD.blockers)||[];
+      formModal('Block '+c.id,[
+        ...(blockers.length?[{name:'blocker',label:'named blocker',type:'select',options:[{value:'',label:'unclassified'}].concat(blockers.map(b=>({value:b.id,label:b.name})))}]:[]),
+        {name:'reason',label:'why it is parked',required:true},
+      ],'block',async d=>{
+        await api(cardApi(c.id)+'/block',{method:'POST',body:JSON.stringify({reason:d.reason,blocker:d.blocker||undefined})});
         await reloadOrg();
         setTimeout(()=>openCard(c.id,'card'),0); // after the form modal closes itself
       });
@@ -1852,6 +2013,15 @@ function wireCardModal(m,c,tab){
       await api(cardApi(c.id)+'/unblock',{method:'POST',body:JSON.stringify({})});
       await reloadOrg();openCard(c.id,'card');
       return}
+    if(e.target.closest('[data-snooze]')){
+      formModal('Snooze '+c.id,[{name:'until',label:'until (YYYY-MM-DD or UTC datetime)',required:true}],'snooze',async d=>{
+        await api(cardApi(c.id)+'/snooze',{method:'POST',body:JSON.stringify({until:d.until})});
+        await reloadOrg();setTimeout(()=>openCard(c.id,'card'),0);
+      });
+      return}
+    if(e.target.closest('[data-wake]')){
+      await api(cardApi(c.id)+'/snooze',{method:'POST',body:JSON.stringify({until:null})});
+      await reloadOrg();openCard(c.id,'card');return}
     if(e.target.closest('[data-editcard]')){
       const defs=(BOARD&&BOARD.fields)||[];
       const fields=[
@@ -1863,6 +2033,11 @@ function wireCardModal(m,c,tab){
         {name:'delegate',label:'executing delegate (empty to clear)',value:c.delegate||''},
         {name:'start',label:'start (empty to clear)',value:c.start||''},
         {name:'due',label:'due (empty to clear)',value:c.due||''},
+        {name:'reminders',label:'reminders before due (minutes, comma separated; empty clears)',value:(c.reminders||[]).join(', ')},
+        {name:'repeat_every',label:'repeat every (empty clears recurrence)',type:'number',value:c.repeat&&c.repeat.every||''},
+        {name:'repeat_unit',label:'repeat unit',type:'select',value:c.repeat&&c.repeat.unit||'day',options:[{value:'day',label:'days'},{value:'week',label:'weeks'},{value:'month',label:'months'}]},
+        {name:'repeat_from',label:'next dates from',type:'select',value:c.repeat&&c.repeat.from||'due',options:[{value:'due',label:'the prior due date'},{value:'completion',label:'completion time'}]},
+        {name:'snooze',label:'snooze until (empty wakes)',value:c.snooze||''},
         {name:'estimate',label:'estimate (empty to clear)',type:'number',value:c.estimate??''},
         {name:'evergreen',label:'aging signal',type:'select',value:String(!!c.evergreen),options:[{value:'false',label:'normal'},{value:'true',label:'evergreen (hide aging)'}]},
         {name:'cover_color',label:'cover color (empty to clear)',value:c.coverColor||''},
@@ -1871,6 +2046,9 @@ function wireCardModal(m,c,tab){
         await api('/api/projects/'+SEL+'/cards/'+c.id+'/edit',{method:'POST',body:JSON.stringify({
           title:d.title,priority:d.priority||null,assignee:d.assignee||null,
           delegate:d.delegate||null,start:d.start||null,due:d.due||null,
+          reminders:d.reminders?d.reminders.split(',').map(s=>Number(s.trim())):[],
+          repeat:d.repeat_every?{every:Number(d.repeat_every),unit:d.repeat_unit,from:d.repeat_from}:null,
+          snooze:d.snooze||null,
           estimate:d.estimate?Number(d.estimate):null,evergreen:d.evergreen==='true',cover_color:d.cover_color||null,
           labels:d.labels?d.labels.split(',').map(s=>s.trim()).filter(Boolean):[],
           deps:d.deps?d.deps.split(',').map(s=>s.trim()).filter(Boolean):[],fields:customPayload(defs,d,true)})});

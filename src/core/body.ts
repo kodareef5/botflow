@@ -99,6 +99,17 @@ export function bodyHasSection(body: string, name: string): boolean {
   return bodyHeadings(body).some((heading) => heading.name.toLowerCase() === name.toLowerCase());
 }
 
+/** Remove one real level-two section and its content. Used when a recurring
+ * instance deliberately starts without prior Comments/Boosts/Log history. */
+export function removeSection(body: string, name: string): string {
+  const headings = bodyHeadings(body);
+  const index = headings.findIndex((heading) => heading.name.toLowerCase() === name.toLowerCase());
+  if (index === -1) return body;
+  const start = headings[index]!.start;
+  const end = headings[index + 1]?.start ?? body.length;
+  return (body.slice(0, start).trimEnd() + '\n\n' + body.slice(end).trimStart()).trim() + (body.trim() === '' ? '' : '\n');
+}
+
 export function parseBody(body: string): ParsedBody {
   const lines = body.replace(/\r\n/g, '\n').split('\n');
   let section: string | null = null;

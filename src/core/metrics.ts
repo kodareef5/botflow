@@ -36,6 +36,7 @@ export interface CardFlowMetrics {
   cycleDays: number | null;
   leadDays: number | null;
   blockedDays: number | null;
+  blockerDays: Record<string, number>;
   completedAt: string | null;
   due: null | { status: 'complete' | 'overdue' | 'today' | 'soon' | 'upcoming'; days: number };
 }
@@ -43,6 +44,7 @@ export interface CardFlowMetrics {
 export interface BoardFlowMetrics {
   throughput: { date: string; count: number }[];
   cumulativeFlow: { date: string; distribution: Distribution }[];
+  blockerDays: Record<string, number>;
 }
 
 /** Parse the date forms the format writes. A date-only value is midnight UTC. */
@@ -104,7 +106,7 @@ export function cardFlowEvents(card: Card, board: LoadedBoard): FlowEvent[] {
       state = flagBlocked && laneCanonical !== 'done' && laneCanonical !== 'archive' ? 'blocked' : laneCanonical;
       push({ at: entry.at, lane, state });
     }
-    if (/^blocked:/.test(entry.text) && state !== 'done' && state !== 'archive') {
+    if (/^blocked(?: \[[a-z0-9][a-z0-9-]*\])?:/.test(entry.text) && state !== 'done' && state !== 'archive') {
       flagBlocked = true;
       state = 'blocked';
       push({ at: entry.at, lane, state });
@@ -151,7 +153,7 @@ export function cardFlowMetrics(card: Card, board: LoadedBoard, current: Canonic
   const now = typeof nowValue === 'number' ? nowValue : nowValue.getTime();
   const entries = timedLog(card);
   const events = cardFlowEvents(card, board);
-  const last = entries.at(-1);
+  const last = entries.filter((entry) => !(entry.actor === 'botflow' && /^reminder \d+m for due /.test(entry.text))).at(-1);
   const lastAt = last?.at ?? null;
   const idleDays = lastAt === null ? null : wholeDays(lastAt, now);
 
@@ -184,6 +186,27 @@ export function cardFlowMetrics(card: Card, board: LoadedBoard, current: Canonic
     const end = events[i + 1]?.at ?? now;
     if (end > events[i]!.at) blockedMs += end - events[i]!.at;
   }
+  const blockerMs = new Map<string, number>();
+  let activeBlocker: { id: string; at: number } | null = null;
+  const closeBlocker = (at: number): void => {
+    if (activeBlocker !== null && at > activeBlocker.at) {
+      blockerMs.set(activeBlocker.id, (blockerMs.get(activeBlocker.id) ?? 0) + at - activeBlocker.at);
+    }
+    activeBlocker = null;
+  };
+  for (const entry of entries) {
+    const match = /^blocked(?: \[([a-z0-9][a-z0-9-]*)\])?:/.exec(entry.text);
+    if (match) {
+      closeBlocker(entry.at);
+      activeBlocker = { id: match[1] ?? 'unclassified', at: entry.at };
+    } else if (/^(?:unblocked|closed)\b/.test(entry.text)) {
+      closeBlocker(entry.at);
+    }
+  }
+  closeBlocker(now);
+  const blockerDays = Object.fromEntries([...blockerMs]
+    .map(([id, milliseconds]) => [id, Math.floor(milliseconds / DAY_MS)] as const)
+    .filter(([, days]) => days > 0));
 
   const agingLevel: 0 | 1 | 2 | 3 = card.evergreen || (current !== 'doing' && current !== 'blocked') || idleDays === null
     ? 0
@@ -200,6 +223,7 @@ export function cardFlowMetrics(card: Card, board: LoadedBoard, current: Canonic
     cycleDays: firstDoing !== null && firstDone !== null && firstDone >= firstDoing ? wholeDays(firstDoing, firstDone) : null,
     leadDays: createdAt !== null && firstDone !== null && firstDone >= createdAt ? wholeDays(createdAt, firstDone) : null,
     blockedDays: current === 'blocked' && events.at(-1)?.state !== 'blocked' ? null : Math.floor(blockedMs / DAY_MS),
+    blockerDays,
     completedAt: firstDone === null ? null : new Date(firstDone).toISOString(),
     due: dueMetric(card, current, now),
   };
@@ -223,6 +247,14 @@ export function boardFlowMetrics(
   const count = Math.max(1, Math.min(366, Math.trunc(days) || 30));
   const today = Math.floor(now / DAY_MS) * DAY_MS;
   const histories = board.cards.map((card) => ({ card, events: cardFlowEvents(card, board) }));
+  const blockerDays: Record<string, number> = {};
+  for (const card of board.cards) {
+    const laneState = board.config.lanes.find((lane) => lane.id === card.laneId)?.canonical ?? 'todo';
+    const state = card.blocked !== null && laneState !== 'done' && laneState !== 'archive' ? 'blocked' : laneState;
+    for (const [id, value] of Object.entries(cardFlowMetrics(card, board, state, now).blockerDays)) {
+      blockerDays[id] = (blockerDays[id] ?? 0) + value;
+    }
+  }
   const throughputByDay = new Map<string, number>();
   for (const { events } of histories) {
     const done = events.find((event) => event.state === 'done');
@@ -245,5 +277,5 @@ export function boardFlowMetrics(
     throughput.push({ date, count: throughputByDay.get(date) ?? 0 });
     cumulativeFlow.push({ date, distribution });
   }
-  return { throughput, cumulativeFlow };
+  return { throughput, cumulativeFlow, blockerDays };
 }

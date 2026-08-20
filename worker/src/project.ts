@@ -16,7 +16,18 @@ import { parseBody } from '../../src/core/body.ts';
 import type { BoardAnalysis } from '../../src/core/analyze.ts';
 import type { BoardNode, Canonical, Card, Finding, Lane, LoadedBoard } from '../../src/core/model.ts';
 import { SLUG_RE, defaultRollup, isCanonical } from '../../src/core/model.ts';
-import { emitBoardYaml, parseCustomFields, parseLabelDefinitions, parseSavedFilters, parseSubscriptions, parseTemplates } from '../../src/core/config.ts';
+import {
+  emitBoardYaml,
+  parseAutomation,
+  parseBlockers,
+  parseButtons,
+  parseCustomFields,
+  parseLabelDefinitions,
+  parseRules,
+  parseSavedFilters,
+  parseSubscriptions,
+  parseTemplates,
+} from '../../src/core/config.ts';
 import type { YamlValue } from '../../src/core/yaml.ts';
 import { validCustomFieldValue } from '../../src/core/presentation.ts';
 import { parseCardReference } from '../../src/core/refs.ts';
@@ -46,7 +57,10 @@ import {
   opRemoveFilter,
   opSaveFilter,
   opSubscribeLane,
+  opSnooze,
   opBulk,
+  opButton,
+  opAutomationPass,
   opTransferCard,
   opMove,
   opUnblock,
@@ -58,6 +72,7 @@ import {
 import { newHashId, nextSeqId, slugify } from '../../src/core/ids.ts';
 import { logMutation, serializeCard } from '../../src/core/write.ts';
 import { queryCards } from '../../src/core/query.ts';
+import { nextAutomationAt } from '../../src/core/scheduling.ts';
 
 export interface AuditEvent {
   seq: number;
@@ -146,6 +161,41 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
 
   private event(actor: string, action: string, cardId: string | null, detail: string): void {
     this.sql.exec('INSERT INTO events(ts, actor, action, card_id, detail) VALUES (?, ?, ?, ?, ?)', new Date().toISOString(), actor, action, cardId, detail);
+  }
+
+  private rescheduleAutomation(board = this.loadBoardDocs()): void {
+    if (board.config.mutationBlocked !== null) return;
+    const next = nextAutomationAt(board);
+    const pending = next === null
+      ? this.ctx.storage.deleteAlarm()
+      : this.ctx.storage.setAlarm(Math.max(Date.now() + 1, next));
+    this.ctx.waitUntil(pending);
+  }
+
+  private runAutomationPass(nowValue: number | Date = Date.now()): ReturnType<typeof opAutomationPass> {
+    const board = this.loadBoardDocs();
+    if (board.config.mutationBlocked !== null) return { cards: [], actions: [], remaining: false, nextAt: null };
+    const result = opAutomationPass(board, nowValue);
+    if (result.cards.length > 0) {
+      const byId = new Map(result.cards.map((card) => [card.id, card]));
+      this.ctx.storage.transactionSync(() => {
+        for (const card of result.cards) this.persistCard(card);
+        for (const action of result.actions) {
+          const card = byId.get(action.cardId);
+          if (card === undefined) continue;
+          const detail = action.kind === 'reminder' ? `${action.offset}m before ${card.due}`
+            : action.kind === 'sweep' ? `auto-archived after ${board.config.automation.archiveDoneAfter} days`
+              : 'snooze expired';
+          this.event('botflow', action.kind, action.cardId, detail);
+        }
+      });
+    }
+    this.rescheduleAutomation({ ...board, cards: board.cards.map((card) => result.cards.find((changed) => changed.id === card.id) ?? card) });
+    return result;
+  }
+
+  async alarm(): Promise<void> {
+    this.runAutomationPass();
   }
 
   /** Resolve project-card children by asking sibling DOs. Cycle-safe, and
@@ -289,6 +339,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
         substates: payload.card.substate === null ? [] : [payload.card.substate],
         order: 'free',
         wip: null,
+        wipMode: 'allow',
         extra: {},
       };
       const synthetic: LoadedBoard = {
@@ -378,6 +429,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
 
   /** Full board (viewer shape, card bodies + parsed structure included). */
   async board(): Promise<Record<string, unknown>> {
+    this.runAutomationPass();
     const { board, ba, node, children } = await this.analyzed();
     const tree = { rootAbs: '.', boards: new Map([['.', node]]) };
     const analysis = { boards: new Map([['.', ba]]) };
@@ -390,6 +442,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       substates: lane.substates,
       order: lane.order,
       wip: lane.wip,
+      wipMode: lane.wipMode,
       subscribers: board.config.subscriptions.filter((item) => item.lane === lane.id).map((item) => item.watcher),
       estimate: board.cards.filter((c) => c.laneId === lane.id).reduce((sum, card) => sum + (card.estimate ?? 0), 0),
       cards: board.cards
@@ -554,7 +607,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       ids: c.ids,
       features: c.features,
       readOnlyReason: c.mutationBlocked,
-      lanes: c.lanes.map((l) => ({ id: l.id, name: l.name, canonical: l.canonical, substates: l.substates, order: l.order, wip: l.wip })),
+      lanes: c.lanes.map((l) => ({ id: l.id, name: l.name, canonical: l.canonical, substates: l.substates, order: l.order, wip: l.wip, wipMode: l.wipMode })),
       labels: c.labelDefinitions.map(({ id, color }) => ({ id, color })),
       fields: c.customFields.map(({ id, name, type, options, face }) => ({ id, name, type, options, face })),
       templates: c.templates.map(({ id, name, lane, labels, priority, assignee, delegate, start, due, estimate, evergreen, coverColor, fields, body }) => ({
@@ -562,6 +615,10 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       })),
       filters: c.savedFilters.map(({ id, name, query }) => ({ id, name, query })),
       subscriptions: c.subscriptions.map(({ lane, watcher }) => ({ lane, watcher })),
+      blockers: c.blockers.map(({ id, name, color }) => ({ id, name, color })),
+      buttons: c.buttons.map(({ id, name, scope, filter, action, value }) => ({ id, name, scope, filter, action, value })),
+      rules: c.rules.map(({ id, event, lane, filter, action, value }) => ({ id, event, lane, filter, action, value })),
+      automation: { archiveDoneAfter: c.automation.archiveDoneAfter },
       rollup: { blockedWhen: c.rollup.blockedWhen, doneWhen: c.rollup.doneWhen, doingWhen: c.rollup.doingWhen, elseState: c.rollup.elseState },
     };
   }
@@ -574,7 +631,11 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     const board = this.loadBoardDocs();
     if (board.config.mutationBlocked !== null) return { error: `board is read-only: ${board.config.mutationBlocked}` };
     if (payload === null || typeof payload !== 'object') return { error: 'malformed config' };
-    const p = payload as { name?: unknown; lanes?: unknown; labels?: unknown; fields?: unknown; templates?: unknown; filters?: unknown; subscriptions?: unknown; rollup?: unknown; migrations?: unknown };
+    const p = payload as {
+      name?: unknown; lanes?: unknown; labels?: unknown; fields?: unknown; templates?: unknown;
+      filters?: unknown; subscriptions?: unknown; blockers?: unknown; buttons?: unknown;
+      rules?: unknown; automation?: unknown; rollup?: unknown; migrations?: unknown;
+    };
     const name = typeof p.name === 'string' && p.name.trim() !== '' ? p.name.trim().replace(/[\r\n]+/g, ' ') : null;
     if (name === null) return { error: 'board name required' };
     if (!Array.isArray(p.lanes) || p.lanes.length === 0) return { error: 'at least one lane required' };
@@ -607,6 +668,10 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
         if (!Number.isInteger(n) || n <= 0) return { error: `lane "${id}": wip must be a positive integer` };
         wip = n;
       }
+      const wipMode = l['wipMode'] === undefined || l['wipMode'] === 'allow' ? 'allow'
+        : l['wipMode'] === 'justify' || l['wipMode'] === 'deny' ? l['wipMode'] : null;
+      if (wipMode === null) return { error: `lane "${id}": wipMode must be allow, justify, or deny` };
+      if (wipMode !== 'allow' && wip === null) return { error: `lane "${id}": wipMode requires wip` };
       lanes.push({
         id,
         name: typeof l['name'] === 'string' && l['name'].trim() !== '' ? l['name'].trim() : id,
@@ -614,6 +679,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
         substates,
         order,
         wip,
+        wipMode,
         extra: { ...(board.config.lanes.find((old) => old.id === id)?.extra ?? {}) },
       });
     }
@@ -684,7 +750,48 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
         ...subscription.extra,
       },
     }));
+    const parsedBlockers = p.blockers === undefined
+      ? board.config.blockers
+      : parseBlockers(p.blockers as YamlValue, presentationFindings);
+    const blockerError = presentationFindings.find((finding) => finding.severity === 'error');
+    if (blockerError !== undefined) return { error: blockerError.message };
+    const blockers = parsedBlockers.map((blocker) => ({
+      ...blocker,
+      extra: { ...(board.config.blockers.find((old) => old.id === blocker.id)?.extra ?? {}), ...blocker.extra },
+    }));
+    const parsedButtons = p.buttons === undefined
+      ? board.config.buttons
+      : parseButtons(p.buttons as YamlValue, presentationFindings, lanes, savedFilters);
+    const buttonError = presentationFindings.find((finding) => finding.severity === 'error');
+    if (buttonError !== undefined) return { error: buttonError.message };
+    const buttons = parsedButtons.map((button) => ({
+      ...button,
+      extra: { ...(board.config.buttons.find((old) => old.id === button.id)?.extra ?? {}), ...button.extra },
+    }));
+    const parsedRules = p.rules === undefined
+      ? board.config.rules
+      : parseRules(p.rules as YamlValue, presentationFindings, lanes, savedFilters);
+    const ruleError = presentationFindings.find((finding) => finding.severity === 'error');
+    if (ruleError !== undefined) return { error: ruleError.message };
+    const rules = parsedRules.map((rule) => ({
+      ...rule,
+      extra: { ...(board.config.rules.find((old) => old.id === rule.id)?.extra ?? {}), ...rule.extra },
+    }));
+    let automation = board.config.automation;
+    if (p.automation !== undefined) {
+      if (p.automation === null || typeof p.automation !== 'object' || Array.isArray(p.automation)) return { error: 'automation must be an object' };
+      const raw = p.automation as Record<string, unknown>;
+      automation = parseAutomation({
+        ...(raw['archiveDoneAfter'] === undefined || raw['archiveDoneAfter'] === null ? {} : { archive_done_after: raw['archiveDoneAfter'] as YamlValue }),
+      }, presentationFindings);
+      const automationError = presentationFindings.find((finding) => finding.severity === 'error');
+      if (automationError !== undefined) return { error: automationError.message };
+      automation.extra = { ...board.config.automation.extra, ...automation.extra };
+    }
     for (const card of board.cards) {
+      if (card.blocker !== null && !blockers.some((blocker) => blocker.id === card.blocker)) {
+        return { error: `card ${card.id}: active blocker "${card.blocker}" is absent from the new blocker registry` };
+      }
       for (const definition of customFields) {
         const value = card.extra[definition.id];
         if (value !== undefined && !validCustomFieldValue(definition, value)) {
@@ -723,12 +830,16 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       moved.push(card);
     }
 
-    const configYaml = emitBoardYaml({ ...board.config, name, lanes, labelDefinitions, customFields, templates, savedFilters, subscriptions, rollup });
+    const configYaml = emitBoardYaml({
+      ...board.config, name, lanes, labelDefinitions, customFields, templates,
+      savedFilters, subscriptions, blockers, buttons, rules, automation, rollup,
+    });
     this.ctx.storage.transactionSync(() => {
       this.sql.exec("INSERT INTO meta(key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", configYaml);
       for (const card of moved) this.persistCard(card);
       this.event(actor, 'board-edit', null, `lanes: ${lanes.map((l) => l.id).join(', ')}${moved.length > 0 ? `; migrated ${moved.length} card(s)` : ''}`);
     });
+    this.rescheduleAutomation();
     return { ok: true, migrated: moved.length };
   }
 
@@ -800,6 +911,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           (reIds.length > 0 ? `; re-id on collision: ${reIds.join(', ')}` : ''),
       );
     });
+    this.rescheduleAutomation();
     return { imported: parsed.cards.length, preserved: preserved.length, reIds, findings: parsed.findings.length };
   }
 
@@ -810,6 +922,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       const card = opAdd(board, { ...opts, actor });
       this.persistCard(card);
       this.event(actor, 'add', card.id, `created "${card.title}" in ${card.laneId}`);
+      this.rescheduleAutomation();
       return { id: card.id, file: card.file, lane: card.laneId };
     } catch (err) {
       if (err instanceof UsageError) return { error: err.message };
@@ -829,6 +942,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           this.event(actor, 'quick-add', card.id, `created "${card.title}" in ${card.laneId}`);
         }
       });
+      this.rescheduleAutomation();
       return { cards: cards.map((card) => ({ id: card.id, title: card.title, file: card.file })) };
     } catch (err) {
       if (err instanceof UsageError) return { error: err.message };
@@ -842,9 +956,9 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       if (board.config.mutationBlocked !== null) throw new UsageError(`board is read-only: ${board.config.mutationBlocked}`);
       const kind = String(action['kind'] ?? '');
       const operation = kind === 'move'
-        ? { kind: 'move' as const, to: String(action['to'] ?? ''), force: action['force'] === true }
+        ? { kind: 'move' as const, to: String(action['to'] ?? ''), force: action['force'] === true, wipJustification: typeof action['wipReason'] === 'string' ? action['wipReason'] : undefined }
         : kind === 'close'
-          ? { kind: 'close' as const, reason: typeof action['reason'] === 'string' ? action['reason'] : undefined }
+          ? { kind: 'close' as const, reason: typeof action['reason'] === 'string' ? action['reason'] : undefined, force: action['force'] === true, wipJustification: typeof action['wipReason'] === 'string' ? action['wipReason'] : undefined }
           : kind === 'label'
             ? {
                 kind: 'label' as const,
@@ -859,7 +973,36 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           this.event(actor, `bulk-${kind}`, card.id, kind);
         }
       });
+      this.rescheduleAutomation();
       return { changed: result.cards.map((card) => card.id), warnings: result.warnings };
+    } catch (err) {
+      if (err instanceof UsageError) return { error: err.message };
+      throw err;
+    }
+  }
+
+  automate(): ActionResult {
+    const result = this.runAutomationPass();
+    return { actions: result.actions, changed: result.cards.map((card) => card.id), remaining: result.remaining, nextAt: result.nextAt };
+  }
+
+  runButton(id: string, cardId: string | null, args: Record<string, unknown>, actor: string): ActionResult {
+    try {
+      const board = this.loadBoardDocs();
+      if (board.config.mutationBlocked !== null) throw new UsageError(`board is read-only: ${board.config.mutationBlocked}`);
+      const result = opButton(board, id, actor, {
+        cardId: cardId ?? undefined,
+        force: args['force'] === true,
+        wipJustification: typeof args['wipReason'] === 'string' ? args['wipReason'] : undefined,
+      });
+      this.ctx.storage.transactionSync(() => {
+        for (const card of result.cards) {
+          this.persistCard(card);
+          this.event(actor, 'button', card.id, id);
+        }
+      });
+      this.rescheduleAutomation();
+      return { button: id, changed: result.cards.map((card) => card.id), warnings: result.warnings };
     } catch (err) {
       if (err instanceof UsageError) return { error: err.message };
       throw err;
@@ -918,7 +1061,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       const card = getCard(board, id);
       switch (kind) {
         case 'move': {
-          const res = opMove(board, card, String(args['to']), actor, args['force'] === true);
+          const res = opMove(board, card, String(args['to']), actor, args['force'] === true, typeof args['wipReason'] === 'string' ? args['wipReason'] : undefined);
           this.persistCard(card);
           this.event(actor, 'move', id, `${res.from} → ${res.to}${args['force'] === true ? ' (forced)' : ''}`);
           return { id, from: res.from, to: res.to, warnings: res.warnings };
@@ -926,7 +1069,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
         case 'claim': {
           const mode = args['delegate'] === true ? 'delegate' : 'assign';
           const external = analyzed?.ba.dependencyStates.get(id) as Map<string, string | null> | undefined;
-          const res = opClaim(board, card, actor, args['force'] === true, mode, external);
+          const res = opClaim(board, card, actor, args['force'] === true, mode, external, typeof args['wipReason'] === 'string' ? args['wipReason'] : undefined);
           if (res.alreadyYours) return { id, at: res.to, assignee: card.assignee, delegate: card.delegate, alreadyYours: true };
           this.persistCard(card);
           this.event(actor, 'claim', id, `${res.from} → ${res.to}${args['force'] === true ? ' (forced)' : ''}`);
@@ -934,23 +1077,38 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
         }
         case 'close': {
           const reason = typeof args['reason'] === 'string' ? (args['reason'] as string) : undefined;
-          const res = opClose(board, card, actor, reason);
-          this.persistCard(card);
-          this.event(actor, 'close', id, reason ?? 'closed');
-          return { id, from: res.from, to: res.to };
+          const res = opClose(
+            board, card, actor, reason,
+            typeof args['wipReason'] === 'string' ? args['wipReason'] : undefined,
+            args['force'] === true,
+          );
+          this.ctx.storage.transactionSync(() => {
+            if (res.created !== undefined) this.persistCard(res.created);
+            this.persistCard(card);
+            this.event(actor, 'close', id, reason ?? 'closed');
+            if (res.created !== undefined) this.event(actor, 'recur', res.created.id, `from ${id}`);
+          });
+          return { id, from: res.from, to: res.to, created: res.created?.id ?? null };
         }
         case 'block': {
           const reason = clampLine(args['reason'], 'blocked');
-          opBlock(card, actor, reason);
+          opBlock(card, actor, reason, board, typeof args['blocker'] === 'string' ? args['blocker'] : undefined);
           this.persistCard(card);
           this.event(actor, 'block', id, reason.slice(0, 200));
-          return { id, blocked: card.blocked };
+          return { id, blocked: card.blocked, blocker: card.blocker };
         }
         case 'unblock': {
           opUnblock(card, actor);
           this.persistCard(card);
           this.event(actor, 'unblock', id, '');
           return { id, blocked: null };
+        }
+        case 'snooze': {
+          if (args['until'] !== null && typeof args['until'] !== 'string') throw new UsageError('until must be a UTC date/datetime or null');
+          opSnooze(card, actor, args['until'] as string | null);
+          this.persistCard(card);
+          this.event(actor, card.snooze === null ? 'wake' : 'snooze', id, card.snooze ?? 'awake');
+          return { id, snooze: card.snooze };
         }
         case 'comment': {
           const text = clampLine(args['message'], '').trim();
@@ -1021,6 +1179,29 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           if ('due' in args) {
             if (args['due'] !== null && typeof args['due'] !== 'string') throw new UsageError('due must be a string or null');
             patch.due = args['due'];
+          }
+          if ('reminders' in args) {
+            if (args['reminders'] !== null && (!Array.isArray(args['reminders']) || !(args['reminders'] as unknown[]).every((value) => typeof value === 'number'))) {
+              throw new UsageError('reminders must be a list of integer offsets or null');
+            }
+            patch.reminders = args['reminders'] === null ? [] : args['reminders'] as number[];
+          }
+          if ('repeat' in args) {
+            if (args['repeat'] !== null && (typeof args['repeat'] !== 'object' || Array.isArray(args['repeat']))) throw new UsageError('repeat must be an object or null');
+            if (args['repeat'] === null) patch.repeat = null;
+            else {
+              const repeat = args['repeat'] as Record<string, unknown>;
+              patch.repeat = {
+                every: Number(repeat['every']),
+                unit: String(repeat['unit']) as NonNullable<EditPatch['repeat']>['unit'],
+                from: String(repeat['from'] ?? 'due') as NonNullable<EditPatch['repeat']>['from'],
+                extra: {},
+              };
+            }
+          }
+          if ('snooze' in args) {
+            if (args['snooze'] !== null && typeof args['snooze'] !== 'string') throw new UsageError('snooze must be a UTC date/datetime or null');
+            patch.snooze = args['snooze'];
           }
           if ('estimate' in args) {
             if (args['estimate'] !== null && typeof args['estimate'] !== 'number') throw new UsageError('estimate must be a number or null');
@@ -1115,6 +1296,8 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       }
       if (err instanceof UsageError) return { error: err.message };
       throw err;
+    } finally {
+      this.rescheduleAutomation();
     }
   }
 

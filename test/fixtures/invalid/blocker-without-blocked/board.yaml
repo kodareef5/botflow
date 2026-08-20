@@ -1,0 +1,5 @@
+botflow: 0
+name: blocker without flag
+features: [named-blockers]
+blockers:
+  - id: external

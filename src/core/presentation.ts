@@ -8,7 +8,8 @@ import { validCardDate } from './fields.ts';
 export const BUILTIN_CARD_KEYS = new Set([
   'id', 'title', 'lane', 'type', 'board', 'labels', 'assignee', 'delegate', 'priority', 'deps', 'relations',
   'watchers', 'votes',
-  'start', 'due', 'estimate', 'evergreen', 'cover', 'cover_color', 'blocked', 'created', 'updated',
+  'start', 'due', 'reminders', 'repeat', 'snooze', 'estimate', 'evergreen', 'cover', 'cover_color',
+  'blocked', 'blocker', 'created', 'updated',
 ]);
 
 export const RESERVED_CARD_KEYS = new Set(['spent', 'relates', 'weight']);

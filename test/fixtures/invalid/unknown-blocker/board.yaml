@@ -1,0 +1,5 @@
+botflow: 0
+name: unknown blocker
+features: [named-blockers]
+blockers:
+  - id: known

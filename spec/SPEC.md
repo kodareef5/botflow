@@ -58,6 +58,10 @@ Written in the strict YAML subset (§9). Top-level keys:
 | `templates` | list of template maps | no | Reusable defaults for creating cards; templates never appear as live work. |
 | `filters` | list of filter maps | no | Named, portable card queries (§5b). |
 | `subscriptions` | list of subscription maps | no | Members watching every card in a lane (§5b). |
+| `blockers` | list of blocker maps | no | Reusable named blocker reasons and face colors. |
+| `buttons` | list of button maps | no | Bounded, declarative card or board actions (§12a). |
+| `rules` | list of rule maps | no | Bounded, non-recursive event actions (§12a). |
+| `automation` | map | no | Lazy/scheduled time automation policy (§6b). |
 | `rollup` | map | no | Rollup policy (§7); defaults below. |
 
 An implementation that encounters an unsupported `botflow` major MAY inspect and
@@ -75,6 +79,7 @@ Lane map keys:
 | `substates` | list of slugs | no | Ordered sub-states. Position notation: `lane.substate`. |
 | `order` | `strict` \| `free` | no (default `free`) | `strict`: conforming tools MUST only move a card between **adjacent** substates of this lane (either direction). Enforced at mutation time; lint cannot see transitions, only positions. |
 | `wip` | positive int | no | Soft work-in-progress limit; exceeding it is lint warning `wip-breach`, and mutating tools SHOULD warn (not fail) when a move would breach it. |
+| `wip_mode` | `allow` \| `justify` \| `deny` | no (default `allow`) | Enforcement when an entry would exceed `wip` (§12a). It is invalid without `wip`. |
 
 A board MAY have several lanes projecting to the same canonical state (e.g. `needs-qa` → `doing`), and MAY omit canonical states it doesn't use. Lane order in the file is the display order.
 
@@ -147,7 +152,34 @@ activity on cards currently in that lane without copying the watcher onto each c
 Moving a card out of the lane changes that derived audience. Unknown keys inside filter
 and subscription maps are preserved like the other board registries.
 
-Unknown keys in the top-level board mapping, lane, label, custom-field, template, saved-filter, subscription, or `rollup`
+Named-blocker maps contain a unique slug `id`, optional non-empty `name` (defaulting to
+the id), and optional `color` (`#RGB` or `#RRGGBB`). A card's `blocker:` value resolves
+through this registry. Freeform `blocked:` remains valid without a named blocker for
+backward compatibility; named and unnamed intervals are both measurable (§6a).
+
+Button maps contain a unique slug `id`, optional non-empty `name` (defaulting to the id),
+optional `scope` (`card` by default, or `board`), `action`, and action-specific `value`.
+The safe v0 actions are `move` (value is a valid position), `close` (no value), and
+`label` (value is a non-empty label to add idempotently). A board button additionally
+requires `filter`, naming a saved filter, and applies to at most 100 matching cards as
+one validated bulk mutation. A card button MUST NOT carry `filter`; `close` MUST NOT
+carry `value`; the other actions require it.
+
+Rule maps contain a unique slug `id`, `event` (`enter`, `close`, or `block`), optional
+`lane`, optional `filter`, `action`, and `value`. `enter` requires a valid `lane`; the
+other events MUST omit it. `filter`, when present, names a saved filter evaluated after
+the primary mutation. Safe rule actions are `label`, `unlabel`, `assign`, `delegate`,
+and `comment`; every action requires a non-empty `value`. Rules are evaluated in file
+order and are subject to the execution bounds in §12a. Unknown keys inside blocker,
+button, and rule maps are preserved.
+
+The automation map currently accepts `archive_done_after`, a positive whole number of
+elapsed days. When set, a done card whose first completion can be proven from its Log is
+eligible for a lazy sweep after that interval (§6b). Unknown automation keys are
+preserved.
+
+Unknown keys in the top-level board mapping, lane, label, custom-field, template,
+saved-filter, subscription, blocker, button, rule, `automation`, or `rollup`
 mappings are lint `info` (`unknown-key`) and MUST be preserved semantically by any tool that
 rewrites `board.yaml`, under the same normalization allowance as unknown card keys
 (§5). This makes additive board capabilities safe across routine edits.
@@ -185,13 +217,24 @@ Frontmatter keys:
 | `relations` | list of relation maps | no | Non-gating typed links (§5a). |
 | `start` | date string | no | Planned start, `YYYY-MM-DD` or an ISO UTC datetime ending in `Z`. Stored and compared in UTC; no implicit local timezone. |
 | `due` | date string | no | Due date/time in the same form as `start`. A date-only value means the end of that UTC date for overdue checks. |
+| `reminders` | list of nonnegative ints | no | Unique offsets in minutes before the current `due`; requires `due` (§6b). Input order is preserved. |
+| `repeat` | recurrence map | no | Materialize one independent next instance when this task first closes (§6b); requires `due` and is invalid on board-cards. |
+| `snooze` | date string | no | Hide otherwise-ready work until this UTC instant/date or genuine new card activity, whichever comes first (§6b). |
 | `estimate` | positive int | no | Board-local effort points. It is deliberately unitless; tools may sum it but MUST NOT reinterpret it as elapsed time. |
 | `evergreen` | bool | no (default `false`) | Suppresses stale-card aging signals for intentionally long-lived reference work. It does not suppress time metrics. |
 | `cover` | url \| `none` | no | Card art. Viewers show the image atop the card; when absent they MAY fall back to the first image attachment; `none` suppresses art entirely. |
 | `cover_color` | `#RGB` \| `#RRGGBB` | no | Color band or fallback art behind the compact card; independent of `cover`. |
 | `blocked` | string | no | Blocked **flag** with a reason. Presence overrides projection (§6). |
+| `blocker` | slug | no | Optional reusable reason id from the board's `blockers:` registry; requires `blocked:`. Exactly one named blocker may be active. |
 | `created` | date string | no | `YYYY-MM-DD` or ISO datetime; stored as a plain string. |
 | `updated` | date string | no | Tools SHOULD touch this only on meaningful changes (merge-noise discipline). |
+
+A recurrence map contains `every` (positive integer), `unit` (`day`, `week`, or
+`month`), and optional `from` (`due` by default, or `completion`). Unknown recurrence
+keys are preserved. Calendar-month addition clamps to the last valid UTC day (January
+31 + one month is February 28 or 29); day/week addition is elapsed UTC calendar days.
+The materialization rules in §6b preserve whether the source due value was date-only or
+a datetime.
 
 Unknown frontmatter keys are lint `info` (`unknown-key`) and MUST be preserved
 semantically by any tool that rewrites a card. Rewriters MAY normalize key order,
@@ -230,10 +273,11 @@ and `dangling-relation` for `relations`. A dependency cycle may cross boards and
 still `dep-cycle`; claim MUST refuse every member of it.
 
 Relation maps contain `type` and `target` plus preservable unknown keys. The v0 types
-are `relates`, `duplicates`, `supersedes`, `parent`, `subtask`, `copied-from`, and
-`copied-to`. Relations do not gate readiness. Conforming link tools SHOULD write the
-natural inverse when both cards are writable (`parent` ↔ `subtask`, `duplicates` ↔
-`supersedes`, `copied-from` ↔ `copied-to`; `relates` is symmetric). A self-relation is
+are `relates`, `duplicates`, `supersedes`, `parent`, `subtask`, `copied-from`,
+`copied-to`, `recurs-from`, and `recurs-to`. Relations do not gate readiness.
+Conforming link tools SHOULD write the natural inverse when both cards are writable
+(`parent` ↔ `subtask`, `duplicates` ↔ `supersedes`, `copied-from` ↔ `copied-to`,
+`recurs-from` ↔ `recurs-to`; `relates` is symmetric). A self-relation is
 `self-relation`.
 
 Dependency edges are presented as active `blocks` relationships while unresolved.
@@ -259,12 +303,12 @@ case-insensitive substring search over id, title, full markdown body, labels, ac
 and declared custom-field values. Qualifiers use `name:value`:
 
 - `id`, `title`, `board`, `lane`, `state`, `label`, `assignee`, `delegate`, `watcher`,
-  `voter`, `mention`, `priority`, and `type` match the named projection. Identity
+  `voter`, `mention`, `priority`, `blocker`, and `type` match the named projection. Identity
   qualifiers accept `@me`, resolved from the invoking actor; without an actor it cannot
   match.
 - `field.<id>` matches the string form of one declared custom-field value.
-- `is:` accepts `ready`, `blocked`, `overdue`, `stalled`, `evergreen`, `unassigned`,
-  and `watched`. `due:` accepts `none`, `overdue`, `today`, and `future`.
+- `is:` accepts `ready`, `blocked`, `snoozed`, `overdue`, `stalled`, `evergreen`,
+  `unassigned`, and `watched`. `due:` accepts `none`, `overdue`, `today`, and `future`.
 
 Qualifier names and enum-like values are case-insensitive; stored identity, label,
 field, id, title, and board values use case-insensitive substring matching. Invalid
@@ -284,6 +328,12 @@ canonical(c) = blocked          if c.blocked is set and canonical(L) ∉ {done, 
 
 A `blocked` flag on a done/archive card is inert (lint warning `blocked-in-done`). A lane whose canonical **is** `blocked` is also legal: the flag and the lane are two styles of the same signal; the flag is recommended because the card keeps its place in the flow.
 
+At a supplied UTC clock value, `snooze` is **active** while its parsed instant is later
+than that clock. A date-only snooze wakes at `00:00 UTC` at the beginning of that date.
+An actively snoozed task is omitted from `ready` and claim reports without changing its
+canonical state or distribution. Projections that depend on the clock MUST accept an
+injected clock for deterministic tests and replay.
+
 Cards in a substated lane SHOULD carry a substate (`doing.review`). A bare lane id where substates exist is lint warning `bare-substate-lane` and is treated as the **first** substate.
 
 ### 6a. Derived time and flow metrics
@@ -301,13 +351,65 @@ day-only precision.
   `evergreen` suppresses the visual level.
 - **Cycle time:** first entry into a `doing`-canonical lane through first completion.
   **Lead time:** `created` (or its creation entry) through first completion.
-- **Blocked duration:** accumulated intervals from `blocked:` Log entries through
-  `unblocked`/completion, including the open interval of a currently blocked card.
+- **Blocked duration:** accumulated intervals from `blocked:` or `blocked [id]:` Log
+  entries through `unblocked`/completion, including the open interval of a currently
+  blocked card. Tools additionally expose the same duration grouped by blocker id;
+  freeform intervals use `unclassified`. Board metrics sum those proven per-card
+  groups. Changing the reason requires an unblock followed by a new block, so an
+  interval never changes identity midway through.
 - **Throughput:** first completions grouped by UTC date. **Cumulative flow:** end-of-day
   card counts reconstructed from the same creation and transition entries.
 
+System reminder entries are audit history but not human/agent work activity: they MUST
+NOT reset stalled/aging clocks and MUST NOT wake snooze.
+
 Incomplete historic logs produce `null` for a duration whose start or end cannot be
 proven; tools MUST NOT invent precision.
+
+### 6b. Scheduling and deterministic automation
+
+For reminder and overdue math, a datetime's due instant is the encoded instant and a
+date-only due instant is the next UTC midnight (the exclusive end of that date). A
+reminder offset `m` becomes eligible at `dueInstant - m minutes`. The automation engine
+appends exactly one Log entry per `(card, due value, offset)` in the form
+`botflow: reminder <m>m for due <due>`. Moving the due value therefore moves every
+pending reminder naturally and permits the new tuple to fire; replay of the same pass
+does nothing. Eligible reminders are emitted in scheduled-time then card-file then
+frontmatter-order order. They are also hosted activity events and therefore reach
+feeds/audiences, but they do not clear snooze. Cards in done/archive do not emit pending
+reminders.
+
+Closing a task with `repeat` materializes exactly one independent successor and links
+the pair with `recurs-to` / `recurs-from`. The successor uses the first todo-canonical
+lane, keeps stable planning data (title, labels, assignee, watchers, priority, deps,
+start/due cadence, reminders, repeat, estimate, Evergreen, cover, declared/unknown
+custom data, Description, checklists, and attachments), resets checked checklist items,
+and clears delegate, votes, blocked/blocker, snooze, Comments, Boosts, Log, and all
+unrelated relations. `from: due` advances the source due by whole recurrence intervals
+until the next due instant is strictly after completion, skipping missed slots while
+retaining cadence. `from: completion` advances the UTC completion date/time by one
+interval. When both start and due exist, the successor preserves their elapsed offset.
+The new creation entry and inverse relations are part of the same mutation. A surviving
+`recurs-to` target makes close replay idempotent; file writers create the valid target
+before rewriting the source, and hosted writers transact both.
+
+Genuine card activity before `snooze` expires clears it as part of the same mutation and
+records that wake in the mutation's Log text. Genuine activity includes edit, move,
+claim, close, block/unblock, comment, boost, checklist, description, attachment, and an
+explicit Log entry; watcher/vote toggles and system reminder/sweep bookkeeping do not
+wake it. Expired snooze no longer affects readiness even before cleanup. An automation
+pass removes an expired stored value and logs `snooze expired` once.
+
+With `archive_done_after: n`, a pass sweeps a card only when its first completion is
+proven and at least `n` whole UTC days have elapsed. It moves to the first
+archive-canonical lane and logs `swept <from> → <archive> after <n> days`. A run applies
+at most 100 reminder, snooze-expiry, or sweep mutations; when work remains it MUST
+schedule or request another pass rather than silently discard it. File-backed tools
+offer an explicit automation command and SHOULD run the same lazy pass before `board`,
+`ready`, `prime`, and `search`. A hosted project runs it before a board read and via a
+Durable Object alarm set to the earliest pending reminder, snooze expiry, or sweep.
+Alarm/lazy state is a cache: tuple markers and card Logs make it completely rebuildable
+from board documents.
 
 ## 7. Nesting & rollup
 
@@ -377,11 +479,12 @@ Not supported (parse error): anchors/aliases (`&`, `*`), tags (`!`), block scala
 | `board-path-escape` | error | Board-card path is absolute or escapes the project root (§3). |
 | `board-cycle` | error | Board reference cycle. |
 | `id-scheme-mismatch` | error | Card id doesn't match the board's `ids` scheme. |
-| `wip-breach` | warning | Lane exceeds its `wip`. |
+| `wip-breach` | warning | Lane exceeds its `wip`; persisted breaches remain visible regardless of enforcement mode. |
 | `filename-id-mismatch` | warning | Filename doesn't begin with the card id. |
 | `bare-substate-lane` | warning | Card in a substated lane without a substate. |
 | `rollup-drift` | warning | Board-card lane canonical ≠ rolled-up effective state. |
 | `blocked-in-done` | warning | Blocked flag on a done/archive card. |
+| `unknown-blocker` | error | Card names a blocker absent from the board registry. |
 | `label-group-conflict` | error | Card carries more than one scoped label in the same group. |
 | `custom-field-value` | error | A declared custom-field value violates its type/options. |
 | `dangling-relation` | error | A relation target does not resolve. |
@@ -405,13 +508,14 @@ Each directory under `test/fixtures/` is a board (or, for `invalid/`, a set of b
 - `presentation/`: scoped/colored labels, typed custom fields, face flags, description/checklist previews, and cover color. → `expected.json`
 - `relations/`: templates, typed relations, and a resolved cross-board dependency. → `expected.json`
 - `collaboration/`: saved filters, lane subscriptions, watchers, votes, boosts, mentions, and query results. → `expected.json`
+- `automation/`: reminders, recurrence policy, snooze readiness, named-blocker duration, WIP modes, buttons, rules, and sweep eligibility. → `expected.json`
 - `invalid/`: one board per error class. → `expected.json` (lint findings)
 
 Expected files record, per board: lint findings (rule ids + card ids), per-card canonical states, lane distributions, ready sets, and (where relevant) effective states and progress. A conforming engine must reproduce them exactly.
 
 ## 12. Conventions for tools
 
-- **Claim is a coordination primitive, not a shortcut.** A claim MUST succeed only when the card is claimable by the actor: its local canonical state (lane canonical, or `blocked` when the flag is set) is `todo`, every dep resolves to a card whose local canonical state is `done` or `archive`, and the selected holder field is empty or already the actor. A normal (human/accountability) claim selects `assignee`; an explicit delegate-mode claim selects `delegate` and leaves `assignee` intact. Success sets the selected field and moves the card to a `doing`-canonical lane (first substate if any), appending a Log entry: one atomic rewrite. A claim by the actor already named in the selected field while the card is `doing` is an idempotent no-op. Two actors racing for the same selected role get exactly one winner; assignee and delegate are different roles and may coexist. Anything else MUST fail with a conflict that names the reason (`assigned`, `blocked`, `not-ready`, `deps`) and MUST NOT modify the card. Tools MAY offer an explicit force override for human operators; hosted APIs MUST restrict that override to admin identities and record its use. A forced normal claim clears an existing delegate because the human is taking execution back; a forced delegate claim replaces only the delegate. Board-cards never appear in `ready` (§5); claiming one explicitly is judged by its own lane, because rollup state is a view, not a lock.
+- **Claim is a coordination primitive, not a shortcut.** A claim MUST succeed only when the card is claimable by the actor: its local canonical state (lane canonical, or `blocked` when the flag is set) is `todo`, it is not actively snoozed, every dep resolves to a card whose local canonical state is `done` or `archive`, and the selected holder field is empty or already the actor. A normal (human/accountability) claim selects `assignee`; an explicit delegate-mode claim selects `delegate` and leaves `assignee` intact. Success sets the selected field and moves the card to a `doing`-canonical lane (first substate if any), appending a Log entry: one atomic rewrite. A claim by the actor already named in the selected field while the card is `doing` is an idempotent no-op. Two actors racing for the same selected role get exactly one winner; assignee and delegate are different roles and may coexist. Anything else MUST fail with a conflict that names the reason (`assigned`, `blocked`, `snoozed`, `not-ready`, `deps`) and MUST NOT modify the card. Tools MAY offer an explicit force override for human operators; hosted APIs MUST restrict that override to admin identities and record its use. A forced normal claim clears an existing delegate because the human is taking execution back; a forced delegate claim replaces only the delegate. Board-cards never appear in `ready` (§5); claiming one explicitly is judged by its own lane, because rollup state is a view, not a lock.
 - Every workflow mutation appends a Log line; never rewrite existing Log lines. Comments append to `## Comments` and Boosts append to `## Boosts`; both bump `updated` without a redundant Log line because their append-only sections are already the record. Checklist toggles and attachment changes DO log.
 - Promoting a checklist item creates a normal card, checks the source item, and writes inverse `parent`/`subtask` relations in the same atomic mutation. The promoted card inherits labels, accountable/delegated actors, due date, and estimate unless the caller overrides them.
 - Duplicate merge never deletes history: it transfers unique attachments to the canonical card, rewires same-board inbound references, writes `duplicates`/`supersedes`, and archives the duplicate. Both cards are logged.
@@ -429,10 +533,47 @@ Expected files record, per board: lint findings (rule ids + card ids), per-card 
 - **Board reshaping.** A tool that edits `board.yaml` over live cards MUST leave the board conformant: cards stranded by a removed lane or substate migrate to a surviving lane (same canonical state unless the operator chose a target), and every migration appends a Log line on the moved card.
 - **Snapshot sync contract.** When a file-truth board syncs with a hosted copy, the repo documents are truth and sync is whole-board snapshot, last write wins. The hosted side is that snapshot **plus a manager overlay**: hosted-native children (project-reference cards the repo snapshot does not carry) survive a push rather than being severed. Both directions MUST validate the entire snapshot before persisting any of it (fatal findings: `yaml-error`, `frontmatter-missing`, `schema`, `dup-id`; unsafe or duplicate paths), and a pull that would remove local files SHOULD refuse over uncommitted changes without an explicit force. Applying a snapshot is a **validated, crash-safe apply**, not an atomic set-replacement: individual writes are crash-safe, an interruption leaves only valid documents, and re-running the sync converges. Sync MUST NOT follow symlinks: a push skips non-regular files when reading documents, and a pull MUST refuse when the board root or any write/delete target passes through a symlink.
 
+### 12a. WIP, named blockers, buttons, and rules
+
+WIP enforcement is evaluated only when a mutation enters a different lane and its
+post-mutation card count would exceed that lane's limit. Leaving a lane and moving
+between substates of the same lane remain possible. `allow` preserves the v0 behavior:
+the mutation succeeds and reports a warning. `justify` requires a non-empty, sanitized
+written reason and appends `wip justification for <lane>: <reason>` to the card Log.
+`deny` rejects the mutation without a write. An explicit force may override `deny` only
+with a written reason; hosted force remains owner/admin-only and logs
+`wip override for <lane>: <reason>`. The rule applies to add, move, claim, close, buttons,
+and bulk operations; import/migration and recurrence recovery remain convergent system
+operations, preserve any resulting `wip-breach`, and do not fail on capacity.
+
+A named-blocked card is physically immobile: ordinary move/claim and button operations
+MUST refuse it until unblock. Close remains available as an explicit resolution, and a
+force move may recover bad state with its normal audit trail. Blocking requires a
+non-empty reason; selecting a blocker validates it against the board registry and writes
+`blocked [<id>]: <reason>`. A second block while already blocked is rejected so duration
+identity cannot change silently. Unblock clears both `blocked` and `blocker`.
+
+Button execution resolves its complete target set, clones and validates every mutation,
+then commits all or none. It uses the invoking actor and the normal operation logs,
+WIP policy, label-group validation, and permissions. A board button over 100 matches is
+rejected rather than partially applied. Buttons are data, not code: they cannot name a
+URL, shell command, plugin, or arbitrary field.
+
+After a successful primary `enter`, `close`, or `block` mutation, at most 16 matching
+rules execute in definition order as part of the same atomic mutation. More than 16 is
+an error and leaves the primary mutation unapplied. `label` adds idempotently and still
+obeys scoped-label constraints; `unlabel` removes; `assign`/`delegate` sanitize the actor
+value; `comment` appends to Comments. Every applied rule also appends a concise
+`rule <id>: <action>` Log entry so file history alone explains the result. Rule actions
+never trigger another rule, cannot transition a lane, create/close a card, or perform
+network/file execution, and a failing action aborts the complete mutation.
+
 ## 13. Future (non-normative)
 
 The card-frontmatter names `spent`, `relates`, and `weight` are reserved for future botflow semantics. Implementations
 MUST preserve them as unknown keys today and SHOULD warn before assigning unrelated
 local meanings to them.
 
-Cross-repo/branch board references (`repo#branch` URLs), sweep policies (auto-archive of aged done cards), quorum `done_when`, per-card `weight:` for leaf-weighted progress (today's progress is structural, §7), CRDT-grade merge for same-card edits, signed Log entries.
+Cross-repo/branch board references (`repo#branch` URLs), quorum `done_when`, per-card
+`weight:` for leaf-weighted progress (today's progress is structural, §7), CRDT-grade
+merge for same-card edits, signed Log entries.

@@ -5,6 +5,7 @@ import type { Analysis, BoardAnalysis } from './analyze.ts';
 import { parseBody } from './body.ts';
 import { cardFlowMetrics } from './metrics.ts';
 import { CANONICAL_STATES, type BoardNode, type Card, type LoadedBoard, type Tree } from './model.ts';
+import { isSnoozed } from './scheduling.ts';
 
 export class QueryError extends Error {
   constructor(message: string) {
@@ -34,9 +35,9 @@ export interface QueryMatch {
 
 const QUALIFIERS = new Set([
   'id', 'title', 'board', 'lane', 'state', 'label', 'assignee', 'delegate', 'watcher',
-  'voter', 'mention', 'priority', 'type', 'is', 'due',
+  'voter', 'mention', 'priority', 'blocker', 'type', 'is', 'due',
 ]);
-const IS_VALUES = new Set(['ready', 'blocked', 'overdue', 'stalled', 'evergreen', 'unassigned', 'watched']);
+const IS_VALUES = new Set(['ready', 'blocked', 'snoozed', 'overdue', 'stalled', 'evergreen', 'unassigned', 'watched']);
 const DUE_VALUES = new Set(['none', 'overdue', 'today', 'future']);
 
 function words(query: string): string[] {
@@ -166,6 +167,7 @@ function termMatches(
     case 'voter': return card.votes.some((value) => includes(value, wanted));
     case 'mention': return parsed.mentions.some((value) => includes(value, wanted));
     case 'priority': return includes(card.priority, wanted);
+    case 'blocker': return includes(card.blocker, wanted);
     case 'type': return card.type === wanted.toLowerCase();
     case 'due': {
       if (wanted.toLowerCase() === 'none') return card.due === null;
@@ -178,6 +180,7 @@ function termMatches(
       switch (wanted.toLowerCase()) {
         case 'ready': return ready;
         case 'blocked': return state === 'blocked';
+        case 'snoozed': return isSnoozed(card, now);
         case 'overdue': return cardFlowMetrics(card, node.board, state, now).due?.status === 'overdue';
         case 'stalled': return cardFlowMetrics(card, node.board, state, now).stalled;
         case 'evergreen': return card.evergreen;

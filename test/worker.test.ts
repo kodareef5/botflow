@@ -191,6 +191,7 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     const scheduledCreate = await call(`/api/projects/${sibA}/cards`, {
       method: 'POST', token: admin, body: JSON.stringify({
         title: 'Scheduled API card', start: '2026-08-20', due: '2026-08-24T12:30Z',
+        reminders: [60, 15], repeat: { every: 2, unit: 'week', from: 'due' }, snooze: '2099-01-01T00:00:00Z',
         estimate: 5, evergreen: true, assignee: 'root', delegate: 'agent-a',
       }),
     });
@@ -199,24 +200,83 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     let scheduled = (await call(`/api/projects/${sibA}/cards/${scheduledId}`, { token: admin })).body;
     assert.equal(scheduled['start'], '2026-08-20');
     assert.equal(scheduled['due'], '2026-08-24T12:30Z');
+    assert.deepEqual(scheduled['reminders'], [60, 15]);
+    assert.deepEqual(scheduled['repeat'], { every: 2, unit: 'week', from: 'due' });
+    assert.equal(scheduled['snooze'], '2099-01-01T00:00:00Z');
     assert.equal(scheduled['estimate'], 5);
     assert.equal(scheduled['evergreen'], true);
     assert.equal(scheduled['assignee'], 'root');
     assert.equal(scheduled['delegate'], 'agent-a');
     const scheduledEdit = await call(`/api/projects/${sibA}/cards/${scheduledId}/edit`, {
-      method: 'POST', token: admin, body: JSON.stringify({ start: null, estimate: null, evergreen: false }),
+      method: 'POST', token: admin, body: JSON.stringify({ start: null, reminders: [], repeat: null, snooze: null, estimate: null, evergreen: false }),
     });
     assert.equal(scheduledEdit.status, 200);
     scheduled = (await call(`/api/projects/${sibA}/cards/${scheduledId}`, { token: admin })).body;
     assert.equal(scheduled['start'], null);
+    assert.deepEqual(scheduled['reminders'], []);
+    assert.equal(scheduled['repeat'], null);
+    assert.equal(scheduled['snooze'], null);
     assert.equal(scheduled['estimate'], null);
     assert.equal(scheduled['evergreen'], false);
     assert.equal((await call(`/api/projects/${sibA}/cards`, {
       method: 'POST', token: admin, body: JSON.stringify({ title: 'Bad types', estimate: true }),
     })).status, 400);
+    assert.equal((await call(`/api/projects/${sibA}/cards`, {
+      method: 'POST', token: admin, body: JSON.stringify({ title: 'Bad reminders', due: '2026-08-24', reminders: [30.5] }),
+    })).status, 400);
     assert.equal((await call(`/api/projects/${sibA}/cards/${scheduledId}/edit`, {
       method: 'POST', token: admin, body: JSON.stringify({ evergreen: 'yes' }),
     })).status, 400);
+
+    // Scheduling is live in the Durable Object too: snooze gates readiness,
+    // real activity wakes it, reminders are idempotent, and recurring close
+    // commits source plus successor in one transaction.
+    const snoozedCreate = await call(`/api/projects/${sibA}/cards`, {
+      method: 'POST', token: admin,
+      body: JSON.stringify({ title: 'Wake on activity', snooze: '2099-02-01T00:00:00Z' }),
+    });
+    const snoozedId = snoozedCreate.body['id'] as string;
+    const snoozedClaim = await call(`/api/projects/${sibA}/cards/${snoozedId}/claim`, { method: 'POST', token: admin, body: '{}' });
+    assert.equal(snoozedClaim.status, 409);
+    assert.equal((snoozedClaim.body['conflict'] as { reason: string }).reason, 'snoozed');
+    assert.equal((await call(`/api/projects/${sibA}/cards/${snoozedId}/comment`, {
+      method: 'POST', token: admin, body: JSON.stringify({ message: 'new evidence arrived' }),
+    })).status, 200);
+    assert.equal((await call(`/api/projects/${sibA}/cards/${snoozedId}`, { token: admin })).body['snooze'], null,
+      'genuine activity wakes a snoozed hosted card');
+
+    const reminderDue = new Date(Date.now() + 30 * 60_000).toISOString();
+    const reminderId = (await call(`/api/projects/${sibA}/cards`, {
+      method: 'POST', token: admin,
+      body: JSON.stringify({ title: 'Reminder target', due: reminderDue, reminders: [60] }),
+    })).body['id'] as string;
+    assert.equal((await call(`/api/projects/${sibA}/automate`, { method: 'POST', token: admin, body: '{}' })).status, 200);
+    assert.equal((await call(`/api/projects/${sibA}/automate`, { method: 'POST', token: admin, body: '{}' })).status, 200);
+    const reminded = (await call(`/api/projects/${sibA}/cards/${reminderId}`, { token: admin })).body;
+    const reminderLog = ((reminded['parsed'] as { log: { actor: string; text: string }[] }).log)
+      .filter((entry) => entry.actor === 'botflow' && entry.text === `reminder 60m for due ${reminderDue}`);
+    assert.equal(reminderLog.length, 1, 'manual/alarm automation cannot duplicate the same due-relative reminder');
+
+    const recurringId = (await call(`/api/projects/${sibA}/cards`, {
+      method: 'POST', token: admin,
+      body: JSON.stringify({ title: 'Weekly audit', due: '2099-03-01', repeat: { every: 1, unit: 'week', from: 'due' } }),
+    })).body['id'] as string;
+    const recurringClose = await call(`/api/projects/${sibA}/cards/${recurringId}/close`, { method: 'POST', token: admin, body: '{}' });
+    assert.equal(recurringClose.status, 200, JSON.stringify(recurringClose.body));
+    const successorId = recurringClose.body['created'] as string;
+    assert.ok(successorId);
+    const successor = (await call(`/api/projects/${sibA}/cards/${successorId}`, { token: admin })).body;
+    assert.deepEqual(successor['repeat'], { every: 1, unit: 'week', from: 'due' });
+    assert.equal((successor['relationships'] as { type: string; target: string }[])
+      .some((relation) => relation.type === 'recurs-from' && relation.target === recurringId), true);
+    const recurringReplay = await call(`/api/projects/${sibA}/cards/${recurringId}/close`, { method: 'POST', token: admin, body: '{}' });
+    assert.equal(recurringReplay.body['created'], null);
+    const recurrenceBoard = (await call(`/api/projects/${sibA}/board`, { token: admin })).body as {
+      lanes: { cards: { relationships: { type: string; target: string }[] }[] }[];
+    };
+    assert.equal(recurrenceBoard.lanes.flatMap((lane) => lane.cards)
+      .filter((card) => card.relationships.some((relation) => relation.type === 'recurs-from' && relation.target === recurringId)).length, 1,
+      'replayed close converges without creating another successor');
 
     // A sub-project whose parent card cannot be created must not survive as
     // a registry orphan: the create compensates and fails whole.
@@ -347,7 +407,8 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
       lanes: [
         { id: 'todo' },
         { id: 'doing', substates: ['design', 'review'], order: 'strict' },
-        { id: 'needs-qa', canonical: 'doing', wip: 2 },
+        { id: 'needs-qa', canonical: 'doing', wip: 1, wipMode: 'justify' },
+        { id: 'review-gate', canonical: 'doing', wip: 1, wipMode: 'deny' },
         { id: 'done' },
       ],
       labels: [{ id: 'Type/Bug', color: '#d03b3b' }],
@@ -359,6 +420,17 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
         id: 'bug', name: 'Bug report', lane: 'todo', labels: ['Type/Bug'], priority: 'p1', estimate: 3,
         fields: { risk: 'high' }, body: '## Checklist\n- [ ] reproduce {{title}}\n',
       }],
+      filters: [{ id: 'todo-work', name: 'Todo work', query: 'lane:todo' }],
+      blockers: [{ id: 'external-review', name: 'External review', color: '#b42318' }],
+      buttons: [
+        { id: 'mark-reviewed', name: 'Mark reviewed', scope: 'card', action: 'label', value: 'reviewed' },
+        { id: 'triage-todo', name: 'Triage todo', scope: 'board', filter: 'todo-work', action: 'label', value: 'triaged' },
+      ],
+      rules: [
+        { id: 'qa-label', event: 'enter', lane: 'needs-qa', action: 'label', value: 'qa' },
+        { id: 'waiting-label', event: 'block', action: 'label', value: 'waiting' },
+      ],
+      automation: { archiveDoneAfter: 36_500 },
       rollup: { blockedWhen: 'never', doingWhen: 'any-doing', elseState: 'todo' },
       migrations: { wishlist: 'todo' },
     };
@@ -367,9 +439,13 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     const put = await call(`/api/projects/${parent}/config`, { method: 'PUT', token: admin, body: JSON.stringify(reshape) });
     assert.equal(put.status, 200, JSON.stringify(put.body));
     const cfg1 = await call(`/api/projects/${parent}/config`, { token: admin });
-    assert.deepEqual((cfg1.body['lanes'] as { id: string }[]).map((l) => l.id), ['todo', 'doing', 'needs-qa', 'done']);
+    assert.deepEqual((cfg1.body['lanes'] as { id: string }[]).map((l) => l.id), ['todo', 'doing', 'needs-qa', 'review-gate', 'done']);
     assert.equal((cfg1.body['rollup'] as { doingWhen: string }).doingWhen, 'any-doing');
     assert.deepEqual(cfg1.body['labels'], reshape.labels);
+    assert.deepEqual(cfg1.body['blockers'], reshape.blockers);
+    assert.deepEqual(cfg1.body['buttons'], reshape.buttons.map((button) => ({ ...button, filter: 'filter' in button ? button.filter : null })));
+    assert.deepEqual(cfg1.body['rules'], reshape.rules.map((rule) => ({ ...rule, lane: 'lane' in rule ? rule.lane : null, filter: null })));
+    assert.deepEqual(cfg1.body['automation'], { archiveDoneAfter: 36_500 });
     const normalizedFields = [
       { id: 'sprint', name: 'Sprint', type: 'number', options: [], face: true },
       { id: 'risk', name: 'Risk', type: 'select', options: ['low', 'high'], face: true },
@@ -378,6 +454,73 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.deepEqual((cfg1.body['templates'] as { id: string; body: string }[]).map((template) => ({ id: template.id, body: template.body })), [
       { id: 'bug', body: '## Checklist\n- [ ] reproduce {{title}}\n' },
     ]);
+
+    // WIP modes, named blockers, event rules, and declarative buttons all
+    // execute through the hosted API with the same pure-operation contract.
+    assert.equal((await call(`/api/projects/${parent}/cards`, {
+      method: 'POST', token: admin, body: JSON.stringify({ title: 'QA occupant', lane: 'needs-qa' }),
+    })).status, 200);
+    const qaCandidate = (await call(`/api/projects/${parent}/cards`, {
+      method: 'POST', token: key, body: JSON.stringify({ title: 'Needs justified QA' }),
+    })).body['id'] as string;
+    assert.equal((await call(`/api/projects/${parent}/cards/${qaCandidate}/move`, {
+      method: 'POST', token: key, body: JSON.stringify({ to: 'needs-qa' }),
+    })).status, 400, 'justify mode refuses an unexplained overflow');
+    assert.equal((await call(`/api/projects/${parent}/cards/${qaCandidate}/move`, {
+      method: 'POST', token: key, body: JSON.stringify({ to: 'needs-qa', wipReason: 'urgent verification' }),
+    })).status, 200);
+    let qaCard = (await call(`/api/projects/${parent}/cards/${qaCandidate}`, { token: admin })).body;
+    assert.ok((qaCard['labels'] as string[]).includes('qa'), 'on-enter rule applied after the move');
+    assert.match(String(qaCard['body']), /wip justification for needs-qa: urgent verification/);
+
+    assert.equal((await call(`/api/projects/${parent}/cards/${qaCandidate}/block`, {
+      method: 'POST', token: key, body: JSON.stringify({ blocker: 'external-review', reason: 'awaiting approval' }),
+    })).status, 200);
+    qaCard = (await call(`/api/projects/${parent}/cards/${qaCandidate}`, { token: admin })).body;
+    assert.equal(qaCard['blocker'], 'external-review');
+    assert.ok((qaCard['labels'] as string[]).includes('waiting'), 'on-block rule applied once');
+    assert.equal((await call(`/api/projects/${parent}/cards/${qaCandidate}/move`, {
+      method: 'POST', token: key, body: JSON.stringify({ to: 'todo' }),
+    })).status, 400, 'named blocker makes a card immobile until cleared');
+    const removeLiveBlocker = await call(`/api/projects/${parent}/config`, {
+      method: 'PUT', token: admin, body: JSON.stringify({ ...reshape, blockers: [] }),
+    });
+    assert.equal(removeLiveBlocker.status, 400, 'the editor cannot orphan an active named blocker');
+    assert.equal((await call(`/api/projects/${parent}/cards/${qaCandidate}/unblock`, {
+      method: 'POST', token: key, body: '{}',
+    })).status, 200);
+
+    assert.equal((await call(`/api/projects/${parent}/buttons/mark-reviewed`, {
+      method: 'POST', token: key, body: JSON.stringify({ card: qaCandidate }),
+    })).status, 200);
+    qaCard = (await call(`/api/projects/${parent}/cards/${qaCandidate}`, { token: admin })).body;
+    assert.ok((qaCard['labels'] as string[]).includes('reviewed'), 'card button applied its declared action');
+    const todoForButton = (await call(`/api/projects/${parent}/cards`, {
+      method: 'POST', token: admin, body: JSON.stringify({ title: 'Board button target' }),
+    })).body['id'] as string;
+    const boardButton = await call(`/api/projects/${parent}/buttons/triage-todo`, { method: 'POST', token: key, body: '{}' });
+    assert.equal(boardButton.status, 200, JSON.stringify(boardButton.body));
+    assert.ok(((await call(`/api/projects/${parent}/cards/${todoForButton}`, { token: admin })).body['labels'] as string[]).includes('triaged'));
+
+    assert.equal((await call(`/api/projects/${parent}/cards`, {
+      method: 'POST', token: admin, body: JSON.stringify({ title: 'Review gate occupant', lane: 'review-gate' }),
+    })).status, 200);
+    const denyCandidate = (await call(`/api/projects/${parent}/cards`, {
+      method: 'POST', token: key, body: JSON.stringify({ title: 'Needs owner override' }),
+    })).body['id'] as string;
+    assert.equal((await call(`/api/projects/${parent}/cards/${denyCandidate}/move`, {
+      method: 'POST', token: key, body: JSON.stringify({ to: 'review-gate' }),
+    })).status, 400);
+    assert.equal((await call(`/api/projects/${parent}/cards/${denyCandidate}/move`, {
+      method: 'POST', token: key, body: JSON.stringify({ to: 'review-gate', force: true, wipReason: 'cannot wait' }),
+    })).status, 403, 'members cannot turn a justification into an override');
+    assert.equal((await call(`/api/projects/${parent}/cards/${denyCandidate}/move`, {
+      method: 'POST', token: admin, body: JSON.stringify({ to: 'review-gate', force: true }),
+    })).status, 400, 'owner override still needs a written reason');
+    assert.equal((await call(`/api/projects/${parent}/cards/${denyCandidate}/move`, {
+      method: 'POST', token: admin, body: JSON.stringify({ to: 'review-gate', force: true, wipReason: 'incident response' }),
+    })).status, 200);
+
     const richAdd = await call(`/api/projects/${parent}/cards`, {
       method: 'POST', token: admin,
       body: JSON.stringify({
@@ -411,7 +554,7 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.equal(migrated.body['position'], 'doing.design', 'doing card entered the new substate machine');
     assert.match(String(migrated.body['body']), /migrated doing → doing\.design \(board edit\)/, 'migration logged on the card');
     const boardShape = (await call(`/api/projects/${parent}/board`, { token: admin })).body as { lanes: { id: string }[]; findings: unknown[] };
-    assert.deepEqual(boardShape.lanes.map((l) => l.id), ['todo', 'doing', 'needs-qa', 'done']);
+    assert.deepEqual(boardShape.lanes.map((l) => l.id), ['todo', 'doing', 'needs-qa', 'review-gate', 'done']);
     assert.equal(boardShape.findings.filter((f) => (f as { severity: string }).severity === 'error').length, 0, 'reshaped board lints clean');
 
     // Relations/templates/quick-add/bulk and cross-project dependencies all

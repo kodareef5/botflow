@@ -1,5 +1,23 @@
 {
   "cases": {
+    "bad-automation-config": [
+      {
+        "rule": "schema",
+        "ref": "board.yaml"
+      }
+    ],
+    "bad-schedule": [
+      {
+        "rule": "schema",
+        "ref": "001"
+      }
+    ],
+    "blocker-without-blocked": [
+      {
+        "rule": "schema",
+        "ref": "001"
+      }
+    ],
     "boost-value": [
       {
         "rule": "boost-value",
@@ -154,6 +172,12 @@
       {
         "rule": "unsupported-feature",
         "ref": "board.yaml"
+      }
+    ],
+    "unknown-blocker": [
+      {
+        "rule": "unknown-blocker",
+        "ref": "001"
       }
     ]
   }

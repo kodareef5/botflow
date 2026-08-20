@@ -11,6 +11,7 @@ import type { BoardNode, Canonical, Card, Distribution, Finding, Lane, LoadedBoa
 import { distributionTotal, emptyDistribution, finding } from './model.ts';
 import { parseBody } from './body.ts';
 import { parseCardReference, resolveTreeCardReference } from './refs.ts';
+import { isSnoozed } from './scheduling.ts';
 
 export interface BoardAnalysis {
   /** Effective canonical state per card id (rollup-aware for board-cards). */
@@ -46,7 +47,12 @@ type ReferenceLookup = (reference: string) => ExternalReference | null;
 /** Analyze one board given a resolver for its board-cards' children.
  *  A null resolution = unresolved (missing path, cycle, hosted ref):
  *  the card falls back to its own lane and no drift is reported. */
-export function analyzeBoard(board: LoadedBoard, lookup: ChildLookup, referenceLookup?: ReferenceLookup): BoardAnalysis {
+export function analyzeBoard(
+  board: LoadedBoard,
+  lookup: ChildLookup,
+  referenceLookup?: ReferenceLookup,
+  nowValue: number | Date = Date.now(),
+): BoardAnalysis {
   const findings: Finding[] = [];
   const laneById = new Map<string, Lane>(board.config.lanes.map((l) => [l.id, l]));
   const canonical = new Map<string, Canonical>();
@@ -75,6 +81,9 @@ export function analyzeBoard(board: LoadedBoard, lookup: ChildLookup, referenceL
     const flagActive = card.blocked !== null && !laneClosed;
     if (card.blocked !== null && laneClosed) {
       findings.push(finding('blocked-in-done', card.id, `blocked flag on a ${laneCanonical} card is inert`));
+    }
+    if (card.blocker !== null && !board.config.blockers.some((blocker) => blocker.id === card.blocker)) {
+      findings.push(finding('unknown-blocker', card.id, `blocker "${card.blocker}" is not defined by the board`));
     }
 
     if (card.type === 'task') {
@@ -144,7 +153,7 @@ export function analyzeBoard(board: LoadedBoard, lookup: ChildLookup, referenceL
     }
     // Only task cards are claimable work: a board-card is a container whose
     // state is a rollup view, so it never sits in the work queue (SPEC §5).
-    if (card.type === 'task' && canonical.get(card.id) === 'todo' && depsSatisfied) ready.push(card.id);
+    if (card.type === 'task' && canonical.get(card.id) === 'todo' && depsSatisfied && !isSnoozed(card, nowValue)) ready.push(card.id);
   }
   ready.sort();
 
@@ -241,7 +250,7 @@ export function analyzeBoard(board: LoadedBoard, lookup: ChildLookup, referenceL
   return { canonical, distribution, ready, progress, effort, dependencyStates, findings };
 }
 
-export function analyze(tree: Tree): Analysis {
+export function analyze(tree: Tree, nowValue: number | Date = Date.now()): Analysis {
   const memo = new Map<string, BoardAnalysis>();
   const stateMemo = new Map<string, Canonical>();
 
@@ -284,7 +293,7 @@ export function analyze(tree: Tree): Analysis {
     }, (reference) => {
       const target = resolveTreeCardReference(tree, key, reference);
       return target === null ? null : { state: effectiveState(target.key, target.card) };
-    });
+    }, nowValue);
     memo.set(key, analysis);
     return analysis;
   };
@@ -300,8 +309,9 @@ export function analyzeSingle(
   board: LoadedBoard,
   children?: Map<string, ExternalChild | null>,
   references?: Map<string, ExternalReference | null>,
+  nowValue: number | Date = Date.now(),
 ): BoardAnalysis {
-  return analyzeBoard(board, (card) => children?.get(card.id) ?? null, (reference) => references?.get(reference) ?? null);
+  return analyzeBoard(board, (card) => children?.get(card.id) ?? null, (reference) => references?.get(reference) ?? null, nowValue);
 }
 
 function reportCrossBoardDependencyCycles(tree: Tree, analyses: Map<string, BoardAnalysis>): void {

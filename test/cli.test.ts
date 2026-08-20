@@ -81,6 +81,9 @@ test('cli: structured scheduling, effort, Evergreen, and delegation fields round
     '--delegate', 'agent-a',
     '--start', '2026-08-20T13:00Z',
     '--due', '2026-08-24',
+    '--reminders', '1440,60',
+    '--repeat', '2:week:due',
+    '--snooze', '2099-01-01T00:00:00Z',
     '--estimate', '8',
     '--evergreen',
   );
@@ -89,6 +92,9 @@ test('cli: structured scheduling, effort, Evergreen, and delegation fields round
   assert.equal(shown['delegate'], 'agent-a');
   assert.equal(shown['start'], '2026-08-20T13:00Z');
   assert.equal(shown['due'], '2026-08-24');
+  assert.deepEqual(shown['reminders'], [1440, 60]);
+  assert.deepEqual(shown['repeat'], { every: 2, unit: 'week', from: 'due' });
+  assert.equal(shown['snooze'], '2099-01-01T00:00:00Z');
   assert.equal(shown['estimate'], 8);
   assert.equal(shown['evergreen'], true);
 
@@ -98,6 +104,9 @@ test('cli: structured scheduling, effort, Evergreen, and delegation fields round
     '--delegate', 'none',
     '--start', 'none',
     '--due', '2026-08-30T18:30:00Z',
+    '--reminders', 'none',
+    '--repeat', 'none',
+    '--snooze', 'none',
     '--estimate', 'none',
     '--evergreen', 'false',
   );
@@ -105,6 +114,9 @@ test('cli: structured scheduling, effort, Evergreen, and delegation fields round
   assert.equal(shown['delegate'], null);
   assert.equal(shown['start'], null);
   assert.equal(shown['due'], '2026-08-30T18:30:00Z');
+  assert.deepEqual(shown['reminders'], []);
+  assert.equal(shown['repeat'], null);
+  assert.equal(shown['snooze'], null);
   assert.equal(shown['estimate'], null);
   assert.equal(shown['evergreen'], false);
 
@@ -115,6 +127,89 @@ test('cli: structured scheduling, effort, Evergreen, and delegation fields round
   const claimed = JSON.parse(ok(dir, 'card', 'claim', '002', '--delegate', '--json')) as Record<string, unknown>;
   assert.equal(claimed['assignee'], null);
   assert.equal(claimed['delegate'], 'test-agent');
+});
+
+test('cli: scheduling automation, WIP modes, named blockers, rules, and buttons compose', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'botflow-automation-cli-'));
+  ok(dir, 'init', '--name', 'automation-cli');
+  writeFileSync(join(dir, '.botflow', 'board.yaml'), `botflow: 0
+name: automation-cli
+features: [automation, named-blockers]
+filters:
+  - id: todo-work
+    name: Todo work
+    query: "lane:todo"
+blockers:
+  - id: external-review
+    name: External review
+    color: "#b42318"
+buttons:
+  - id: reviewed
+    name: Mark reviewed
+    scope: card
+    action: label
+    value: reviewed
+  - id: triage
+    name: Triage todo
+    scope: board
+    filter: todo-work
+    action: label
+    value: triaged
+rules:
+  - id: doing-label
+    event: enter
+    lane: doing
+    action: label
+    value: started
+lanes:
+  - id: todo
+  - id: doing
+    wip: 1
+    wip_mode: justify
+  - id: gate
+    canonical: doing
+    wip: 1
+    wip_mode: deny
+  - id: done
+  - id: archive
+`);
+
+  ok(dir, 'card', 'add', 'Doing occupant', '--lane', 'doing'); // 001
+  ok(dir, 'card', 'add', 'Needs capacity'); // 002
+  assert.match(bf(dir, 'card', 'mv', '002', 'doing').stderr, /WIP justification/);
+  ok(dir, 'card', 'mv', '002', 'doing', '--wip-reason', 'customer incident');
+  let shown = JSON.parse(ok(dir, 'card', 'show', '002', '--json')) as Record<string, unknown>;
+  assert.ok((shown['labels'] as string[]).includes('started'));
+  assert.match(String(shown['body']), /wip justification for doing: customer incident/);
+
+  ok(dir, 'card', 'block', '002', '--reason', 'approval pending', '--blocker', 'external-review');
+  assert.equal(bf(dir, 'card', 'mv', '002', 'todo').code, 1, 'a named blocker prevents ordinary movement');
+  ok(dir, 'card', 'unblock', '002');
+  ok(dir, 'button', 'run', 'reviewed', '--card', '002');
+  shown = JSON.parse(ok(dir, 'card', 'show', '002', '--json')) as Record<string, unknown>;
+  assert.ok((shown['labels'] as string[]).includes('reviewed'));
+  assert.equal((JSON.parse(ok(dir, 'button', 'list', '--json')) as unknown[]).length, 2);
+
+  ok(dir, 'card', 'add', 'Snoozed work', '--snooze', '2099-01-01T00:00:00Z'); // 003
+  assert.ok(!(JSON.parse(ok(dir, 'ready', '--json')) as { id: string }[]).some((card) => card.id === '003'));
+  ok(dir, 'card', 'snooze', '003', '--off');
+  assert.ok((JSON.parse(ok(dir, 'ready', '--json')) as { id: string }[]).some((card) => card.id === '003'));
+  ok(dir, 'button', 'run', 'triage');
+  shown = JSON.parse(ok(dir, 'card', 'show', '003', '--json')) as Record<string, unknown>;
+  assert.ok((shown['labels'] as string[]).includes('triaged'));
+
+  const reminderDue = new Date(Date.now() + 30 * 60_000).toISOString();
+  ok(dir, 'card', 'add', 'Due reminder', '--due', reminderDue, '--reminders', '60'); // 004
+  ok(dir, 'automate', '--json');
+  const reminded = JSON.parse(ok(dir, 'card', 'show', '004', '--json')) as { parsed: { log: { actor: string; text: string }[] } };
+  assert.equal(reminded.parsed.log.filter((entry) => entry.actor === 'botflow' && entry.text === `reminder 60m for due ${reminderDue}`).length, 1);
+  ok(dir, 'automate', '--json');
+
+  ok(dir, 'card', 'add', 'Recurring audit', '--due', '2099-02-01', '--repeat', '1:week:due'); // 005
+  const closed = JSON.parse(ok(dir, 'card', 'close', '005', '--json')) as { created: string | null };
+  assert.equal(closed.created, '006');
+  const successor = JSON.parse(ok(dir, 'card', 'show', '006', '--json')) as Record<string, unknown>;
+  assert.deepEqual(successor['repeat'], { every: 1, unit: 'week', from: 'due' });
 });
 
 test('cli: strict substates enforce one step at a time', () => {

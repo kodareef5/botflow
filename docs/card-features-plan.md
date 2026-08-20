@@ -20,7 +20,7 @@ format and subsystem dependency.
 
 ## Delivery phases
 
-Phases 1–5 are complete in local commits. Nothing in this program is pushed until
+Phases 1–6 are complete in local commits. Nothing in this program is pushed until
 the full program is reviewed.
 
 1. **Compatibility foundation** — reserved names; lossless top-level, lane, and

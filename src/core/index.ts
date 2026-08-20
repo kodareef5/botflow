@@ -1,7 +1,19 @@
 export * from './model.ts';
 export { parseYaml, YamlError, type YamlValue } from './yaml.ts';
 export { splitFrontmatter, joinFrontmatter, type FrontmatterSplit } from './frontmatter.ts';
-export { emitBoardYaml, parseBoardConfig, parseCustomFields, parseLabelDefinitions, parseSavedFilters, parseSubscriptions, parseTemplates } from './config.ts';
+export {
+  emitBoardYaml,
+  parseAutomation,
+  parseBlockers,
+  parseBoardConfig,
+  parseButtons,
+  parseCustomFields,
+  parseLabelDefinitions,
+  parseRules,
+  parseSavedFilters,
+  parseSubscriptions,
+  parseTemplates,
+} from './config.ts';
 export { parseCard } from './card.ts';
 export {
   loadBoard,
@@ -37,6 +49,7 @@ export {
   bodyHasSection,
   parseBody,
   removeAttachmentLine,
+  removeSection,
   setChecklistItem,
   type Attachment,
   type BodyEntry,
@@ -78,6 +91,17 @@ export {
   type FlowEvent,
   type StagnationSignal,
 } from './metrics.ts';
+export {
+  automationPlan,
+  dueInstant,
+  isSnoozed,
+  nextAutomationAt,
+  nextOccurrenceDates,
+  reminderText,
+  reminderWasEmitted,
+  snoozeInstant,
+  type AutomationPlanItem,
+} from './scheduling.ts';
 export { appendLogLine, logMutation, nowDate, nowDateTime, sanitizeInline, sanitizeUrl, serializeCard } from './write.ts';
 export { newHashId, nextSeqId, slugify } from './ids.ts';
 export { boardFromDocuments, parseCardDocument, singleBoardTree, type BoardDocument } from './docs.ts';
@@ -98,11 +122,14 @@ export {
   parseQuickAdd,
   opQuickAdd,
   opBulk,
+  opButton,
+  opAutomationPass,
   opTransferCard,
   opLog,
   opRemoveFilter,
   opSaveFilter,
   opSubscribeLane,
+  opSnooze,
   opMove,
   opUnblock,
   opVote,
@@ -114,6 +141,8 @@ export {
   type PromoteOptions,
   type QuickAddCard,
   type BulkAction,
+  type ButtonOptions,
+  type AutomationPassResult,
   type TransferOptions,
   type EditPatch,
   type MoveResult,

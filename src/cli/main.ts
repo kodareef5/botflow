@@ -16,7 +16,7 @@ import { loadRemote, pull, push, remoteAdd } from './remote.ts';
 
 import { analyze, lintBoard } from '../core/analyze.ts';
 import { discoverBoardRoot, loadTree, resolveBoardRoot } from '../core/load.ts';
-import type { Finding, RelationType } from '../core/model.ts';
+import type { CardRepeat, Finding, RelationType } from '../core/model.ts';
 import {
   UsageError,
   addCard,
@@ -37,12 +37,15 @@ import {
   promoteCard,
   mergeDuplicateCards,
   quickAddCards,
+  runAutomation,
+  runButton,
   bulkCards,
   transferCard,
   initBoard,
   moveCard,
   removeFilter,
   saveFilter,
+  snoozeCard,
   subscribeLane,
   unblockCard,
   voteCard,
@@ -84,23 +87,30 @@ usage: botflow <command> [args]
   filter list | save <id> <query>       list or maintain portable saved filters
   filter rm <id>
   lane subscribe <lane> [--off]         follow/unfollow activity in a lane
+  automate                              run one bounded reminder/snooze/sweep pass
+  button list | run <id> [--card id]    list or invoke safe board/card buttons
   lint [--json]                         check the board; exit 1 on errors
   card add <title> [--template id] [--lane l] [--labels a,b] [--priority p0-p3] [--deps 1,2]
            [--type board --board-path <dir>] [--assignee name] [--delegate agent]
            [--start YYYY-MM-DD] [--due YYYY-MM-DD] [--estimate n] [--evergreen]
+           [--reminders 1440,60,0] [--repeat 1:week:due] [--snooze UTC-date]
            [--cover-color #RRGGBB] [--field id=value ...]
   card show <id> [--json]
-  card mv <id> <lane[.substate]> [--force]
+  card mv <id> <lane[.substate]> [--force] [--wip-reason text]
   card claim <id> [--delegate] [--force] take a ready card into doing as assignee
                                         or, with --delegate, as executing agent;
-                                        conflicts (assigned/blocked/not-ready/deps)
+                                        conflicts (assigned/blocked/snoozed/not-ready/deps)
                                         refuse unless --force
-  card close <id> [--reason r]          move to done, clear blocked flag
-  card block <id> --reason <r>          set the blocked flag
+  card close <id> [--reason r]          move to done, clear blocked flag; recurring
+                                        tasks materialize one next instance
+  card block <id> --reason <r> [--blocker id] set freeform/named blocked flag
   card unblock <id>
+  card snooze <id> --until <UTC-date> | --off
   card edit <id> [--title t] [--labels a,b] [--priority p|none]
            [--assignee name|none] [--delegate name|none] [--deps 1,2]
            [--start date|none] [--due date|none] [--estimate n|none]
+           [--reminders offsets|none] [--repeat every:unit:from|none]
+           [--snooze UTC-date|none]
            [--evergreen true|false] [--board-path <dir>]
            [--cover <url>|none|auto] [--cover-color #RRGGBB|none]
            [--field id=value ...]              empty value clears a custom field
@@ -163,6 +173,33 @@ function getActor(values: Values): string {
 const csv = (v: string | undefined): string[] | undefined =>
   v === undefined ? undefined : v === '' ? [] : v.split(',').map((s) => s.trim()).filter((s) => s !== '');
 
+function reminderOffsets(value: string | undefined): number[] | undefined {
+  if (value === undefined || value === 'none' || value === '') return value === undefined ? undefined : [];
+  return value.split(',').map((part) => Number(part.trim()));
+}
+
+function repeatValue(value: string | undefined): CardRepeat | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'none') return null;
+  const [everyText, unit, from = 'due', tail] = value.split(':');
+  const every = Number(everyText);
+  if (tail !== undefined || !Number.isSafeInteger(every) || every <= 0 || !['day', 'week', 'month'].includes(unit ?? '') || !['due', 'completion'].includes(from)) {
+    throw new UsageError('--repeat must be none or <positive-int>:<day|week|month>:<due|completion>');
+  }
+  return { every, unit: unit as CardRepeat['unit'], from: from as CardRepeat['from'], extra: {} };
+}
+
+/** The four read surfaces promised by SPEC §6b run lazy automation only when
+ * this supported board actually has timed work. Unsupported boards remain
+ * inspectable read-only. */
+function lazyAutomation(root: string): void {
+  const board = loadTree(root).boards.get('.')!.board;
+  if (board.config.mutationBlocked !== null) return;
+  const timed = board.config.automation.archiveDoneAfter !== null
+    || board.cards.some((card) => card.snooze !== null || card.reminders.length > 0);
+  if (timed) runAutomation(root);
+}
+
 function fieldAssignments(root: string, entries: string[] | undefined): Record<string, unknown> | undefined {
   if (entries === undefined) return undefined;
   const definitions = loadTree(root).boards.get('.')!.board.config.customFields;
@@ -224,6 +261,7 @@ export function run(argv: string[]): number {
         out: { type: 'string' },
       });
       const root = getRoot(values);
+      lazyAutomation(root);
       const tree = loadTree(root);
       const analysis = analyze(tree);
       if (values['html']) {
@@ -260,6 +298,7 @@ export function run(argv: string[]): number {
     case 'prime': {
       const { values } = parse(rest, COMMON);
       const root = getRoot(values);
+      lazyAutomation(root);
       const tree = loadTree(root);
       const analysis = analyze(tree);
       values['json'] ? emitJson(boardJson(tree, analysis)) : out(renderPrime(tree, analysis, root));
@@ -268,6 +307,7 @@ export function run(argv: string[]): number {
     case 'ready': {
       const { values } = parse(rest, COMMON);
       const root = getRoot(values);
+      lazyAutomation(root);
       const tree = loadTree(root);
       const analysis = analyze(tree);
       const node = tree.boards.get('.')!;
@@ -281,6 +321,7 @@ export function run(argv: string[]): number {
     case 'query': {
       const { values, positionals } = parse(rest, { ...COMMON, saved: { type: 'string' } });
       const root = getRoot(values);
+      lazyAutomation(root);
       const tree = loadTree(root);
       const analysis = analyze(tree);
       const saved = values['saved'] as string | undefined;
@@ -336,6 +377,39 @@ export function run(argv: string[]): number {
       values['json']
         ? emitJson({ lane, watcher: result.subscription.watcher, subscribed: result.active, changed: result.changed })
         : out(`${result.changed ? '✓' : '='} @${result.subscription.watcher} ${result.active ? 'subscribed to' : 'unsubscribed from'} ${lane}`);
+      return 0;
+    }
+    case 'automate': {
+      const { values } = parse(rest, COMMON);
+      const result = runAutomation(getRoot(values));
+      values['json']
+        ? emitJson({ actions: result.actions, changed: result.cards.map((card) => card.id), remaining: result.remaining, nextAt: result.nextAt })
+        : out(result.actions.length === 0 ? 'automation current · nothing due' : `✓ ${result.actions.length} automation action(s) applied${result.remaining ? ' · more work remains' : ''}`);
+      return 0;
+    }
+    case 'button': {
+      const { values, positionals } = parse(rest, {
+        ...COMMON,
+        card: { type: 'string' },
+        force: { type: 'boolean', default: false },
+        'wip-reason': { type: 'string' },
+      });
+      const [sub, id] = positionals;
+      const root = getRoot(values);
+      if (sub === 'list') {
+        const buttons = loadTree(root).boards.get('.')!.board.config.buttons.map(({ id: buttonId, name, scope, filter, action, value }) => ({ id: buttonId, name, scope, filter, action, value }));
+        values['json'] ? emitJson(buttons) : out(buttons.length === 0 ? 'no buttons configured' : buttons.map((button) => `${button.id}  ${button.scope}  ${button.name} (${button.action}${button.value === null ? '' : ` ${button.value}`})`).join('\n'));
+        return 0;
+      }
+      if (sub !== 'run' || !id) throw new UsageError('usage: botflow button list | run <id> [--card id]');
+      const result = runButton(root, id, getActor(values), {
+        cardId: values['card'] as string | undefined,
+        force: values['force'] === true,
+        wipJustification: values['wip-reason'] as string | undefined,
+      });
+      values['json']
+        ? emitJson({ button: result.button.id, changed: result.cards.map((card) => card.id), warnings: result.warnings })
+        : out(`✓ ${result.button.name}: ${result.cards.length} card(s) changed${result.warnings.map((warning) => `\n⚠ ${warning}`).join('')}`);
       return 0;
     }
     case 'lint': {
@@ -450,10 +524,15 @@ function runCard(argv: string[]): number {
         delegate: { type: 'string' },
         start: { type: 'string' },
         due: { type: 'string' },
+        reminders: { type: 'string' },
+        repeat: { type: 'string' },
+        snooze: { type: 'string' },
         estimate: { type: 'string' },
         evergreen: { type: 'boolean' },
         'cover-color': { type: 'string' },
         field: { type: 'string', multiple: true },
+        force: { type: 'boolean', default: false },
+        'wip-reason': { type: 'string' },
       });
       const title = positionals.join(' ').trim();
       if (title === '') throw new UsageError('usage: botflow card add <title> [flags]');
@@ -473,10 +552,15 @@ function runCard(argv: string[]): number {
         delegate: values['delegate'] as string | undefined,
         start: values['start'] as string | undefined,
         due: values['due'] as string | undefined,
+        reminders: reminderOffsets(values['reminders'] as string | undefined),
+        repeat: repeatValue(values['repeat'] as string | undefined) ?? undefined,
+        snooze: values['snooze'] as string | undefined,
         estimate: values['estimate'] === undefined ? undefined : Number(values['estimate']),
         evergreen: values['evergreen'] === true ? true : undefined,
         coverColor: values['cover-color'] as string | undefined,
         fields: fieldAssignments(root, values['field'] as string[] | undefined),
+        force: values['force'] === true,
+        wipJustification: values['wip-reason'] as string | undefined,
         actor: getActor(values),
       });
       const pos = card.substate === null ? card.laneId : `${card.laneId}.${card.substate}`;
@@ -501,10 +585,10 @@ function runCard(argv: string[]): number {
       return 0;
     }
     case 'mv': {
-      const { values, positionals } = parse(rest, { ...COMMON, force: { type: 'boolean', default: false } });
+      const { values, positionals } = parse(rest, { ...COMMON, force: { type: 'boolean', default: false }, 'wip-reason': { type: 'string' } });
       const [id, spec] = positionals;
       if (!id || !spec) throw new UsageError('usage: botflow card mv <id> <lane[.substate]>');
-      const res = moveCard(getRoot(values), id, spec, getActor(values), values['force'] as boolean);
+      const res = moveCard(getRoot(values), id, spec, getActor(values), values['force'] as boolean, values['wip-reason'] as string | undefined);
       values['json']
         ? emitJson({ id: res.card.id, from: res.from, to: res.to, warnings: res.warnings })
         : out(`✓ ${res.card.id} ${res.from} → ${res.to}${res.warnings.map((w) => `\n⚠ ${w}`).join('')}`);
@@ -515,6 +599,7 @@ function runCard(argv: string[]): number {
       const { values, positionals } = parse(rest, {
         ...COMMON,
         reason: { type: 'string' },
+        'wip-reason': { type: 'string' },
         force: { type: 'boolean', default: false },
         delegate: { type: 'boolean', default: false },
       });
@@ -524,8 +609,8 @@ function runCard(argv: string[]): number {
       const actor = getActor(values);
       const res =
         sub === 'claim'
-          ? claimCard(root, id, actor, values['force'] as boolean, values['delegate'] === true ? 'delegate' : 'assign')
-          : closeCard(root, id, actor, values['reason'] as string | undefined);
+          ? claimCard(root, id, actor, values['force'] as boolean, values['delegate'] === true ? 'delegate' : 'assign', values['wip-reason'] as string | undefined)
+          : closeCard(root, id, actor, values['reason'] as string | undefined, values['wip-reason'] as string | undefined, values['force'] === true);
       if (res.alreadyYours) {
         values['json']
           ? emitJson({ id: res.card.id, from: res.from, to: res.to, assignee: res.card.assignee, delegate: res.card.delegate, alreadyYours: true, warnings: [] })
@@ -534,17 +619,17 @@ function runCard(argv: string[]): number {
       }
       const holder = values['delegate'] === true ? res.card.delegate : res.card.assignee;
       values['json']
-        ? emitJson({ id: res.card.id, from: res.from, to: res.to, assignee: res.card.assignee, delegate: res.card.delegate, warnings: res.warnings })
+        ? emitJson({ id: res.card.id, from: res.from, to: res.to, assignee: res.card.assignee, delegate: res.card.delegate, created: res.created?.id ?? null, warnings: res.warnings })
         : out(`✓ ${res.card.id} ${res.from} → ${res.to}${sub === 'claim' ? ` (@${holder})` : ''}${res.warnings.map((w) => `\n⚠ ${w}`).join('')}`);
       return 0;
     }
     case 'block': {
-      const { values, positionals } = parse(rest, { ...COMMON, reason: { type: 'string' } });
+      const { values, positionals } = parse(rest, { ...COMMON, reason: { type: 'string' }, blocker: { type: 'string' } });
       const id = positionals[0];
       const reason = values['reason'] as string | undefined;
       if (!id || !reason) throw new UsageError('usage: botflow card block <id> --reason <why>');
-      const card = blockCard(getRoot(values), id, getActor(values), reason);
-      values['json'] ? emitJson({ id: card.id, blocked: card.blocked }) : out(`⛔ ${card.id} blocked: ${reason}`);
+      const card = blockCard(getRoot(values), id, getActor(values), reason, values['blocker'] as string | undefined);
+      values['json'] ? emitJson({ id: card.id, blocked: card.blocked, blocker: card.blocker }) : out(`⛔ ${card.id} blocked${card.blocker ? ` [${card.blocker}]` : ''}: ${reason}`);
       return 0;
     }
     case 'unblock': {
@@ -553,6 +638,17 @@ function runCard(argv: string[]): number {
       if (!id) throw new UsageError('usage: botflow card unblock <id>');
       const card = unblockCard(getRoot(values), id, getActor(values));
       values['json'] ? emitJson({ id: card.id, blocked: null }) : out(`✓ ${card.id} unblocked`);
+      return 0;
+    }
+    case 'snooze': {
+      const { values, positionals } = parse(rest, { ...COMMON, until: { type: 'string' }, off: { type: 'boolean', default: false } });
+      const id = positionals[0];
+      const until = values['until'] as string | undefined;
+      if (!id || (values['off'] !== true && until === undefined) || (values['off'] === true && until !== undefined)) {
+        throw new UsageError('usage: botflow card snooze <id> --until <UTC-date> | --off');
+      }
+      const card = snoozeCard(getRoot(values), id, getActor(values), values['off'] === true ? null : until!);
+      values['json'] ? emitJson({ id: card.id, snooze: card.snooze }) : out(`✓ ${card.id} ${card.snooze === null ? 'awake' : `snoozed until ${card.snooze}`}`);
       return 0;
     }
     case 'edit': {
@@ -566,6 +662,9 @@ function runCard(argv: string[]): number {
         deps: { type: 'string' },
         start: { type: 'string' },
         due: { type: 'string' },
+        reminders: { type: 'string' },
+        repeat: { type: 'string' },
+        snooze: { type: 'string' },
         estimate: { type: 'string' },
         evergreen: { type: 'string' },
         'board-path': { type: 'string' },
@@ -585,6 +684,9 @@ function runCard(argv: string[]): number {
       if (values['deps'] !== undefined) patch.deps = csv(values['deps'] as string)!;
       if (values['start'] !== undefined) patch.start = noneable(values['start'] as string);
       if (values['due'] !== undefined) patch.due = noneable(values['due'] as string);
+      if (values['reminders'] !== undefined) patch.reminders = reminderOffsets(values['reminders'] as string)!;
+      if (values['repeat'] !== undefined) patch.repeat = repeatValue(values['repeat'] as string);
+      if (values['snooze'] !== undefined) patch.snooze = noneable(values['snooze'] as string);
       if (values['estimate'] !== undefined) {
         const value = values['estimate'] as string;
         patch.estimate = value === 'none' ? null : Number(value);
@@ -752,6 +854,7 @@ function runCard(argv: string[]): number {
         ...COMMON,
         force: { type: 'boolean', default: false },
         reason: { type: 'string' },
+        'wip-reason': { type: 'string' },
         'add-labels': { type: 'string' },
         'remove-labels': { type: 'string' },
       });
@@ -759,9 +862,9 @@ function runCard(argv: string[]): number {
       const ids = csv(idList);
       if (!ids || !action) throw new UsageError('usage: botflow card bulk <ids> mv <lane> | close | label');
       const bulkAction = action === 'mv' && arg
-        ? { kind: 'move' as const, to: arg, force: values['force'] === true }
+        ? { kind: 'move' as const, to: arg, force: values['force'] === true, wipJustification: values['wip-reason'] as string | undefined }
         : action === 'close'
-          ? { kind: 'close' as const, reason: values['reason'] as string | undefined }
+          ? { kind: 'close' as const, reason: values['reason'] as string | undefined, force: values['force'] === true, wipJustification: values['wip-reason'] as string | undefined }
           : action === 'label'
             ? { kind: 'label' as const, add: csv(values['add-labels'] as string | undefined), remove: csv(values['remove-labels'] as string | undefined) }
             : null;

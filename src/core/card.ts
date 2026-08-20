@@ -1,8 +1,8 @@
 // Card frontmatter → Card (SPEC §5), collecting findings instead of throwing.
 
 import type { YamlValue } from './yaml.ts';
-import type { Card, CardRelation, Finding } from './model.ts';
-import { RELATION_TYPES, finding } from './model.ts';
+import type { Card, CardRelation, CardRepeat, Finding } from './model.ts';
+import { RELATION_TYPES, SLUG_RE, finding } from './model.ts';
 import { validCardDate, validEstimate } from './fields.ts';
 import { BUILTIN_CARD_KEYS, validColor } from './presentation.ts';
 import { parseCardReference } from './refs.ts';
@@ -153,13 +153,66 @@ export function parseCard(
     else findings.push(finding('schema', id, `priority must be p0–p3, got ${JSON.stringify(m['priority'])}`));
   }
 
-  const dateField = (key: 'start' | 'due'): string | null => {
+  const dateField = (key: 'start' | 'due' | 'snooze'): string | null => {
     const value = m[key];
     if (value === undefined) return null;
     if (typeof value === 'string' && validCardDate(value)) return value;
     findings.push(finding('schema', id, `${key} must be YYYY-MM-DD or a UTC ISO datetime, got ${JSON.stringify(value)}`));
     return null;
   };
+
+  const start = dateField('start');
+  const due = dateField('due');
+  const snooze = dateField('snooze');
+
+  const reminders: number[] = [];
+  if (m['reminders'] !== undefined) {
+    if (!Array.isArray(m['reminders'])) {
+      findings.push(finding('schema', id, 'reminders must be a list of nonnegative minute offsets'));
+    } else {
+      for (const value of m['reminders']) {
+        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || reminders.includes(value)) {
+          findings.push(finding('schema', id, 'reminders must contain unique nonnegative integers'));
+        } else reminders.push(value);
+      }
+    }
+    if (due === null) findings.push(finding('schema', id, 'reminders require due'));
+  }
+
+  let repeat: CardRepeat | null = null;
+  if (m['repeat'] !== undefined) {
+    const raw = m['repeat'];
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      findings.push(finding('schema', id, 'repeat must be a recurrence mapping'));
+    } else {
+      const map = raw as Record<string, YamlValue>;
+      const every = typeof map['every'] === 'number' && Number.isSafeInteger(map['every']) && map['every'] > 0 ? map['every'] : null;
+      const unit = map['unit'] === 'day' || map['unit'] === 'week' || map['unit'] === 'month' ? map['unit'] : null;
+      const from = map['from'] === undefined || map['from'] === 'due' ? 'due' : map['from'] === 'completion' ? 'completion' : null;
+      if (every === null) findings.push(finding('schema', id, 'repeat.every must be a positive integer'));
+      if (unit === null) findings.push(finding('schema', id, 'repeat.unit must be day, week, or month'));
+      if (from === null) findings.push(finding('schema', id, 'repeat.from must be due or completion'));
+      const extra: Record<string, unknown> = {};
+      for (const key of Object.keys(map)) {
+        if (key !== 'every' && key !== 'unit' && key !== 'from') {
+          extra[key] = map[key];
+          findings.push(finding('unknown-key', id, `repeat: unknown key "${key}" (preserved)`));
+        }
+      }
+      if (every !== null && unit !== null && from !== null) repeat = { every, unit, from, extra };
+    }
+    if (due === null) findings.push(finding('schema', id, 'repeat requires due'));
+    if (type === 'board') findings.push(finding('schema', id, 'repeat is not allowed on board-cards'));
+  }
+
+  let blocker: string | null = null;
+  if (m['blocker'] !== undefined) {
+    if (typeof m['blocker'] === 'string' && SLUG_RE.test(m['blocker'])) blocker = m['blocker'];
+    else findings.push(finding('schema', id, 'blocker must be a lowercase slug'));
+  }
+  const blocked = optString(m['blocked']);
+  if (m['blocked'] !== undefined && blocked === null) findings.push(finding('schema', id, 'blocked must be a non-empty string'));
+  if (blocker !== null && blocked === null) findings.push(finding('schema', id, 'blocker requires blocked'));
 
   let estimate: number | null = null;
   if (m['estimate'] !== undefined) {
@@ -210,13 +263,17 @@ export function parseCard(
     priority,
     deps,
     relations,
-    start: dateField('start'),
-    due: dateField('due'),
+    start,
+    due,
+    reminders,
+    repeat,
+    snooze,
     estimate,
     evergreen,
     cover: optString(m['cover']),
     coverColor,
-    blocked: optString(m['blocked']),
+    blocked,
+    blocker,
     created: optString(m['created']),
     updated: optString(m['updated']),
     extra,

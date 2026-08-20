@@ -148,6 +148,59 @@ apps can subscribe to iCal. Feed URLs are member-scoped bearer secrets: they sto
 immediately on revocation, lost project access, removed membership, or a deleted
 scope. Calendar refresh cadence is controlled by the calendar provider.
 
+### Scheduling, blockers, and bounded automation
+
+Cards can carry UTC `start`/`due` values, due-relative reminder offsets, recurrence,
+and snooze state. Recurrence creates an independent successor on close; snooze hides
+otherwise-ready work until its UTC instant or genuine new card activity, whichever
+comes first.
+
+```sh
+botflow card add "Weekly audit" --due 2026-09-01 --reminders 1440,60 \
+  --repeat 1:week:due
+botflow card snooze 012 --until 2026-08-24T13:00Z
+botflow automate                         # reminder / wake / archive pass
+```
+
+Boards can define reusable blockers, WIP enforcement, safe buttons, and bounded event
+rules in portable configuration:
+
+```yaml
+lanes:
+  - id: review
+    canonical: doing
+    wip: 3
+    wip_mode: justify       # allow · justify · deny
+blockers:
+  - id: external-review
+    name: External review
+    color: "#b42318"
+buttons:
+  - id: ship
+    name: Ship
+    scope: card
+    action: move
+    value: done
+rules:
+  - id: note-review
+    event: enter
+    lane: review
+    action: label
+    value: reviewed
+automation:
+  archive_done_after: 30
+```
+
+`justify` and forced `deny` overflow require a written Log reason. Named-blocked cards
+cannot move until unblocked, and blocked duration is aggregated by blocker id. Buttons
+are declarative move/close/label operations—never code or network calls—and board
+buttons are capped at 100 filtered cards. Rules can only label, unlabel, assign,
+delegate, or comment; they run in the primary transaction without recursion.
+
+The CLI runs automation lazily before its work-discovery reads. Hosted projects do the
+same on board fetch and schedule the next due action with a Durable Object alarm. The
+state remains rebuildable: exact reminder markers and card Logs are the source of truth.
+
 ## Quickstart (template workspace)
 
 ```sh

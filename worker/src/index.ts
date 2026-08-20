@@ -1117,6 +1117,38 @@ export default {
         const res = await stub.search(query, actor);
         return 'error' in res ? json(res, 400) : json(res);
       }
+      if (req.method === 'POST' && rest === '/automate') {
+        const denied = requireWrite();
+        if (denied) return denied;
+        return json(await stub.automate());
+      }
+      const buttonRun = /^\/buttons\/([a-z0-9][a-z0-9-]*)$/.exec(rest);
+      if (req.method === 'POST' && buttonRun) {
+        const denied = requireWrite();
+        if (denied) return denied;
+        const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+        if (body['card'] !== undefined && body['card'] !== null && typeof body['card'] !== 'string') {
+          return json({ error: 'card must be a string or null' }, 400);
+        }
+        if (body['wipReason'] !== undefined && typeof body['wipReason'] !== 'string') {
+          return json({ error: 'wipReason must be a string' }, 400);
+        }
+        if (body['force'] !== undefined && typeof body['force'] !== 'boolean') {
+          return json({ error: 'force must be a boolean' }, 400);
+        }
+        if (body['force'] === true) {
+          const ownerOnly = requireOwner();
+          if (ownerOnly) return json({ error: 'force is an owner override' }, 403);
+          await registry.audit(actor, 'force-override', `button ${buttonRun[1]} on ${pid}`);
+        }
+        const res = await stub.runButton(
+          buttonRun[1]!,
+          typeof body['card'] === 'string' && body['card'] !== '' ? body['card'] : null,
+          body,
+          actor,
+        );
+        return 'error' in res ? json(res, 400) : json(res);
+      }
       if (rest === '/filters') {
         if (req.method === 'GET') {
           const config = await stub.boardConfig() as { filters?: unknown[] };
@@ -1203,16 +1235,28 @@ export default {
         if (typeof body['title'] !== 'string' || body['title'] === '') return json({ error: 'title required' }, 400);
         // A list field that is not a list is a client bug, and silently
         // dropping it looks exactly like success. Say so instead.
-        for (const field of ['labels', 'deps']) {
+        for (const field of ['labels', 'deps', 'reminders']) {
           if (body[field] !== undefined && !Array.isArray(body[field])) return json({ error: `${field} must be a list` }, 400);
         }
-        for (const field of ['template', 'lane', 'priority', 'assignee', 'delegate', 'start', 'due', 'cover_color']) {
+        if (Array.isArray(body['reminders']) && !body['reminders'].every((value) => typeof value === 'number' && Number.isInteger(value))) {
+          return json({ error: 'reminders must contain integer minute offsets' }, 400);
+        }
+        for (const field of ['template', 'lane', 'priority', 'assignee', 'delegate', 'start', 'due', 'snooze', 'cover_color', 'wipReason']) {
           if (body[field] !== undefined && typeof body[field] !== 'string') return json({ error: `${field} must be a string` }, 400);
+        }
+        if (body['repeat'] !== undefined && (body['repeat'] === null || typeof body['repeat'] !== 'object' || Array.isArray(body['repeat']))) {
+          return json({ error: 'repeat must be an object' }, 400);
         }
         if (body['estimate'] !== undefined && typeof body['estimate'] !== 'number') return json({ error: 'estimate must be a number' }, 400);
         if (body['evergreen'] !== undefined && typeof body['evergreen'] !== 'boolean') return json({ error: 'evergreen must be a boolean' }, 400);
+        if (body['force'] !== undefined && typeof body['force'] !== 'boolean') return json({ error: 'force must be a boolean' }, 400);
         if (body['fields'] !== undefined && (body['fields'] === null || typeof body['fields'] !== 'object' || Array.isArray(body['fields']))) {
           return json({ error: 'fields must be an object' }, 400);
+        }
+        if (body['force'] === true) {
+          const ownerOnly = requireOwner();
+          if (ownerOnly) return json({ error: 'force is an owner override' }, 403);
+          await registry.audit(actor, 'force-override', `add card on ${pid}`);
         }
         // project: refs must point at projects nested beneath this board; the
         // DO enforces this at resolution time too, this is the friendly error.
@@ -1236,10 +1280,20 @@ export default {
             delegate: typeof body['delegate'] === 'string' ? (body['delegate'] as string) : undefined,
             start: typeof body['start'] === 'string' ? (body['start'] as string) : undefined,
             due: typeof body['due'] === 'string' ? (body['due'] as string) : undefined,
+            reminders: Array.isArray(body['reminders']) ? body['reminders'] as number[] : undefined,
+            repeat: isRecord(body['repeat']) ? {
+              every: Number(body['repeat']['every']),
+              unit: String(body['repeat']['unit']) as 'day' | 'week' | 'month',
+              from: String(body['repeat']['from'] ?? 'due') as 'due' | 'completion',
+              extra: {},
+            } : undefined,
+            snooze: typeof body['snooze'] === 'string' ? body['snooze'] : undefined,
             estimate: body['estimate'] as number | undefined,
             evergreen: body['evergreen'] as boolean | undefined,
             coverColor: body['cover_color'] as string | undefined,
             fields: body['fields'] as Record<string, unknown> | undefined,
+            wipJustification: typeof body['wipReason'] === 'string' ? body['wipReason'] : undefined,
+            force: body['force'] === true,
           },
           actor,
         );

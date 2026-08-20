@@ -21,7 +21,7 @@ test('mcp: handshake, tools/list, lifecycle via tools/call', async () => {
   assert.equal(initTarget.status, 0, initTarget.stderr);
   writeFileSync(join(dir, '.botflow', 'board.yaml'), `botflow: 0
 name: mcp-board
-features: [scoped-labels, custom-fields, cover-colors, relations, templates]
+features: [scoped-labels, custom-fields, cover-colors, relations, templates, automation, named-blockers]
 fields:
   - id: sprint
     type: number
@@ -37,6 +37,21 @@ templates:
     fields:
       risk: high
     body: "## Checklist\\n- [ ] reproduce {{title}}\\n"
+blockers:
+  - id: external-review
+    name: External review
+    color: "#b42318"
+buttons:
+  - id: reviewed
+    name: Mark reviewed
+    scope: card
+    action: label
+    value: reviewed
+rules:
+  - id: waiting-label
+    event: block
+    action: label
+    value: waiting
 lanes:
   - id: wishlist
   - id: todo
@@ -90,13 +105,15 @@ lanes:
       'prime', 'board', 'ready', 'card_add', 'card_claim', 'card_close', 'card_block',
       'card_promote', 'card_link', 'card_unlink', 'card_merge', 'card_quick_add', 'card_bulk', 'card_transfer',
       'query_cards', 'filters_list', 'filter_save', 'filter_remove', 'lane_subscribe', 'card_watch', 'card_vote', 'card_boost',
+      'automation_run', 'buttons_list', 'button_run', 'card_snooze',
     ]) {
       assert.ok(names.includes(expected), `tool ${expected}`);
     }
 
     const added = await callTool('card_add', {
       title: 'From MCP', labels: ['Type/Bug'], priority: 'p1', start: '2026-08-20',
-      due: '2026-08-24T12:30Z', estimate: 5, evergreen: true, cover_color: '#f0c040',
+      due: '2026-08-24T12:30Z', reminders: [60, 15], repeat: { every: 2, unit: 'week', from: 'due' },
+      estimate: 5, evergreen: true, cover_color: '#f0c040',
       fields: { sprint: 14, risk: 'high' },
     });
     assert.equal(added.isError, false);
@@ -112,6 +129,8 @@ lanes:
     const scheduled = JSON.parse((await callTool('card_show', { id })).text) as Record<string, unknown>;
     assert.equal(scheduled['start'], '2026-08-20');
     assert.equal(scheduled['due'], '2026-08-24T12:30Z');
+    assert.deepEqual(scheduled['reminders'], [60, 15]);
+    assert.deepEqual(scheduled['repeat'], { every: 2, unit: 'week', from: 'due' });
     assert.equal(scheduled['estimate'], 5);
     assert.equal(scheduled['evergreen'], true);
     assert.equal(scheduled['coverColor'], '#f0c040');
@@ -119,6 +138,9 @@ lanes:
     assert.deepEqual(scheduled['watchers'], ['mcp-agent']);
     assert.deepEqual(scheduled['votes'], ['mcp-agent']);
     assert.equal(scheduled['boostCount'], 1);
+    assert.equal((await callTool('card_snooze', { id, until: '2099-01-01T00:00:00Z' })).isError, false);
+    assert.ok(!(JSON.parse((await callTool('ready', {})).text) as { id: string }[]).some((card) => card.id === id));
+    assert.equal((await callTool('card_snooze', { id, until: null })).isError, false);
     const editedPresentation = await callTool('card_edit', { id, cover_color: null, fields: { sprint: 15, risk: null } });
     assert.equal(editedPresentation.isError, false);
     const rescheduled = JSON.parse((await callTool('card_show', { id })).text) as Record<string, unknown>;
@@ -129,11 +151,20 @@ lanes:
     assert.equal(claim.isError, false);
     assert.equal((JSON.parse(claim.text) as { assignee: string }).assignee, 'mcp-agent');
 
-    const block = await callTool('card_block', { id, reason: 'testing the flag' });
+    const block = await callTool('card_block', { id, reason: 'testing the flag', blocker: 'external-review' });
     assert.equal(block.isError, false);
+    let blockedDetail = JSON.parse((await callTool('card_show', { id })).text) as Record<string, unknown>;
+    assert.equal(blockedDetail['blocker'], 'external-review');
+    assert.ok((blockedDetail['labels'] as string[]).includes('waiting'));
     await callTool('card_unblock', { id });
+    assert.equal((await callTool('button_run', { id: 'reviewed', card_id: id })).isError, false);
+    blockedDetail = JSON.parse((await callTool('card_show', { id })).text) as Record<string, unknown>;
+    assert.ok((blockedDetail['labels'] as string[]).includes('reviewed'));
+    assert.equal((JSON.parse((await callTool('buttons_list', {})).text) as unknown[]).length, 1);
+    assert.equal((await callTool('automation_run', {})).isError, false);
     const close = await callTool('card_close', { id, reason: 'mcp round trip done' });
     assert.equal(close.isError, false);
+    assert.ok((JSON.parse(close.text) as { created: string | null }).created, 'recurring close creates a successor');
 
     const board = await callTool('board', {});
     const parsed = JSON.parse(board.text) as { distribution: Record<string, number> };

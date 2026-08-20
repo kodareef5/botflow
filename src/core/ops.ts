@@ -2,15 +2,18 @@
 // The CLI's mutate.ts and the hosted ProjectDO both apply moves, claims,
 // closes, blocks, and edits through these, so the rules exist exactly once.
 
-import type { BoardConfig, Card, CardRelation, Lane, LaneSubscription, LoadedBoard, SavedFilter } from './model.ts';
+import type { AutomationButton, AutomationRuleEvent, BoardConfig, Card, CardRelation, CardRepeat, Lane, LaneSubscription, LoadedBoard, SavedFilter } from './model.ts';
 import { RELATION_TYPES } from './model.ts';
-import { addAttachmentLine, appendToSection, bodyHasSection, parseBody, removeAttachmentLine, setChecklistItem, setSection } from './body.ts';
+import { addAttachmentLine, appendToSection, bodyHasSection, parseBody, removeAttachmentLine, removeSection, setChecklistItem, setSection } from './body.ts';
+import { analyze } from './analyze.ts';
+import { singleBoardTree } from './docs.ts';
 import { emitScalar } from './emit.ts';
 import { validCardDate, validEstimate } from './fields.ts';
 import { newHashId, nextSeqId, slugify } from './ids.ts';
 import { labelGroupConflict, validColor, validCustomFieldValue } from './presentation.ts';
 import { parseCardReference, relationInverse } from './refs.ts';
-import { QueryError, validateQuery } from './query.ts';
+import { QueryError, queryCards, validateQuery } from './query.ts';
+import { automationPlan, isSnoozed, nextAutomationAt, nextOccurrenceDates, reminderText, type AutomationPlanItem } from './scheduling.ts';
 import { logMutation, nowDate, nowDateTime, sanitizeActor, sanitizeBlock, sanitizeInline, sanitizeSectionName, sanitizeUrl } from './write.ts';
 
 /** An error caused by how a tool was invoked: message for the caller, no stack. */
@@ -21,7 +24,7 @@ export class UsageError extends Error {}
  *  degrades to a clear message; surfaces that know about claims can read the
  *  structured fields (REST returns 409 with them). */
 export class ClaimConflict extends UsageError {
-  readonly reason: 'assigned' | 'blocked' | 'not-ready' | 'deps';
+  readonly reason: 'assigned' | 'blocked' | 'snoozed' | 'not-ready' | 'deps';
   /** Current assignee when reason is "assigned". */
   readonly holder: string | null;
   /** The card's current lane[.substate]. */
@@ -122,12 +125,33 @@ export function validateBoardPath(boardPath: string): void {
   }
 }
 
-function wipWarnings(board: LoadedBoard, moved: Card): string[] {
-  const lane = board.config.lanes.find((l) => l.id === moved.laneId);
-  if (!lane || lane.wip === null) return [];
-  const inBoard = board.cards.includes(moved);
-  const count = board.cards.filter((c) => c.laneId === lane.id).length + (inBoard ? 0 : 1);
-  return count > lane.wip ? [`wip: lane "${lane.id}" now holds ${count} cards (limit ${lane.wip})`] : [];
+interface WipDecision {
+  warnings: string[];
+  log: string | null;
+}
+
+function wipEntry(
+  board: LoadedBoard,
+  targetLaneId: string,
+  current: Card | null,
+  justification?: string,
+  force = false,
+): WipDecision {
+  if (current?.laneId === targetLaneId) return { warnings: [], log: null };
+  const lane = board.config.lanes.find((candidate) => candidate.id === targetLaneId);
+  if (lane === undefined || lane.wip === null) return { warnings: [], log: null };
+  const count = board.cards.filter((card) => card !== current && card.laneId === lane.id).length + 1;
+  if (count <= lane.wip) return { warnings: [], log: null };
+  const warning = `wip: lane "${lane.id}" now holds ${count} cards (limit ${lane.wip})`;
+  const reason = sanitizeInline(justification ?? '');
+  if (lane.wipMode === 'allow') return { warnings: [warning], log: null };
+  if (lane.wipMode === 'justify') {
+    if (reason === '') throw new UsageError(`lane "${lane.id}" requires a WIP justification (${count}/${lane.wip})`);
+    return { warnings: [warning], log: `wip justification for ${lane.id}: ${reason}` };
+  }
+  if (!force) throw new UsageError(`lane "${lane.id}" denies WIP overflow (${count}/${lane.wip})`);
+  if (reason === '') throw new UsageError(`forcing WIP overflow in lane "${lane.id}" requires a justification`);
+  return { warnings: [warning], log: `wip override for ${lane.id}: ${reason}` };
 }
 
 export interface AddOptions {
@@ -144,10 +168,15 @@ export interface AddOptions {
   delegate?: string | undefined;
   start?: string | undefined;
   due?: string | undefined;
+  reminders?: number[] | undefined;
+  repeat?: CardRepeat | undefined;
+  snooze?: string | undefined;
   estimate?: number | undefined;
   evergreen?: boolean | undefined;
   coverColor?: string | undefined;
   fields?: Record<string, unknown> | undefined;
+  wipJustification?: string | undefined;
+  force?: boolean | undefined;
   /** Initial markdown before the tool-created Log. */
   body?: string | undefined;
   actor: string;
@@ -164,10 +193,33 @@ function checkedPriority(value: string | null | undefined): string | null | unde
   return value;
 }
 
-function checkedDate(value: string | null | undefined, field: 'start' | 'due'): string | null | undefined {
+function checkedDate(value: string | null | undefined, field: 'start' | 'due' | 'snooze'): string | null | undefined {
   if (value === undefined || value === null || value === '') return value === '' ? null : value;
   if (!validCardDate(value)) throw new UsageError(`${field} must be YYYY-MM-DD or a UTC ISO datetime`);
   return value;
+}
+
+function checkedReminders(values: number[] | null | undefined, due: string | null | undefined): number[] | null | undefined {
+  if (values === undefined || values === null) return values;
+  const out: number[] = [];
+  for (const value of values) {
+    if (!Number.isSafeInteger(value) || value < 0 || out.includes(value)) {
+      throw new UsageError('reminders must be unique nonnegative minute offsets');
+    }
+    out.push(value);
+  }
+  if (out.length > 0 && (due === null || due === undefined || due === '')) throw new UsageError('reminders require due');
+  return out;
+}
+
+function checkedRepeat(value: CardRepeat | null | undefined, due: string | null | undefined, type: Card['type']): CardRepeat | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (!Number.isSafeInteger(value.every) || value.every <= 0) throw new UsageError('repeat.every must be a positive integer');
+  if (value.unit !== 'day' && value.unit !== 'week' && value.unit !== 'month') throw new UsageError('repeat.unit must be day, week, or month');
+  if (value.from !== 'due' && value.from !== 'completion') throw new UsageError('repeat.from must be due or completion');
+  if (due === null || due === undefined || due === '') throw new UsageError('repeat requires due');
+  if (type === 'board') throw new UsageError('repeat is not allowed on board-cards');
+  return { ...value, extra: { ...(value.extra ?? {}) } };
 }
 
 function checkedEstimate(value: number | null | undefined): number | null | undefined {
@@ -254,7 +306,62 @@ function checkedRelations(values: CardRelation[], ownId?: string): CardRelation[
   return out;
 }
 
+function ruleFilterMatches(board: LoadedBoard, card: Card, filterId: string | null, actor: string, nowValue: number | Date): boolean {
+  if (filterId === null) return true;
+  const filter = board.config.savedFilters.find((candidate) => candidate.id === filterId);
+  if (filter === undefined) throw new UsageError(`automation rule names missing filter "${filterId}"`);
+  const shadow = board.cards.includes(card) ? board : { ...board, cards: [...board.cards, card] };
+  const tree = singleBoardTree(shadow);
+  const analysis = analyze(tree, nowValue);
+  return queryCards(tree, analysis, filter.query, { actor, now: nowValue }).some((match) => match.card.id === card.id);
+}
+
+/** Apply safe, non-recursive board rules after one primary event. */
+export function applyAutomationRules(
+  board: LoadedBoard,
+  card: Card,
+  event: AutomationRuleEvent,
+  actor: string,
+  nowValue: number | Date = Date.now(),
+): string[] {
+  const applied: string[] = [];
+  for (const rule of board.config.rules) {
+    if (rule.event !== event) continue;
+    if (event === 'enter' && rule.lane !== card.laneId) continue;
+    if (!ruleFilterMatches(board, card, rule.filter, actor, nowValue)) continue;
+    if (applied.length >= 16) throw new UsageError('automation event matches more than 16 rules');
+    switch (rule.action) {
+      case 'label': {
+        if (!card.labels.includes(rule.value)) card.labels = checkedLabels([...card.labels, rule.value]);
+        break;
+      }
+      case 'unlabel':
+        card.labels = card.labels.filter((label) => label !== rule.value);
+        break;
+      case 'assign': {
+        const value = cleanActorField(rule.value);
+        if (value === null || value === undefined) throw new UsageError(`rule "${rule.id}" has no usable assignee`);
+        card.assignee = value;
+        break;
+      }
+      case 'delegate': {
+        const value = cleanActorField(rule.value);
+        if (value === null || value === undefined) throw new UsageError(`rule "${rule.id}" has no usable delegate`);
+        card.delegate = value;
+        break;
+      }
+      case 'comment':
+        card.body = appendToSection(card.body, 'Comments', `- ${nowDateTime(nowValue)} botflow: ${sanitizeInline(rule.value)}`);
+        break;
+    }
+    logMutation(card, actor, `rule ${rule.id}: ${rule.action}`, nowValue);
+    applied.push(rule.id);
+  }
+  return applied;
+}
+
 export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
+  const operationNow = Date.now();
   const config = board.config;
   if (opts.title.trim() === '') throw new UsageError('title required');
   const template = opts.template === undefined ? null : config.templates.find((candidate) => candidate.id === opts.template);
@@ -270,6 +377,12 @@ export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
   const spec = opts.lane ?? template?.lane ?? (config.lanes.find((l) => l.canonical === 'todo') ?? config.lanes[0])?.id;
   if (!spec) throw new UsageError('board has no lanes');
   const pos = resolvePosition(config, spec);
+  const wip = wipEntry(board, pos.laneId, null, opts.wipJustification, opts.force === true);
+  const start = checkedDate(opts.start ?? template?.start, 'start') ?? null;
+  const due = checkedDate(opts.due ?? template?.due, 'due') ?? null;
+  const reminders = checkedReminders(opts.reminders ?? [], due) ?? [];
+  const repeat = checkedRepeat(opts.repeat, due, type) ?? null;
+  const snooze = checkedDate(opts.snooze, 'snooze') ?? null;
 
   const existing = board.cards.map((c) => c.id);
   const id = config.ids === 'seq' ? nextSeqId(existing) : newHashId(existing);
@@ -291,20 +404,26 @@ export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
     priority: checkedPriority(opts.priority ?? template?.priority) ?? null,
     deps: checkedCardReferences(opts.deps ?? [], 'deps'),
     relations: checkedRelations(opts.relations ?? [], id),
-    start: checkedDate(opts.start ?? template?.start, 'start') ?? null,
-    due: checkedDate(opts.due ?? template?.due, 'due') ?? null,
+    start,
+    due,
+    reminders,
+    repeat,
+    snooze,
     estimate: checkedEstimate(opts.estimate ?? template?.estimate) ?? null,
     evergreen: opts.evergreen ?? template?.evergreen ?? false,
     cover: null,
     coverColor: checkedCoverColor(opts.coverColor ?? template?.coverColor) ?? null,
     blocked: null,
-    created: nowDate(),
+    blocker: null,
+    created: nowDate(operationNow),
     updated: null,
     extra: fields,
     file: `cards/${id}-${slugify(opts.title)}.md`,
     body: body.replaceAll('{{title}}', opts.title),
   };
-  logMutation(card, opts.actor, `created in ${positionLabel(pos)}`);
+  logMutation(card, opts.actor, `created in ${positionLabel(pos)}`, operationNow, false);
+  if (wip.log !== null) logMutation(card, opts.actor, wip.log, operationNow, false);
+  applyAutomationRules(board, card, 'enter', opts.actor, operationNow);
   return card;
 }
 
@@ -315,9 +434,18 @@ export interface MoveResult {
   warnings: string[];
   /** Claim no-op: the actor already holds this card in doing. */
   alreadyYours?: boolean;
+  /** A close may materialize one recurring successor. */
+  created?: Card;
 }
 
-export function opMove(board: LoadedBoard, card: Card, spec: string, actor: string, force = false): MoveResult {
+export function opMove(
+  board: LoadedBoard,
+  card: Card,
+  spec: string,
+  actor: string,
+  force = false,
+  wipJustification?: string,
+): MoveResult {
   const target = resolvePosition(board.config, spec);
   const from = positionLabel({ laneId: card.laneId, substate: card.substate });
 
@@ -326,6 +454,8 @@ export function opMove(board: LoadedBoard, card: Card, spec: string, actor: stri
   if (target.laneId === card.laneId && target.substate === card.substate) {
     return { card, from, to: from, warnings: [] };
   }
+
+  if (card.blocker !== null && !force) throw new UsageError(`card "${card.id}" is blocked by ${card.blocker}; unblock it before moving`);
 
   const lane = findLane(board.config, target.laneId);
   if (lane.order === 'strict' && lane.substates.length > 0 && !force) {
@@ -344,11 +474,15 @@ export function opMove(board: LoadedBoard, card: Card, spec: string, actor: stri
     }
   }
 
+  const wip = wipEntry(board, target.laneId, card, wipJustification, force);
+
   card.laneId = target.laneId;
   card.substate = target.substate;
   const to = positionLabel(target);
   logMutation(card, actor, `moved ${from} → ${to}`);
-  return { card, from, to, warnings: wipWarnings(board, card) };
+  if (wip.log !== null) logMutation(card, actor, wip.log);
+  applyAutomationRules(board, card, 'enter', actor);
+  return { card, from, to, warnings: wip.warnings };
 }
 
 /** A card's canonical state seen locally: blocked flag (outside done/archive)
@@ -374,6 +508,7 @@ export function claimability(
   actor: string,
   mode: ClaimMode = 'assign',
   externalDependencies?: Map<string, string | null>,
+  nowValue: number | Date = Date.now(),
 ): Claimability {
   const position = positionLabel({ laneId: card.laneId, substate: card.substate });
   const fail = (message: string, reason: ClaimConflict['reason'], holder: string | null = null): Claimability => ({
@@ -389,6 +524,7 @@ export function claimability(
   }
   if (holder === actor && state === 'doing') return { ok: true, alreadyYours: true };
   if (state === 'blocked') return fail(`blocked: ${card.blocked}`, 'blocked');
+  if (isSnoozed(card, nowValue)) return fail(`snoozed until ${card.snooze}`, 'snoozed');
   if (state !== 'todo') return fail(`not ready, it sits in ${position}`, 'not-ready');
   const unmet = card.deps.filter((dep) => {
     const parsed = parseCardReference(dep)!;
@@ -412,8 +548,10 @@ export function opClaim(
   force = false,
   mode: ClaimMode = 'assign',
   externalDependencies?: Map<string, string | null>,
+  wipJustification?: string,
+  nowValue: number | Date = Date.now(),
 ): MoveResult {
-  const check = claimability(board, card, actor, mode, externalDependencies);
+  const check = claimability(board, card, actor, mode, externalDependencies, nowValue);
   const reclaimExecution = force && mode === 'assign' && card.delegate !== null;
   if (check.ok && check.alreadyYours && !reclaimExecution) {
     const at = positionLabel({ laneId: card.laneId, substate: card.substate });
@@ -422,6 +560,7 @@ export function opClaim(
   if (!check.ok && !force) throw check.conflict;
   const forced = !check.ok || reclaimExecution;
   const lane = laneByCanonical(board.config, 'doing', 'claim into');
+  const wip = wipEntry(board, lane.id, card, wipJustification, force);
   const from = positionLabel({ laneId: card.laneId, substate: card.substate });
   if (mode === 'delegate') card.delegate = actor;
   else {
@@ -433,31 +572,104 @@ export function opClaim(
   const to = positionLabel({ laneId: card.laneId, substate: card.substate });
   const baseVerb = mode === 'delegate' ? 'delegated' : 'claimed';
   const verb = forced ? `${baseVerb} (forced)` : baseVerb;
-  logMutation(card, actor, from === to ? verb : `${verb}, moved ${from} → ${to}`);
-  return { card, from, to, warnings: wipWarnings(board, card) };
+  logMutation(card, actor, from === to ? verb : `${verb}, moved ${from} → ${to}`, nowValue);
+  if (wip.log !== null) logMutation(card, actor, wip.log, nowValue);
+  applyAutomationRules(board, card, 'enter', actor, nowValue);
+  return { card, from, to, warnings: wip.warnings };
 }
 
-export function opClose(board: LoadedBoard, card: Card, actor: string, reason?: string): MoveResult {
+function recurringSuccessor(board: LoadedBoard, source: Card, actor: string, nowValue: number | Date): Card | null {
+  if (source.repeat === null || source.due === null || source.type !== 'task') return null;
+  const linked = source.relations.find((relation) => relation.type === 'recurs-to');
+  if (linked !== undefined && board.cards.some((candidate) => candidate.id === linked.target)) return null;
+  const recovered = board.cards.find((candidate) => candidate.relations.some((relation) => relation.type === 'recurs-from' && relation.target === source.id));
+  if (recovered !== undefined) {
+    addRelation(source, 'recurs-to', recovered.id);
+    return null;
+  }
+  const lane = laneByCanonical(board.config, 'todo', 'create recurring instance in');
+  const id = board.config.ids === 'seq'
+    ? nextSeqId(board.cards.map((candidate) => candidate.id))
+    : newHashId(board.cards.map((candidate) => candidate.id));
+  const dates = nextOccurrenceDates(source, nowValue);
+  let body = removeSection(removeSection(removeSection(source.body, 'Comments'), 'Boosts'), 'Log');
+  for (const item of parseBody(body).checklists.flatMap((checklist) => checklist.items).filter((item) => item.checked)) {
+    body = setChecklistItem(body, item.index, false) ?? body;
+  }
+  const target: Card = {
+    ...source,
+    id,
+    laneId: lane.id,
+    substate: lane.substates[0] ?? null,
+    assignee: source.assignee,
+    delegate: null,
+    watchers: [...source.watchers],
+    votes: [],
+    deps: [...source.deps],
+    relations: [{ type: 'recurs-from', target: source.id, extra: {} }],
+    start: dates.start,
+    due: dates.due,
+    reminders: [...source.reminders],
+    repeat: source.repeat === null ? null : { ...source.repeat, extra: { ...source.repeat.extra } },
+    snooze: null,
+    blocked: null,
+    blocker: null,
+    created: nowDate(nowValue),
+    updated: null,
+    extra: { ...source.extra },
+    file: `cards/${id}-${slugify(source.title)}.md`,
+    body,
+  };
+  logMutation(target, actor, `created in ${positionLabel(target)} (recurs from ${source.id})`, nowValue, false);
+  addRelation(source, 'recurs-to', target.id);
+  return target;
+}
+
+export function opClose(
+  board: LoadedBoard,
+  card: Card,
+  actor: string,
+  reason?: string,
+  wipJustification?: string,
+  force = false,
+  nowValue: number | Date = Date.now(),
+): MoveResult {
   const lane = laneByCanonical(board.config, 'done', 'close into');
   const from = positionLabel({ laneId: card.laneId, substate: card.substate });
+  const wasClosed = localCanonical(board, card) === 'done' || localCanonical(board, card) === 'archive';
+  const wip = wipEntry(board, lane.id, card, wipJustification, force);
+  const created = wasClosed ? null : recurringSuccessor(board, card, actor, nowValue);
   card.laneId = lane.id;
   card.substate = lane.substates.length > 0 ? lane.substates[lane.substates.length - 1]! : null;
   card.blocked = null;
+  card.blocker = null;
   const to = positionLabel({ laneId: card.laneId, substate: card.substate });
-  logMutation(card, actor, `closed${reason ? `: ${reason}` : ''}, moved ${from} → ${to}`);
-  return { card, from, to, warnings: [] };
+  logMutation(card, actor, `closed${reason ? `: ${reason}` : ''}, moved ${from} → ${to}`, nowValue);
+  if (created !== null) logMutation(card, actor, `materialized recurrence ${created.id}`, nowValue);
+  if (wip.log !== null) logMutation(card, actor, wip.log, nowValue);
+  applyAutomationRules(board, card, 'close', actor, nowValue);
+  return { card, from, to, warnings: wip.warnings, ...(created === null ? {} : { created }) };
 }
 
-export function opBlock(card: Card, actor: string, reason: string): Card {
+export function opBlock(card: Card, actor: string, reason: string, board?: LoadedBoard, blocker?: string): Card {
+  if (card.blocked !== null) throw new UsageError(`card "${card.id}" is already blocked; unblock it before changing the reason`);
   const clean = sanitizeInline(reason);
+  if (clean === '') throw new UsageError('block reason required');
+  if (blocker !== undefined) {
+    if (board === undefined) throw new UsageError('named blocker requires board context');
+    if (!board.config.blockers.some((candidate) => candidate.id === blocker)) throw new UsageError(`unknown blocker "${blocker}"`);
+    card.blocker = blocker;
+  } else card.blocker = null;
   card.blocked = clean;
-  logMutation(card, actor, `blocked: ${clean}`);
+  logMutation(card, actor, blocker === undefined ? `blocked: ${clean}` : `blocked [${blocker}]: ${clean}`);
+  if (board !== undefined) applyAutomationRules(board, card, 'block', actor);
   return card;
 }
 
 export function opUnblock(card: Card, actor: string): Card {
   if (card.blocked === null) throw new UsageError(`card "${card.id}" is not blocked`);
   card.blocked = null;
+  card.blocker = null;
   logMutation(card, actor, 'unblocked');
   return card;
 }
@@ -472,6 +684,9 @@ export interface EditPatch {
   relations?: CardRelation[] | undefined;
   start?: string | null | undefined;
   due?: string | null | undefined;
+  reminders?: number[] | null | undefined;
+  repeat?: CardRepeat | null | undefined;
+  snooze?: string | null | undefined;
   estimate?: number | null | undefined;
   evergreen?: boolean | undefined;
   boardPath?: string | undefined;
@@ -490,6 +705,16 @@ export function opEdit(card: Card, patch: EditPatch, actor: string, board?: Load
   const delegate = patch.delegate === undefined ? undefined : (cleanActorField(patch.delegate) ?? null);
   const start = patch.start === undefined ? undefined : (checkedDate(patch.start, 'start') ?? null);
   const due = patch.due === undefined ? undefined : (checkedDate(patch.due, 'due') ?? null);
+  const prospectiveDue = patch.due === undefined ? card.due : due;
+  const reminders = patch.reminders === undefined ? undefined : (checkedReminders(patch.reminders, prospectiveDue) ?? []);
+  const repeat = patch.repeat === undefined ? undefined : (checkedRepeat(patch.repeat, prospectiveDue, card.type) ?? null);
+  const snooze = patch.snooze === undefined ? undefined : (checkedDate(patch.snooze, 'snooze') ?? null);
+  if (prospectiveDue === null && (reminders === undefined ? card.reminders.length > 0 : reminders.length > 0)) {
+    throw new UsageError('cannot clear due while reminders remain');
+  }
+  if (prospectiveDue === null && (repeat === undefined ? card.repeat !== null : repeat !== null)) {
+    throw new UsageError('cannot clear due while repeat remains');
+  }
   const estimate = patch.estimate === undefined ? undefined : (checkedEstimate(patch.estimate) ?? null);
   const coverColor = patch.coverColor === undefined ? undefined : (checkedCoverColor(patch.coverColor) ?? null);
   const fields = checkedCustomFields(board, patch.fields, true);
@@ -537,6 +762,18 @@ export function opEdit(card: Card, patch: EditPatch, actor: string, board?: Load
     card.due = due!;
     changed.push('due');
   }
+  if (reminders !== undefined && !sameValue(reminders, card.reminders)) {
+    card.reminders = reminders;
+    changed.push('reminders');
+  }
+  if (repeat !== undefined && !sameValue(repeat, card.repeat)) {
+    card.repeat = repeat;
+    changed.push('repeat');
+  }
+  if (snooze !== undefined && snooze !== card.snooze) {
+    card.snooze = snooze;
+    changed.push('snooze');
+  }
   if (patch.estimate !== undefined && estimate !== card.estimate) {
     card.estimate = estimate!;
     changed.push('estimate');
@@ -568,7 +805,15 @@ export function opEdit(card: Card, patch: EditPatch, actor: string, board?: Load
     changed.push(`field:${id}`);
   }
   if (changed.length === 0) throw new UsageError('nothing to edit');
-  logMutation(card, actor, `edited ${changed.join(', ')}`);
+  logMutation(card, actor, `edited ${changed.join(', ')}`, Date.now(), patch.snooze === undefined);
+  return card;
+}
+
+export function opSnooze(card: Card, actor: string, until: string | null): Card {
+  const value = checkedDate(until, 'snooze') ?? null;
+  if (value === card.snooze) throw new UsageError(value === null ? 'card is not snoozed' : `card is already snoozed until ${value}`);
+  card.snooze = value;
+  logMutation(card, actor, value === null ? 'woke from snooze' : `snoozed until ${value}`, Date.now(), false);
   return card;
 }
 
@@ -579,6 +824,7 @@ export function opLog(card: Card, actor: string, message: string): Card {
 
 /** Append to the card's Comments section (discourse; separate from the Log). */
 export function opComment(card: Card, actor: string, text: string): Card {
+  if (card.snooze !== null) logMutation(card, actor, 'comment activity', Date.now(), true);
   card.body = appendToSection(card.body, 'Comments', `- ${nowDateTime()} ${sanitizeActor(actor)}: ${sanitizeInline(text)}`);
   card.updated = nowDate();
   return card;
@@ -598,7 +844,7 @@ export function opWatch(card: Card, actor: string, watching = true): ToggleResul
   if (has === watching) return { card, active: watching, changed: false };
   if (watching) card.watchers.push(name);
   else card.watchers.splice(card.watchers.indexOf(name), 1);
-  logMutation(card, name, watching ? 'watched card' : 'stopped watching card');
+  logMutation(card, name, watching ? 'watched card' : 'stopped watching card', Date.now(), false);
   return { card, active: watching, changed: true };
 }
 
@@ -610,7 +856,7 @@ export function opVote(card: Card, actor: string, voting = true): ToggleResult {
   if (has === voting) return { card, active: voting, changed: false };
   if (voting) card.votes.push(name);
   else card.votes.splice(card.votes.indexOf(name), 1);
-  logMutation(card, name, voting ? 'voted' : 'withdrew vote');
+  logMutation(card, name, voting ? 'voted' : 'withdrew vote', Date.now(), false);
   return { card, active: voting, changed: true };
 }
 
@@ -622,6 +868,7 @@ export function opBoost(card: Card, actor: string, text: string): Card {
   if (name === '') throw new UsageError('booster name required');
   if (clean === '') throw new UsageError('boost text required');
   if (Array.from(clean).length > 12) throw new UsageError('boost text must be at most 12 characters');
+  if (card.snooze !== null) logMutation(card, name, 'boost activity', Date.now(), true);
   card.body = appendToSection(card.body, 'Boosts', `- ${nowDateTime()} ${name}: ${clean}`);
   card.updated = nowDate();
   return card;
@@ -879,6 +1126,7 @@ export function opMergeDuplicates(
   duplicate.laneId = archive.id;
   duplicate.substate = archive.substates.length > 0 ? archive.substates.at(-1)! : null;
   duplicate.blocked = null;
+  duplicate.blocker = null;
   logMutation(duplicate, actor, `marked duplicate of ${canonical.id}, moved ${from} → ${positionLabel(duplicate)}`);
   return { duplicate, canonical, changed: [...changed], attachmentsMoved, referencesRewired };
 }
@@ -979,16 +1227,20 @@ export function opQuickAdd(board: LoadedBoard, text: string, actor: string, nowV
 }
 
 export type BulkAction =
-  | { kind: 'move'; to: string; force?: boolean | undefined }
-  | { kind: 'close'; reason?: string | undefined }
+  | { kind: 'move'; to: string; force?: boolean | undefined; wipJustification?: string | undefined }
+  | { kind: 'close'; reason?: string | undefined; force?: boolean | undefined; wipJustification?: string | undefined }
   | { kind: 'label'; add?: string[] | undefined; remove?: string[] | undefined };
 
 function cloneCard(card: Card): Card {
   return {
     ...card,
     labels: [...card.labels],
+    watchers: [...card.watchers],
+    votes: [...card.votes],
     deps: [...card.deps],
     relations: card.relations.map((relation) => ({ ...relation, extra: { ...relation.extra } })),
+    reminders: [...card.reminders],
+    repeat: card.repeat === null ? null : { ...card.repeat, extra: { ...card.repeat.extra } },
     extra: { ...card.extra },
   };
 }
@@ -1005,12 +1257,16 @@ export function opBulk(board: LoadedBoard, ids: string[], action: BulkAction, ac
   for (const id of unique) {
     const card = getCard(clone, id);
     if (action.kind === 'move') {
-      const result = opMove(clone, card, action.to, actor, action.force === true);
+      const result = opMove(clone, card, action.to, actor, action.force === true, action.wipJustification);
       warnings.push(...result.warnings.map((warning) => `${id}: ${warning}`));
       if (result.from !== result.to) changed.push(card);
     } else if (action.kind === 'close') {
-      opClose(clone, card, actor, action.reason);
+      const result = opClose(clone, card, actor, action.reason, action.wipJustification, action.force === true);
       changed.push(card);
+      if (result.created !== undefined) {
+        clone.cards.push(result.created);
+        changed.push(result.created);
+      }
     } else {
       const remove = new Set(action.remove ?? []);
       const labels = [...new Set([...card.labels.filter((label) => !remove.has(label)), ...(action.add ?? [])])];
@@ -1021,6 +1277,86 @@ export function opBulk(board: LoadedBoard, ids: string[], action: BulkAction, ac
     }
   }
   return { cards: changed, warnings };
+}
+
+export interface ButtonOptions {
+  cardId?: string | undefined;
+  force?: boolean | undefined;
+  wipJustification?: string | undefined;
+  now?: number | Date | undefined;
+}
+
+/** Resolve and execute one declarative button as a bounded atomic bulk op. */
+export function opButton(
+  board: LoadedBoard,
+  buttonId: string,
+  actor: string,
+  options: ButtonOptions = {},
+): { button: AutomationButton; cards: Card[]; warnings: string[] } {
+  const button = board.config.buttons.find((candidate) => candidate.id === buttonId);
+  if (button === undefined) throw new UsageError(`no button "${buttonId}"`);
+  let ids: string[];
+  if (button.scope === 'card') {
+    if (!options.cardId) throw new UsageError(`card button "${buttonId}" requires a card id`);
+    getCard(board, options.cardId);
+    ids = [options.cardId];
+  } else {
+    const filter = board.config.savedFilters.find((candidate) => candidate.id === button.filter);
+    if (filter === undefined) throw new UsageError(`board button "${buttonId}" names a missing filter`);
+    const tree = singleBoardTree(board);
+    const analysis = analyze(tree, options.now ?? Date.now());
+    ids = queryCards(tree, analysis, filter.query, { actor, now: options.now }).map((match) => match.card.id);
+    if (ids.length > 100) throw new UsageError(`board button "${buttonId}" matches ${ids.length} cards; maximum is 100`);
+  }
+  if (ids.length === 0) return { button, cards: [], warnings: [] };
+  const action: BulkAction = button.action === 'move'
+    ? { kind: 'move', to: button.value!, force: options.force, wipJustification: options.wipJustification }
+    : button.action === 'close'
+      ? { kind: 'close', force: options.force, wipJustification: options.wipJustification }
+      : { kind: 'label', add: [button.value!] };
+  const result = opBulk(board, ids, action, actor);
+  return { button, ...result };
+}
+
+export interface AutomationPassResult {
+  cards: Card[];
+  actions: AutomationPlanItem[];
+  remaining: boolean;
+  nextAt: number | null;
+}
+
+/** Apply one bounded, rebuildable automation pass on a cloned board. */
+export function opAutomationPass(
+  board: LoadedBoard,
+  nowValue: number | Date = Date.now(),
+  limit = 100,
+): AutomationPassResult {
+  const now = typeof nowValue === 'number' ? nowValue : nowValue.getTime();
+  const cap = Math.max(1, Math.min(100, Math.trunc(limit) || 100));
+  const clone: LoadedBoard = { ...board, cards: board.cards.map(cloneCard) };
+  const actions = automationPlan(clone, now).slice(0, cap);
+  const changed = new Set<Card>();
+  for (const action of actions) {
+    const card = getCard(clone, action.cardId);
+    if (action.kind === 'reminder') {
+      if (card.due === null) continue;
+      logMutation(card, 'botflow', reminderText(action.offset, card.due), now, false);
+    } else if (action.kind === 'snooze-expired') {
+      card.snooze = null;
+      logMutation(card, 'botflow', 'snooze expired', now, false);
+    } else {
+      const archive = laneByCanonical(clone.config, 'archive', 'sweep into');
+      const from = positionLabel(card);
+      card.laneId = archive.id;
+      card.substate = archive.substates.at(-1) ?? null;
+      card.blocked = null;
+      card.blocker = null;
+      logMutation(card, 'botflow', `swept ${from} → ${positionLabel(card)} after ${clone.config.automation.archiveDoneAfter} days`, now, false);
+    }
+    changed.add(card);
+  }
+  const remaining = automationPlan(clone, now).length > 0;
+  return { cards: [...changed], actions, remaining, nextAt: nextAutomationAt(clone, now) };
 }
 
 export interface TransferOptions {
@@ -1090,6 +1426,7 @@ export function opTransferCard(
     source.laneId = archive.id;
     source.substate = archive.substates.length > 0 ? archive.substates.at(-1)! : null;
     source.blocked = null;
+    source.blocker = null;
     logMutation(source, actor, `moved to ${options.targetRef(target.id)}, ${from} → ${positionLabel(source)}`);
   } else {
     logMutation(source, actor, `copied to ${options.targetRef(target.id)}`);

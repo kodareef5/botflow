@@ -1,0 +1,41 @@
+botflow: 0
+name: Automation conformance
+features: [automation, named-blockers]
+lanes:
+  - id: wishlist
+  - id: todo
+  - id: doing
+    wip: 1
+    wip_mode: justify
+  - id: done
+  - id: archive
+filters:
+  - id: open-ops
+    name: Open operations
+    query: label:ops -state:done -state:archive
+blockers:
+  - id: external-review
+    name: External review
+    color: "#d97706"
+buttons:
+  - id: finish
+    name: Finish
+    action: close
+  - id: review-open
+    name: Review open operations
+    scope: board
+    filter: open-ops
+    action: label
+    value: reviewed
+rules:
+  - id: own-doing
+    event: enter
+    lane: doing
+    action: assign
+    value: sam
+  - id: explain-block
+    event: block
+    action: comment
+    value: Waiting on the named dependency.
+automation:
+  archive_done_after: 7

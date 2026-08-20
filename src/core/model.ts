@@ -36,6 +36,7 @@ export const RULE_SEVERITY: Record<string, Severity> = {
   'bare-substate-lane': 'warning',
   'rollup-drift': 'warning',
   'blocked-in-done': 'warning',
+  'unknown-blocker': 'error',
   'label-group-conflict': 'error',
   'custom-field-value': 'error',
   'dangling-relation': 'error',
@@ -61,6 +62,7 @@ export interface Lane {
   substates: string[];
   order: 'strict' | 'free';
   wip: number | null;
+  wipMode: 'allow' | 'justify' | 'deny';
   /** Unknown lane-map keys, preserved across board.yaml rewrites. */
   extra: Record<string, unknown>;
 }
@@ -94,7 +96,10 @@ export interface CustomFieldDefinition {
   extra: Record<string, unknown>;
 }
 
-export const RELATION_TYPES = ['relates', 'duplicates', 'supersedes', 'parent', 'subtask', 'copied-from', 'copied-to'] as const;
+export const RELATION_TYPES = [
+  'relates', 'duplicates', 'supersedes', 'parent', 'subtask', 'copied-from', 'copied-to',
+  'recurs-from', 'recurs-to',
+] as const;
 export type RelationType = (typeof RELATION_TYPES)[number];
 
 export interface CardRelation {
@@ -138,6 +143,47 @@ export interface LaneSubscription {
   extra: Record<string, unknown>;
 }
 
+export interface BlockerDefinition {
+  id: string;
+  name: string;
+  color: string | null;
+  /** Unknown blocker-map keys, preserved across board.yaml rewrites. */
+  extra: Record<string, unknown>;
+}
+
+export type AutomationButtonAction = 'move' | 'close' | 'label';
+
+export interface AutomationButton {
+  id: string;
+  name: string;
+  scope: 'card' | 'board';
+  filter: string | null;
+  action: AutomationButtonAction;
+  value: string | null;
+  /** Unknown button-map keys, preserved across board.yaml rewrites. */
+  extra: Record<string, unknown>;
+}
+
+export type AutomationRuleEvent = 'enter' | 'close' | 'block';
+export type AutomationRuleAction = 'label' | 'unlabel' | 'assign' | 'delegate' | 'comment';
+
+export interface AutomationRule {
+  id: string;
+  event: AutomationRuleEvent;
+  lane: string | null;
+  filter: string | null;
+  action: AutomationRuleAction;
+  value: string;
+  /** Unknown rule-map keys, preserved across board.yaml rewrites. */
+  extra: Record<string, unknown>;
+}
+
+export interface AutomationPolicy {
+  archiveDoneAfter: number | null;
+  /** Unknown automation-map keys, preserved across board.yaml rewrites. */
+  extra: Record<string, unknown>;
+}
+
 export interface BoardConfig {
   version: number;
   name: string;
@@ -156,6 +202,10 @@ export interface BoardConfig {
   templates: CardTemplate[];
   savedFilters: SavedFilter[];
   subscriptions: LaneSubscription[];
+  blockers: BlockerDefinition[];
+  buttons: AutomationButton[];
+  rules: AutomationRule[];
+  automation: AutomationPolicy;
   rollup: RollupPolicy;
   /** Unknown top-level board.yaml keys, preserved across rewrites. */
   extra: Record<string, unknown>;
@@ -182,6 +232,10 @@ export interface Card {
   relations: CardRelation[];
   start: string | null;
   due: string | null;
+  /** Relative minute offsets before due, in source order. */
+  reminders: number[];
+  repeat: CardRepeat | null;
+  snooze: string | null;
   /** Unitless board-local effort points. */
   estimate: number | null;
   /** Suppress stale-card presentation without suppressing metrics. */
@@ -193,6 +247,8 @@ export interface Card {
   coverColor: string | null;
   /** Blocked-flag reason; null = no flag. */
   blocked: string | null;
+  /** Optional reusable blocker id associated with the active flag. */
+  blocker: string | null;
   created: string | null;
   updated: string | null;
   /** Unknown frontmatter keys, preserved semantically (SPEC §5). */
@@ -201,6 +257,14 @@ export interface Card {
   file: string;
   /** Markdown body after the frontmatter block. */
   body: string;
+}
+
+export interface CardRepeat {
+  every: number;
+  unit: 'day' | 'week' | 'month';
+  from: 'due' | 'completion';
+  /** Unknown recurrence-map keys, preserved across card rewrites. */
+  extra: Record<string, unknown>;
 }
 
 export type Distribution = Record<Canonical, number>;
@@ -221,6 +285,7 @@ export function defaultLanes(): Lane[] {
     substates: [],
     order: 'free',
     wip: null,
+    wipMode: 'allow',
     extra: {},
   }));
 }
@@ -244,6 +309,10 @@ export function fallbackConfig(name: string): BoardConfig {
     templates: [],
     savedFilters: [],
     subscriptions: [],
+    blockers: [],
+    buttons: [],
+    rules: [],
+    automation: { archiveDoneAfter: null, extra: {} },
     rollup: defaultRollup(),
     extra: {},
   };

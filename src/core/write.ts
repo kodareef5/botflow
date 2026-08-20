@@ -26,11 +26,20 @@ export function serializeCard(card: Card): string {
   if (card.relations.length > 0) fm['relations'] = card.relations.map((relation) => ({ type: relation.type, target: relation.target, ...relation.extra }));
   if (card.start !== null) fm['start'] = card.start;
   if (card.due !== null) fm['due'] = card.due;
+  if (card.reminders.length > 0) fm['reminders'] = card.reminders;
+  if (card.repeat !== null) fm['repeat'] = {
+    every: card.repeat.every,
+    unit: card.repeat.unit,
+    ...(card.repeat.from === 'completion' ? { from: card.repeat.from } : {}),
+    ...card.repeat.extra,
+  };
+  if (card.snooze !== null) fm['snooze'] = card.snooze;
   if (card.estimate !== null) fm['estimate'] = card.estimate;
   if (card.evergreen) fm['evergreen'] = true;
   if (card.cover !== null) fm['cover'] = card.cover;
   if (card.coverColor !== null) fm['cover_color'] = card.coverColor;
   if (card.blocked !== null) fm['blocked'] = card.blocked;
+  if (card.blocker !== null) fm['blocker'] = card.blocker;
   if (card.created !== null) fm['created'] = card.created;
   if (card.updated !== null) fm['updated'] = card.updated;
   for (const [key, value] of Object.entries(card.extra)) fm[key] = value; // preserved unknown keys
@@ -42,12 +51,12 @@ export function appendLogLine(body: string, entry: string): string {
   return appendToSection(body, 'Log', `- ${entry}`);
 }
 
-export function nowDate(): string {
-  return new Date().toISOString().slice(0, 10);
+export function nowDate(nowValue: number | Date = Date.now()): string {
+  return new Date(typeof nowValue === 'number' ? nowValue : nowValue.getTime()).toISOString().slice(0, 10);
 }
 
-export function nowDateTime(): string {
-  return new Date().toISOString().slice(0, 16).replace('T', ' ');
+export function nowDateTime(nowValue: number | Date = Date.now()): string {
+  return new Date(typeof nowValue === 'number' ? nowValue : nowValue.getTime()).toISOString().slice(0, 16).replace('T', ' ');
 }
 
 /** One-line-ify text interpolated into structured markdown lines (log/comment
@@ -93,7 +102,16 @@ export function sanitizeActor(actor: string): string {
 }
 
 /** Stamp a log entry onto a card and bump `updated` (SPEC §12 discipline). */
-export function logMutation(card: Card, actor: string, message: string): void {
-  card.body = appendLogLine(card.body, `${nowDateTime()} ${sanitizeActor(actor)}: ${sanitizeInline(message)}`);
-  card.updated = nowDate();
+export function logMutation(
+  card: Card,
+  actor: string,
+  message: string,
+  nowValue: number | Date = Date.now(),
+  wakeSnooze = true,
+): void {
+  const woke = wakeSnooze && card.snooze !== null;
+  if (woke) card.snooze = null;
+  const detail = `${message}${woke ? ' (woke snooze)' : ''}`;
+  card.body = appendLogLine(card.body, `${nowDateTime(nowValue)} ${sanitizeActor(actor)}: ${sanitizeInline(detail)}`);
+  card.updated = nowDate(nowValue);
 }

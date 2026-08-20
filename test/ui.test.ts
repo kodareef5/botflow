@@ -333,6 +333,24 @@ test('ui: compact cards and editors expose structured presentation data', () => 
   assert.match(app, /ME\.kind==='bot'\?c\.delegate:c\.assignee/, 'bot ownership follows delegation rather than overwriting accountability');
 });
 
+test('ui: scheduling, WIP policy, named blockers, and safe automation are reachable', () => {
+  const app = scripts.join('\n');
+  for (const hook of [
+    'id="automate"', 'data-boardbutton=', 'data-cardbutton=', 'data-snooze', 'data-wake',
+    'data-blockerdef', 'data-buttondef', 'data-ruledef', 'id="archiveafter"', 'class="lwipmode"',
+  ]) assert.ok(app.includes(hook), `automation UI missing ${hook}`);
+  assert.match(app, /reminders before due \(minutes, comma separated\)/);
+  assert.match(app, /repeat every \(empty for no recurrence\)/);
+  assert.match(app, /snooze until \(YYYY-MM-DD or UTC datetime\)/);
+  assert.match(app, /function moveCardUi\(/, 'pointer and keyboard moves share WIP prompting');
+  assert.match(app, /written WIP justification/);
+  assert.match(app, /owner override justification/);
+  assert.match(app, /if\(c\.blocker\)\{toast\(c\.id\+' is blocked by '/,
+    'named blockers stop a card before a drag mutation is attempted');
+  assert.match(app, /\/buttons\/'\+encodeURIComponent\(id\)/);
+  assert.match(app, /\/automate'.*method:'POST'/s);
+});
+
 test('ui: setup asks only for what the deployment needs', () => {
   const app = scripts.join('\n');
   // The setup key exists to stop a stranger claiming a public deployment

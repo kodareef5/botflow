@@ -72,6 +72,8 @@ export function relationInverse(type: RelationType): RelationType {
     case 'supersedes': return 'duplicates';
     case 'copied-from': return 'copied-to';
     case 'copied-to': return 'copied-from';
+    case 'recurs-from': return 'recurs-to';
+    case 'recurs-to': return 'recurs-from';
     case 'relates': return 'relates';
   }
 }

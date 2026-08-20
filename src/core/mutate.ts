@@ -34,12 +34,15 @@ import {
   opRemoveFilter,
   opSaveFilter,
   opSubscribeLane,
+  opSnooze,
   opLink,
   opUnlink,
   opPromote,
   opMergeDuplicates,
   opQuickAdd,
   opBulk,
+  opButton,
+  opAutomationPass,
   opTransferCard,
   opMove,
   opUnblock,
@@ -52,9 +55,10 @@ import {
   type BulkAction,
   type TransferOptions,
   type MoveResult,
+  type ButtonOptions,
 } from './ops.ts';
 
-export { UsageError, type AddOptions, type EditPatch, type MoveResult, type PromoteOptions, type BulkAction, type TransferOptions };
+export { UsageError, type AddOptions, type EditPatch, type MoveResult, type PromoteOptions, type BulkAction, type TransferOptions, type ButtonOptions };
 
 // ── Same-tree concurrency ────────────────────────────────────────────────────
 // git handles cross-branch races (SPEC §8); these two guards handle two
@@ -230,6 +234,30 @@ export function quickAddCards(root: string, text: string, actor: string): Card[]
 export function bulkCards(root: string, ids: string[], action: BulkAction, actor: string): ReturnType<typeof opBulk> {
   return mutateCard(root, (board) => {
     const result = opBulk(board, ids, action, actor);
+    const created = result.cards.filter((card) => !board.cards.some((existing) => existing.id === card.id));
+    for (const card of created) {
+      if (existsSync(join(root, card.file))) throw new UsageError(`file collision: ${card.file}`);
+    }
+    for (const card of [...created, ...result.cards.filter((card) => !created.includes(card))]) writeCard(root, card);
+    return result;
+  });
+}
+
+export function runButton(root: string, buttonId: string, actor: string, options: ButtonOptions = {}): ReturnType<typeof opButton> {
+  return mutateCard(root, (board) => {
+    const result = opButton(board, buttonId, actor, options);
+    const created = result.cards.filter((card) => !board.cards.some((existing) => existing.id === card.id));
+    for (const card of created) {
+      if (existsSync(join(root, card.file))) throw new UsageError(`file collision: ${card.file}`);
+    }
+    for (const card of [...created, ...result.cards.filter((card) => !created.includes(card))]) writeCard(root, card);
+    return result;
+  });
+}
+
+export function runAutomation(root: string, nowValue: number | Date = Date.now()): ReturnType<typeof opAutomationPass> {
+  return mutateCard(root, (board) => {
+    const result = opAutomationPass(board, nowValue);
     for (const card of result.cards) writeCard(root, card);
     return result;
   });
@@ -325,15 +353,15 @@ function hasCopiedFrom(card: Card, sourceRef: string): boolean {
   return card.relations.some((relation) => relation.type === 'copied-from' && relation.target === sourceRef);
 }
 
-export function moveCard(root: string, id: string, spec: string, actor: string, force = false): MoveResult {
+export function moveCard(root: string, id: string, spec: string, actor: string, force = false, wipJustification?: string): MoveResult {
   return mutateCard(root, (board) => {
-    const res = opMove(board, getCard(board, id), spec, actor, force);
+    const res = opMove(board, getCard(board, id), spec, actor, force, wipJustification);
     if (res.from !== res.to) writeCard(root, res.card); // same-position move: no-op
     return res;
   });
 }
 
-export function claimCard(root: string, id: string, actor: string, force = false, mode: ClaimMode = 'assign'): MoveResult {
+export function claimCard(root: string, id: string, actor: string, force = false, mode: ClaimMode = 'assign', wipJustification?: string): MoveResult {
   return mutateCard(root, (board) => {
     let externalDependencies: Map<string, string | null> | undefined;
     const card = getCard(board, id);
@@ -342,23 +370,27 @@ export function claimCard(root: string, id: string, actor: string, force = false
       const ba = analyze(tree).boards.get('.');
       externalDependencies = ba?.dependencyStates.get(id) as Map<string, string | null> | undefined;
     }
-    const res = opClaim(board, card, actor, force, mode, externalDependencies);
+    const res = opClaim(board, card, actor, force, mode, externalDependencies, wipJustification);
     if (!res.alreadyYours) writeCard(root, res.card);
     return res;
   });
 }
 
-export function closeCard(root: string, id: string, actor: string, reason?: string): MoveResult {
+export function closeCard(root: string, id: string, actor: string, reason?: string, wipJustification?: string, force = false): MoveResult {
   return mutateCard(root, (board) => {
-    const res = opClose(board, getCard(board, id), actor, reason);
+    const res = opClose(board, getCard(board, id), actor, reason, wipJustification, force);
+    if (res.created !== undefined) {
+      if (existsSync(join(root, res.created.file))) throw new UsageError(`file collision: ${res.created.file}`);
+      writeCard(root, res.created);
+    }
     writeCard(root, res.card);
     return res;
   });
 }
 
-export function blockCard(root: string, id: string, actor: string, reason: string): Card {
+export function blockCard(root: string, id: string, actor: string, reason: string, blocker?: string): Card {
   return mutateCard(root, (board) => {
-    const card = opBlock(getCard(board, id), actor, reason);
+    const card = opBlock(getCard(board, id), actor, reason, board, blocker);
     writeCard(root, card);
     return card;
   });
@@ -367,6 +399,14 @@ export function blockCard(root: string, id: string, actor: string, reason: strin
 export function unblockCard(root: string, id: string, actor: string): Card {
   return mutateCard(root, (board) => {
     const card = opUnblock(getCard(board, id), actor);
+    writeCard(root, card);
+    return card;
+  });
+}
+
+export function snoozeCard(root: string, id: string, actor: string, until: string | null): Card {
+  return mutateCard(root, (board) => {
+    const card = opSnooze(getCard(board, id), actor, until);
     writeCard(root, card);
     return card;
   });

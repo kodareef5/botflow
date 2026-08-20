@@ -3,7 +3,22 @@
 // edit board shape, like the hosted board editor.
 
 import type { YamlValue } from './yaml.ts';
-import type { BoardConfig, CardTemplate, CustomFieldDefinition, Finding, LabelDefinition, Lane, LaneSubscription, RollupPolicy, SavedFilter, Canonical } from './model.ts';
+import type {
+  AutomationButton,
+  AutomationPolicy,
+  AutomationRule,
+  BlockerDefinition,
+  BoardConfig,
+  CardTemplate,
+  CustomFieldDefinition,
+  Finding,
+  LabelDefinition,
+  Lane,
+  LaneSubscription,
+  RollupPolicy,
+  SavedFilter,
+  Canonical,
+} from './model.ts';
 import { CUSTOM_FIELD_TYPES, SLUG_RE, defaultLanes, defaultRollup, finding, isCanonical } from './model.ts';
 import { bodyHasSection } from './body.ts';
 import { emitMap, emitScalar } from './emit.ts';
@@ -18,11 +33,15 @@ export const SUPPORTED_BOARD_FEATURES = new Set([
   'dates', 'estimates', 'delegation', 'aging', 'scoped-labels', 'custom-fields', 'cover-colors',
   'relations', 'cross-board-deps', 'templates',
   'search', 'collaboration',
+  'automation', 'named-blockers',
 ]);
 
 /** Serialize a BoardConfig back to board.yaml text. Defaults are omitted so
  *  the file stays as small as a hand-written one; parse(emit(c)) === c. */
-export function emitBoardYaml(config: Pick<BoardConfig, 'version' | 'name' | 'ids' | 'features' | 'lanes' | 'labelDefinitions' | 'customFields' | 'templates' | 'savedFilters' | 'subscriptions' | 'rollup' | 'extra'>): string {
+export function emitBoardYaml(config: Pick<BoardConfig,
+  'version' | 'name' | 'ids' | 'features' | 'lanes' | 'labelDefinitions' |
+  'customFields' | 'templates' | 'savedFilters' | 'subscriptions' | 'blockers' |
+  'buttons' | 'rules' | 'automation' | 'rollup' | 'extra'>): string {
   const lines = [`botflow: ${config.version}`, `name: ${emitScalar(config.name)}`];
   if (config.ids === 'hash') lines.push('ids: hash');
   if (config.features.length > 0) lines.push(`features: [${config.features.map(emitScalar).join(', ')}]`);
@@ -34,6 +53,7 @@ export function emitBoardYaml(config: Pick<BoardConfig, 'version' | 'name' | 'id
     if (lane.substates.length > 0) lines.push(`    substates: [${lane.substates.join(', ')}]`);
     if (lane.order === 'strict') lines.push('    order: strict');
     if (lane.wip !== null) lines.push(`    wip: ${lane.wip}`);
+    if (lane.wipMode !== 'allow') lines.push(`    wip_mode: ${lane.wipMode}`);
     const laneExtra = emitMap(lane.extra, 4);
     if (laneExtra !== '') lines.push(laneExtra);
   }
@@ -97,6 +117,48 @@ export function emitBoardYaml(config: Pick<BoardConfig, 'version' | 'name' | 'id
       const extra = emitMap(subscription.extra, 4);
       if (extra !== '') lines.push(extra);
     }
+  }
+  if (config.blockers.length > 0) {
+    lines.push('blockers:');
+    for (const blocker of config.blockers) {
+      lines.push(`  - id: ${blocker.id}`);
+      if (blocker.name !== blocker.id) lines.push(`    name: ${emitScalar(blocker.name)}`);
+      if (blocker.color !== null) lines.push(`    color: ${emitScalar(blocker.color)}`);
+      const extra = emitMap(blocker.extra, 4);
+      if (extra !== '') lines.push(extra);
+    }
+  }
+  if (config.buttons.length > 0) {
+    lines.push('buttons:');
+    for (const button of config.buttons) {
+      lines.push(`  - id: ${button.id}`);
+      if (button.name !== button.id) lines.push(`    name: ${emitScalar(button.name)}`);
+      if (button.scope !== 'card') lines.push(`    scope: ${button.scope}`);
+      if (button.filter !== null) lines.push(`    filter: ${button.filter}`);
+      lines.push(`    action: ${button.action}`);
+      if (button.value !== null) lines.push(`    value: ${emitScalar(button.value)}`);
+      const extra = emitMap(button.extra, 4);
+      if (extra !== '') lines.push(extra);
+    }
+  }
+  if (config.rules.length > 0) {
+    lines.push('rules:');
+    for (const rule of config.rules) {
+      lines.push(`  - id: ${rule.id}`);
+      lines.push(`    event: ${rule.event}`);
+      if (rule.lane !== null) lines.push(`    lane: ${rule.lane}`);
+      if (rule.filter !== null) lines.push(`    filter: ${rule.filter}`);
+      lines.push(`    action: ${rule.action}`);
+      lines.push(`    value: ${emitScalar(rule.value)}`);
+      const extra = emitMap(rule.extra, 4);
+      if (extra !== '') lines.push(extra);
+    }
+  }
+  if (config.automation.archiveDoneAfter !== null || Object.keys(config.automation.extra).length > 0) {
+    lines.push('automation:');
+    if (config.automation.archiveDoneAfter !== null) lines.push(`  archive_done_after: ${config.automation.archiveDoneAfter}`);
+    const extra = emitMap(config.automation.extra, 2);
+    if (extra !== '') lines.push(extra);
   }
   const d = defaultRollup();
   const rollup: string[] = [];
@@ -185,8 +247,15 @@ export function parseBoardConfig(value: YamlValue, findings: Finding[]): BoardCo
   const templates = parseTemplates(map['templates'], findings, lanes, customFields);
   const savedFilters = parseSavedFilters(map['filters'], findings, customFields);
   const subscriptions = parseSubscriptions(map['subscriptions'], findings, lanes);
+  const blockers = parseBlockers(map['blockers'], findings);
+  const buttons = parseButtons(map['buttons'], findings, lanes, savedFilters);
+  const rules = parseRules(map['rules'], findings, lanes, savedFilters);
+  const automation = parseAutomation(map['automation'], findings);
 
-  const known = new Set(['botflow', 'name', 'ids', 'features', 'lanes', 'labels', 'fields', 'templates', 'filters', 'subscriptions', 'rollup']);
+  const known = new Set([
+    'botflow', 'name', 'ids', 'features', 'lanes', 'labels', 'fields', 'templates',
+    'filters', 'subscriptions', 'blockers', 'buttons', 'rules', 'automation', 'rollup',
+  ]);
   const extra: Record<string, unknown> = {};
   for (const key of Object.keys(map)) {
     if (!known.has(key)) {
@@ -195,7 +264,11 @@ export function parseBoardConfig(value: YamlValue, findings: Finding[]): BoardCo
     }
   }
 
-  return { version, name, ids, features, unsupportedFeatures, mutationBlocked, lanes, lanesDefaulted, labelDefinitions, customFields, templates, savedFilters, subscriptions, rollup, extra };
+  return {
+    version, name, ids, features, unsupportedFeatures, mutationBlocked, lanes,
+    lanesDefaulted, labelDefinitions, customFields, templates, savedFilters,
+    subscriptions, blockers, buttons, rules, automation, rollup, extra,
+  };
 }
 
 export function parseSavedFilters(
@@ -288,6 +361,193 @@ export function parseSubscriptions(value: YamlValue | undefined, findings: Findi
     out.push({ lane, watcher, extra });
   }
   return out;
+}
+
+export function parseBlockers(value: YamlValue | undefined, findings: Finding[]): BlockerDefinition[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    findings.push(finding('schema', REF, 'blockers must be a list of blocker maps'));
+    return [];
+  }
+  const out: BlockerDefinition[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      findings.push(finding('schema', REF, 'each blocker must be a mapping'));
+      continue;
+    }
+    const map = raw as Record<string, YamlValue>;
+    const id = typeof map['id'] === 'string' && SLUG_RE.test(map['id']) ? map['id'] : null;
+    if (id === null || seen.has(id)) {
+      findings.push(finding('schema', REF, 'blocker id must be a unique lowercase slug'));
+      continue;
+    }
+    seen.add(id);
+    let name = id;
+    if (map['name'] !== undefined) {
+      if (typeof map['name'] === 'string' && map['name'] !== '') name = map['name'];
+      else findings.push(finding('schema', REF, `blocker "${id}": name must be a non-empty string`));
+    }
+    let color: string | null = null;
+    if (map['color'] !== undefined) {
+      if (typeof map['color'] === 'string' && validColor(map['color'])) color = map['color'].toLowerCase();
+      else findings.push(finding('schema', REF, `blocker "${id}": color must be #RGB or #RRGGBB`));
+    }
+    const extra: Record<string, unknown> = {};
+    for (const key of Object.keys(map)) {
+      if (key !== 'id' && key !== 'name' && key !== 'color') {
+        extra[key] = map[key];
+        findings.push(finding('unknown-key', REF, `blocker "${id}": unknown key "${key}" (preserved)`));
+      }
+    }
+    out.push({ id, name, color, extra });
+  }
+  return out;
+}
+
+function validPosition(value: string, lanes: Lane[]): boolean {
+  const [laneId, substate, tail] = value.split('.', 3);
+  if (tail !== undefined) return false;
+  const lane = lanes.find((candidate) => candidate.id === laneId);
+  if (lane === undefined) return false;
+  return substate === undefined || (substate !== '' && lane.substates.includes(substate));
+}
+
+export function parseButtons(
+  value: YamlValue | undefined,
+  findings: Finding[],
+  lanes: Lane[],
+  filters: SavedFilter[],
+): AutomationButton[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    findings.push(finding('schema', REF, 'buttons must be a list of button maps'));
+    return [];
+  }
+  const out: AutomationButton[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      findings.push(finding('schema', REF, 'each button must be a mapping'));
+      continue;
+    }
+    const map = raw as Record<string, YamlValue>;
+    const id = typeof map['id'] === 'string' && SLUG_RE.test(map['id']) ? map['id'] : null;
+    if (id === null || seen.has(id)) {
+      findings.push(finding('schema', REF, 'button id must be a unique lowercase slug'));
+      continue;
+    }
+    seen.add(id);
+    const name = typeof map['name'] === 'string' && map['name'] !== '' ? map['name'] : id;
+    if (map['name'] !== undefined && name === id && map['name'] !== id) {
+      findings.push(finding('schema', REF, `button "${id}": name must be a non-empty string`));
+    }
+    const scope = map['scope'] === undefined || map['scope'] === 'card' ? 'card'
+      : map['scope'] === 'board' ? 'board' : null;
+    if (scope === null) findings.push(finding('schema', REF, `button "${id}": scope must be card or board`));
+    const action = map['action'] === 'move' || map['action'] === 'close' || map['action'] === 'label'
+      ? map['action'] : null;
+    if (action === null) findings.push(finding('schema', REF, `button "${id}": action must be move, close, or label`));
+    const filter = typeof map['filter'] === 'string' && map['filter'] !== '' ? map['filter'] : null;
+    if (scope === 'board' && (filter === null || !filters.some((candidate) => candidate.id === filter))) {
+      findings.push(finding('schema', REF, `board button "${id}": filter must name a saved filter`));
+    }
+    if (scope === 'card' && map['filter'] !== undefined && map['filter'] !== null) {
+      findings.push(finding('schema', REF, `card button "${id}" must not have filter`));
+    }
+    const rawValue = typeof map['value'] === 'string' && map['value'] !== '' ? map['value'] : null;
+    if (action === 'close' && map['value'] !== undefined && map['value'] !== null) {
+      findings.push(finding('schema', REF, `close button "${id}" must not have value`));
+    } else if ((action === 'move' || action === 'label') && rawValue === null) {
+      findings.push(finding('schema', REF, `button "${id}": ${action} requires a value`));
+    } else if (action === 'move' && rawValue !== null && !validPosition(rawValue, lanes)) {
+      findings.push(finding('schema', REF, `button "${id}": move value must be a valid position`));
+    }
+    const extra: Record<string, unknown> = {};
+    for (const key of Object.keys(map)) {
+      if (!['id', 'name', 'scope', 'filter', 'action', 'value'].includes(key)) {
+        extra[key] = map[key];
+        findings.push(finding('unknown-key', REF, `button "${id}": unknown key "${key}" (preserved)`));
+      }
+    }
+    if (scope !== null && action !== null) out.push({ id, name, scope, filter: scope === 'board' ? filter : null, action, value: action === 'close' ? null : rawValue, extra });
+  }
+  return out;
+}
+
+export function parseRules(
+  value: YamlValue | undefined,
+  findings: Finding[],
+  lanes: Lane[],
+  filters: SavedFilter[],
+): AutomationRule[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    findings.push(finding('schema', REF, 'rules must be a list of rule maps'));
+    return [];
+  }
+  const out: AutomationRule[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      findings.push(finding('schema', REF, 'each rule must be a mapping'));
+      continue;
+    }
+    const map = raw as Record<string, YamlValue>;
+    const id = typeof map['id'] === 'string' && SLUG_RE.test(map['id']) ? map['id'] : null;
+    if (id === null || seen.has(id)) {
+      findings.push(finding('schema', REF, 'rule id must be a unique lowercase slug'));
+      continue;
+    }
+    seen.add(id);
+    const event = map['event'] === 'enter' || map['event'] === 'close' || map['event'] === 'block' ? map['event'] : null;
+    if (event === null) findings.push(finding('schema', REF, `rule "${id}": event must be enter, close, or block`));
+    const lane = typeof map['lane'] === 'string' && lanes.some((candidate) => candidate.id === map['lane']) ? map['lane'] : null;
+    if (event === 'enter' && lane === null) findings.push(finding('schema', REF, `enter rule "${id}" requires a valid lane`));
+    if (event !== null && event !== 'enter' && map['lane'] !== undefined && map['lane'] !== null) findings.push(finding('schema', REF, `rule "${id}": lane only applies to enter`));
+    const filter = typeof map['filter'] === 'string' && filters.some((candidate) => candidate.id === map['filter']) ? map['filter'] : null;
+    if (map['filter'] !== undefined && map['filter'] !== null && filter === null) findings.push(finding('schema', REF, `rule "${id}": filter must name a saved filter`));
+    const action = ['label', 'unlabel', 'assign', 'delegate', 'comment'].includes(String(map['action']))
+      ? map['action'] as AutomationRule['action'] : null;
+    if (action === null) findings.push(finding('schema', REF, `rule "${id}": unsupported action`));
+    const ruleValue = typeof map['value'] === 'string' && map['value'] !== '' ? map['value'] : null;
+    if (ruleValue === null) findings.push(finding('schema', REF, `rule "${id}": value must be a non-empty string`));
+    const extra: Record<string, unknown> = {};
+    for (const key of Object.keys(map)) {
+      if (!['id', 'event', 'lane', 'filter', 'action', 'value'].includes(key)) {
+        extra[key] = map[key];
+        findings.push(finding('unknown-key', REF, `rule "${id}": unknown key "${key}" (preserved)`));
+      }
+    }
+    if (event !== null && action !== null && ruleValue !== null) {
+      out.push({ id, event, lane: event === 'enter' ? lane : null, filter, action, value: ruleValue, extra });
+    }
+  }
+  return out;
+}
+
+export function parseAutomation(value: YamlValue | undefined, findings: Finding[]): AutomationPolicy {
+  const policy: AutomationPolicy = { archiveDoneAfter: null, extra: {} };
+  if (value === undefined) return policy;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    findings.push(finding('schema', REF, 'automation must be a mapping'));
+    return policy;
+  }
+  const map = value as Record<string, YamlValue>;
+  if (map['archive_done_after'] !== undefined) {
+    if (typeof map['archive_done_after'] === 'number' && Number.isInteger(map['archive_done_after']) && map['archive_done_after'] > 0) {
+      policy.archiveDoneAfter = map['archive_done_after'];
+    } else {
+      findings.push(finding('schema', REF, 'automation.archive_done_after must be a positive integer'));
+    }
+  }
+  for (const key of Object.keys(map)) {
+    if (key !== 'archive_done_after') {
+      policy.extra[key] = map[key];
+      findings.push(finding('unknown-key', REF, `automation: unknown key "${key}" (preserved)`));
+    }
+  }
+  return policy;
 }
 
 export function parseLabelDefinitions(value: YamlValue | undefined, findings: Finding[]): LabelDefinition[] {
@@ -584,7 +844,14 @@ function parseLanes(items: YamlValue[], findings: Finding[]): Lane[] {
       else findings.push(finding('schema', REF, `lane "${id}": wip must be a positive integer`));
     }
 
-    const knownLaneKeys = new Set(['id', 'name', 'canonical', 'substates', 'order', 'wip']);
+    let wipMode: Lane['wipMode'] = 'allow';
+    if (m['wip_mode'] !== undefined) {
+      if (m['wip_mode'] === 'allow' || m['wip_mode'] === 'justify' || m['wip_mode'] === 'deny') wipMode = m['wip_mode'];
+      else findings.push(finding('schema', REF, `lane "${id}": wip_mode must be allow, justify, or deny`));
+      if (m['wip'] === undefined) findings.push(finding('schema', REF, `lane "${id}": wip_mode requires wip`));
+    }
+
+    const knownLaneKeys = new Set(['id', 'name', 'canonical', 'substates', 'order', 'wip', 'wip_mode']);
     const extra: Record<string, unknown> = {};
     for (const key of Object.keys(m)) {
       if (!knownLaneKeys.has(key)) {
@@ -600,6 +867,7 @@ function parseLanes(items: YamlValue[], findings: Finding[]): Lane[] {
       substates,
       order,
       wip,
+      wipMode,
       extra,
     });
   }
@@ -649,6 +917,10 @@ function fallback(name: string): BoardConfig {
     templates: [],
     savedFilters: [],
     subscriptions: [],
+    blockers: [],
+    buttons: [],
+    rules: [],
+    automation: { archiveDoneAfter: null, extra: {} },
     rollup: defaultRollup(),
     extra: {},
   };

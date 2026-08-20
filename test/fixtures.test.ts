@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { analyze, lintBoard, loadTree, parseBody, queryCards } from '../src/core/index.ts';
+import { analyze, automationPlan, boardFlowMetrics, lintBoard, loadTree, parseBody, queryCards } from '../src/core/index.ts';
 
 const FIXTURES = join(import.meta.dirname, 'fixtures');
 
@@ -34,6 +34,16 @@ interface ExpectedBoard {
     cards: Record<string, { watchers: string[]; votes: string[]; mentions: string[]; boosts: { when: string; actor: string; text: string }[] }>;
     queries: Record<string, string[]>;
   };
+  automation?: {
+    blockers: { id: string; name: string; color: string | null }[];
+    lanes: Record<string, { wip: number; mode: string }>;
+    archiveDoneAfter: number | null;
+    buttons: { id: string; name: string; scope: string; filter: string | null; action: string; value: string | null }[];
+    rules: { id: string; event: string; lane: string | null; filter: string | null; action: string; value: string }[];
+    cards: Record<string, { reminders: number[]; repeat: { every: number; unit: string; from: string } | null; snooze: string | null; blocker: string | null }>;
+    blockerDays: Record<string, number>;
+    plan: { kind: string; cardId: string; at: string; offset?: number }[];
+  };
 }
 
 const sortFindings = (list: { rule: string; ref: string }[]) =>
@@ -41,14 +51,16 @@ const sortFindings = (list: { rule: string; ref: string }[]) =>
 
 const round4 = (n: number | null) => (n === null ? null : Math.round(n * 10000) / 10000);
 
-for (const name of ['minimal', 'standard', 'substates', 'nested', 'card-features', 'presentation', 'relations', 'collaboration']) {
+for (const name of ['minimal', 'standard', 'substates', 'nested', 'card-features', 'presentation', 'relations', 'collaboration', 'automation']) {
   test(`fixture: ${name}`, () => {
     const dir = join(FIXTURES, name);
     const expected = JSON.parse(readFileSync(join(dir, 'expected.json'), 'utf8')) as {
+      now?: string;
       boards: Record<string, ExpectedBoard>;
     };
+    const now = expected.now === undefined ? new Date() : new Date(expected.now);
     const tree = loadTree(dir);
-    const analysis = analyze(tree);
+    const analysis = analyze(tree, now);
 
     assert.deepEqual([...tree.boards.keys()].sort(), Object.keys(expected.boards).sort(), 'board keys');
 
@@ -122,6 +134,27 @@ for (const name of ['minimal', 'standard', 'substates', 'nested', 'card-features
             `${key}: query ${query}`,
           );
         }
+      }
+      if (exp.automation) {
+        assert.deepEqual(node.board.config.blockers.map(({ id, name, color }) => ({ id, name, color })), exp.automation.blockers, `${key}: blocker registry`);
+        assert.deepEqual(Object.fromEntries(Object.keys(exp.automation.lanes).map((id) => {
+          const lane = node.board.config.lanes.find((candidate) => candidate.id === id)!;
+          return [id, { wip: lane.wip, mode: lane.wipMode }];
+        })), exp.automation.lanes, `${key}: WIP modes`);
+        assert.equal(node.board.config.automation.archiveDoneAfter, exp.automation.archiveDoneAfter, `${key}: archive policy`);
+        assert.deepEqual(node.board.config.buttons.map(({ id, name, scope, filter, action, value }) => ({ id, name, scope, filter, action, value })), exp.automation.buttons, `${key}: buttons`);
+        assert.deepEqual(node.board.config.rules.map(({ id, event, lane, filter, action, value }) => ({ id, event, lane, filter, action, value })), exp.automation.rules, `${key}: rules`);
+        assert.deepEqual(Object.fromEntries(Object.keys(exp.automation.cards).map((id) => {
+          const card = node.board.cards.find((candidate) => candidate.id === id)!;
+          return [id, {
+            reminders: card.reminders,
+            repeat: card.repeat === null ? null : { every: card.repeat.every, unit: card.repeat.unit, from: card.repeat.from },
+            snooze: card.snooze,
+            blocker: card.blocker,
+          }];
+        })), exp.automation.cards, `${key}: scheduling fields`);
+        assert.deepEqual(boardFlowMetrics(node.board, now).blockerDays, exp.automation.blockerDays, `${key}: blocker duration`);
+        assert.deepEqual(automationPlan(node.board, now), exp.automation.plan, `${key}: automation plan`);
       }
     }
   });
