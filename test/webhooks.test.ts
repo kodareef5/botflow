@@ -32,7 +32,7 @@ test('webhook payload and HMAC contract are deterministic', async () => {
 
 test('webhook endpoint validation reuses the SSRF denylist', () => {
   assert.equal(webhookTarget('https://hooks.example.com/botflow').ok, true);
-  for (const url of ['http://public.example.com/x', 'http://127.0.0.1/x', 'http://169.254.169.254/x', 'file:///tmp/x', 'https://user@example.com/x']) {
+  for (const url of ['http://public.example.com/x', 'http://127.0.0.1/x', 'http://169.254.169.254/x', 'https://localhost./x', 'file:///tmp/x', 'https://user@example.com/x']) {
     assert.equal(webhookTarget(url).ok, false, url);
   }
 });

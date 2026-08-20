@@ -156,6 +156,14 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     }
     assert.ok(up, 'wrangler dev came up');
 
+    const shell = await fetch(U);
+    assert.equal(shell.status, 200);
+    assert.match(shell.headers.get('content-security-policy') ?? '', /img-src 'self' data: blob:/);
+    assert.equal(shell.headers.get('referrer-policy'), 'no-referrer');
+    assert.equal(shell.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(shell.headers.get('x-frame-options'), 'DENY');
+    assert.equal(shell.headers.get('cache-control'), 'no-store');
+
     // The gate tells the form what this deployment actually needs, so it can
     // stop asking for a setup key where one would be ignored.
     const gate0 = (await call('/api/public/gate')).body as { setup: { needsKey: boolean; locked: boolean } };
@@ -174,10 +182,34 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
       409,
       'an unusable username does not initialize the company',
     );
-    const setup = await call('/api/setup', { method: 'POST', body: JSON.stringify({ name: 'testco', username: 'root', password: OWNER_PW, setupKey: SETUP_KEY }) });
-    assert.equal(setup.status, 200);
+    const setupAttempts = await Promise.all([
+      call('/api/setup', { method: 'POST', body: JSON.stringify({ name: 'testco', username: 'root', password: OWNER_PW, setupKey: SETUP_KEY }) }),
+      call('/api/setup', { method: 'POST', body: JSON.stringify({ name: 'testco', username: 'root', password: OWNER_PW, setupKey: SETUP_KEY }) }),
+    ]);
+    assert.deepEqual(setupAttempts.map((attempt) => attempt.status).sort(), [200, 409], 'first-run setup installs exactly one owner under a race');
+    const setup = setupAttempts.find((attempt) => attempt.status === 200)!;
     const admin = setup.body['token'] as string;
     assert.ok(admin.startsWith('bfu_'), 'setup returns a live session, not a token to copy down');
+
+    // A chunked request has no trustworthy Content-Length. The streaming
+    // reader still stops it before JSON parsing or an authorized mutation.
+    const oversizedJson = new TextEncoder().encode(JSON.stringify({ padding: 'x'.repeat(70 * 1024) }));
+    const oversizedStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(oversizedJson.subarray(0, 32 * 1024));
+        controller.enqueue(oversizedJson.subarray(32 * 1024));
+        controller.close();
+      },
+    });
+    const oversizedSettings = await fetch(`${U}/api/settings`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${admin}` },
+      body: oversizedStream,
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' });
+    assert.equal(oversizedSettings.status, 413, 'chunked JSON is bounded while it streams');
+    assert.equal((await call('/api/settings', { method: 'POST', token: admin, body: '{' })).status, 400, 'malformed JSON cannot reach a mutation');
+    assert.equal((await call('/api/settings', { method: 'POST', token: admin, body: '[]' })).status, 400, 'JSON request bodies must be objects');
     assert.equal(
       (await call('/api/setup', { method: 'POST', body: JSON.stringify({ name: 'again', username: 'x', password: OWNER_PW, setupKey: 'guess' }) })).status,
       409,
@@ -412,8 +444,10 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.equal((await call(`/api/projects/${childP}/config`, {
       method: 'PUT', token: projectAdmin, body: JSON.stringify({ ...childShape, name: 'child shaped by scoped admin' }),
     })).status, 200, 'a project admin reshapes descendants');
-    assert.equal((await call(`/api/projects/${stranger}/config`, { token: projectAdmin })).status, 403,
-      'a sibling remains outside project-admin scope');
+    const hiddenSibling = await call(`/api/projects/${stranger}/config`, { token: projectAdmin });
+    const inventedProject = await call('/api/projects/p-does-not-exist/config', { token: projectAdmin });
+    assert.equal(hiddenSibling.status, 404, 'a sibling remains outside project-admin scope');
+    assert.deepEqual(hiddenSibling, inventedProject, 'project scope does not reveal whether an id exists');
 
     for (const pid of [sibA, sibB]) {
       const shape = (await call(`/api/projects/${pid}/config`, { token: spaceAdmin })).body;
@@ -421,7 +455,7 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
         method: 'PUT', token: spaceAdmin, body: JSON.stringify({ ...shape, name: `${String(shape['name'])} shaped` }),
       })).status, 200, 'a space admin reshapes every board in the space');
     }
-    assert.equal((await call(`/api/projects/${parent}/config`, { token: spaceAdmin })).status, 403,
+    assert.equal((await call(`/api/projects/${parent}/config`, { token: spaceAdmin })).status, 404,
       'a space admin stops at the space boundary');
     assert.equal((await call(`/api/projects/${parent}/cards`, {
       method: 'POST', token: projectAdmin, body: JSON.stringify({ title: 'Admin still works cards' }),
@@ -457,7 +491,7 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.equal((await call(`/api/members/${projectAdminId}`, {
       method: 'PATCH', token: admin, body: JSON.stringify({ scopeKind: 'project', scopeId: childP }),
     })).status, 200);
-    assert.equal((await call(`/api/projects/${parent}/config`, { token: projectAdminKey })).status, 403,
+    assert.equal((await call(`/api/projects/${parent}/config`, { token: projectAdminKey })).status, 404,
       'a project admin cannot reach above its selected project');
     assert.equal((await call(`/api/projects/${childP}/config`, { token: projectAdminKey })).status, 200,
       'the same existing key immediately follows the narrower scope');
@@ -885,6 +919,8 @@ vendor:
       // It resolves only hashes this worker already chose to fetch, so it is
       // not an open proxy.
       assert.equal((await fetch(`${U}/og/${'a'.repeat(64)}?p=${parent}`)).status, 404);
+      assert.equal((await fetch(`${U}/og/${'a'.repeat(64)}?p=p-doesnotexist`)).status, 404,
+        'an anonymous image lookup cannot provision a made-up project object');
 
       // cover: none outranks a preview. cover is null either way, so coverAuto
       // is what carries the difference.
@@ -1140,7 +1176,7 @@ vendor:
     // shape the old per-project keys could not express at all.
     assert.equal((await call(`/api/projects/${sibA}/board`, { token: reader })).status, 200, 'space scope reaches one sibling');
     assert.equal((await call(`/api/projects/${sibB}/board`, { token: reader })).status, 200, 'space scope reaches the other');
-    assert.equal((await call(`/api/projects/${parent}/board`, { token: reader })).status, 403, 'and stops at the space boundary');
+    assert.equal((await call(`/api/projects/${parent}/board`, { token: reader })).status, 404, 'and stops at the space boundary');
 
     // Read really means read.
     assert.equal((await call(`/api/projects/${sibA}/cards`, { method: 'POST', token: reader, body: JSON.stringify({ title: 'nope' }) })).status, 403, 'a reader cannot create cards');
@@ -1356,7 +1392,7 @@ vendor:
     assert.equal(childMember.status, 200, JSON.stringify(childMember.body));
     const childLogin = await call('/api/login', { method: 'POST', body: JSON.stringify({ username: 'child-writer', password: CHILD_PW }) });
     const childToken = childLogin.body['token'] as string;
-    assert.equal((await call(`/api/projects/${parent}/board`, { token: childToken })).status, 403);
+    assert.equal((await call(`/api/projects/${parent}/board`, { token: childToken })).status, 404);
     const realRelationProbe = await call(`/api/projects/${childP}/cards/${relationTargetId}/link`, {
       method: 'POST', token: childToken,
       body: JSON.stringify({ target: `project:${parent}#${crossWaiterId}`, type: 'relates' }),
@@ -2286,16 +2322,23 @@ test('recovery on a deployment that was never set up leaves a working company', 
     assert.equal((await at('/api/login', { method: 'POST', body: JSON.stringify({ username: 'rescue', password: 'rescue-pass-1' }) })).status, 200);
     const space = await at('/api/spaces', { method: 'POST', token, body: JSON.stringify({ name: 'after-rescue' }) });
     assert.equal(space.status, 200, 'and it can be built out normally');
+
+    let setupKeyBlocks = 0;
+    for (let i = 0; i < 12; i++) {
+      const attempt = await at('/api/recover', { method: 'POST', body: JSON.stringify({ username: 'rescue', password: 'another-pass-1', setupKey: 'wrong' }) });
+      if (attempt.status === 429) setupKeyBlocks++;
+    }
+    assert.ok(setupKeyBlocks >= 2, 'setup/recovery key guessing is throttled by the shared credential gate');
   } finally {
     await stopWorker(child, state);
   }
 });
 
-test('setup policy: public hosts fail closed while loopback stays zero-config', () => {
-  assert.deepEqual(setupAccess('manager.example.test', undefined, undefined), {
+test('setup policy: public hosts fail closed while loopback stays zero-config', async () => {
+  assert.deepEqual(await setupAccess('manager.example.test', undefined, undefined), {
     ok: false, status: 503, error: 'setup is locked: configure the SETUP_KEY Worker secret, then enter it here',
   });
-  assert.deepEqual(setupAccess('127.0.0.1', undefined, undefined), { ok: true });
-  assert.equal(setupAccess('manager.example.test', 'secret', 'wrong').ok, false);
-  assert.deepEqual(setupAccess('manager.example.test', 'secret', 'secret'), { ok: true });
+  assert.deepEqual(await setupAccess('127.0.0.1', undefined, undefined), { ok: true });
+  assert.equal((await setupAccess('manager.example.test', 'secret', 'wrong')).ok, false);
+  assert.deepEqual(await setupAccess('manager.example.test', 'secret', 'secret'), { ok: true });
 });

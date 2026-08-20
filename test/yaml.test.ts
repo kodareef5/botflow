@@ -19,6 +19,13 @@ test('leading-zero digit tokens stay strings (card ids)', () => {
   assert.deepEqual(parseYaml('id: 042\nzero: 0'), { id: '042', zero: 0 });
 });
 
+test('unsafe integers stay exact strings instead of rounding', () => {
+  assert.deepEqual(parseYaml('high: 9007199254740993\nlow: -9007199254740993'), {
+    high: '9007199254740993',
+    low: '-9007199254740993',
+  });
+});
+
 test('date-like scalars stay strings', () => {
   assert.deepEqual(parseYaml('created: 2026-08-16'), { created: '2026-08-16' });
 });
@@ -70,6 +77,13 @@ test('rejects tab indentation and bad indent widths', () => {
 test('rejects duplicate keys and content after quotes', () => {
   assert.throws(() => parseYaml('a: 1\na: 2'), YamlError);
   assert.throws(() => parseYaml('a: "x" y'), YamlError);
+});
+
+test('rejects prototype-sensitive mapping keys at every depth', () => {
+  for (const key of ['__proto__', 'prototype', 'constructor']) {
+    assert.throws(() => parseYaml(`${key}:\n  botflow: 0`), YamlError, key);
+    assert.throws(() => parseYaml(`safe:\n  ${key}: value`), YamlError, key);
+  }
 });
 
 test('rejects colon without space and stray content', () => {

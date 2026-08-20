@@ -174,6 +174,7 @@ const CLIENT_JS = `
 const ORDER=['wishlist','todo','blocked','doing','done','archive'];
 const $=(s,el)=>(el||document).querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const imageOk=u=>{try{const x=new URL(u,location.href);return x.protocol==='data:'?/^data:image\//i.test(u):x.protocol==='blob:'||((x.protocol==='http:'||x.protocol==='https:')&&x.origin===location.origin)}catch{return false}};
 let DATA=window.__BOTFLOW__||null,CUR='.',LIVE=window.__LIVE__===true;
 let LAYOUT=localStorage.getItem('bfv_layout')||'kanban';
 if(!['kanban','table','swimlane','calendar','timeline','grouped','metrics','hill'].includes(LAYOUT))LAYOUT='kanban';
@@ -278,7 +279,7 @@ function cardHtml(c){
   const child=board&&c.child!=null?DATA.boards[c.child]:null;
   const age=c.metrics&&c.metrics.agingLevel||0;
   return '<div class="card '+(c.blocked?'blocked ':'')+(c.coverColor?'has-color ':'')+(age?'age-'+age:'')+'"'+(c.coverColor?' style="--cover-color:'+esc(c.coverColor)+'"':'')+' data-card="'+esc(c.id)+'" tabindex="0" role="button">'
-    +(c.cover?'<img class="art" src="'+esc(c.cover)+'" alt="" loading="lazy">':'')
+    +(c.cover&&imageOk(c.cover)?'<img class="art" src="'+esc(c.cover)+'" alt="" loading="lazy" referrerpolicy="no-referrer">':'')
     +'<div class="inner"><div class="cid">'+esc(c.id)+'</div><div class="t">'+esc(c.title)+'</div>'
     +'<div class="badges">'+badge(c)+'</div>'
     +((c.checklistPreview||[]).length?'<div class="previewtasks">'+c.checklistPreview.slice(0,2).map(i=>'<span title="'+esc(i.section)+'">'+esc(i.text)+'</span>').join('')+'</div>':'')
@@ -409,7 +410,7 @@ function openDrawer(c,opener){
   d.innerHTML='<button class="close" type="button" aria-label="close card details">✕</button>'
     +'<div class="cid">'+esc(c.id)+'</div><h2 id="drawer-title">'+esc(c.title)+'</h2>'
     +'<span class="statechip" style="background:'+stateColor(c.state)+'">'+c.state+'</span>'
-    +'<table>'+rows.map(r=>'<tr><td>'+r[0]+'</td><td>'+esc(r[1])+'</td></tr>').join('')+'</table>'
+    +'<table>'+rows.map(r=>'<tr><td>'+esc(r[0])+'</td><td>'+esc(r[1])+'</td></tr>').join('')+'</table>'
     +'<h3>relationships</h3>'+((c.relationships||[]).length?'<div class="relations">'+c.relationships.map(r=>'<div class="relation"><span class="rtype">'+esc(r.type)+'</span><span>'+esc(r.target)+'</span><span class="rsrc">'+esc(r.source||'stored')+(r.active===false?' · resolved':'')+'</span></div>').join('')+'</div>':'<div class="empty">no linked cards</div>')
     +'<div class="body">'+(c.body&&c.body.trim()?md(c.body):'<p class="empty">no body</p>')+'</div>';
   d.setAttribute('aria-hidden','false');d.classList.add('open');
@@ -444,7 +445,7 @@ $('#tmode').addEventListener('click',()=>{THEME.mode=THEME.mode==='system'?'ligh
 $('#taglimit').addEventListener('change',e=>{CARD_TAG_LIMIT=Number(e.target.value);localStorage.setItem('bfv_card_tag_limit',String(CARD_TAG_LIMIT));render()});
 applyTheme();
 async function poll(){
-  try{const r=await fetch('/api/data');const next=await r.text();
+  try{const r=await fetch('api/data');const next=await r.text();
     if(next!==JSON.stringify(DATA)&&!$('#drawer').classList.contains('open')){DATA=JSON.parse(next);render()}
   }catch{}
 }
@@ -462,6 +463,8 @@ export function viewerHtml(data: ViewerData | null, opts: { live: boolean; title
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'">
+<meta name="referrer" content="no-referrer">
 <title>${escHtml(opts.title ?? 'botflow')}</title>
 <style>${CSS}</style>
 </head>

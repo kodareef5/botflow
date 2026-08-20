@@ -8,6 +8,7 @@ import { BUILTIN_CARD_KEYS, validColor } from './presentation.ts';
 import { parseCardReference } from './refs.ts';
 
 const PRIORITY_RE = /^p[0-3]$/;
+const TITLE_CONTROL_RE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 
 /** Parse card frontmatter data. `fileBase` is the file's basename, used as the
  *  finding ref until an id is known. Returns null when the card is unusable. */
@@ -37,8 +38,8 @@ export function parseCard(
   };
 
   let title = '(untitled)';
-  if (typeof m['title'] === 'string' && m['title'] !== '') title = m['title'];
-  else invalid('title', 'title is required and must be a string');
+  if (typeof m['title'] === 'string' && m['title'].trim() !== '' && !TITLE_CONTROL_RE.test(m['title'])) title = m['title'];
+  else invalid('title', 'title is required and must be a single-line string');
 
   let laneId = 'todo';
   let substate: string | null = null;

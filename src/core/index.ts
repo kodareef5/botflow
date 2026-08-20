@@ -106,6 +106,16 @@ export { appendLogLine, logMutation, nowDate, nowDateTime, sanitizeInline, sanit
 export { newHashId, nextSeqId, slugify } from './ids.ts';
 export { boardFromDocuments, parseCardDocument, singleBoardTree, type BoardDocument } from './docs.ts';
 export {
+  MAX_BOARD_CONFIG_SIZE,
+  MAX_CARD_DOCUMENT_SIZE,
+  MAX_CARDS_PER_BOARD,
+  MAX_BOARD_DIRECTORY_ENTRIES,
+  MAX_BOARD_DOCUMENT_SIZE,
+  MAX_TREE_BOARDS,
+  MAX_TREE_DOCUMENT_SIZE,
+  ResourceLimitError,
+} from './limits.ts';
+export {
   UsageError,
   defaultBoardYaml,
   getCard,

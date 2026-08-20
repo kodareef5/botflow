@@ -19,6 +19,14 @@ import { logMutation, nowDate, nowDateTime, sanitizeActor, sanitizeBlock, saniti
 /** An error caused by how a tool was invoked: message for the caller, no stack. */
 export class UsageError extends Error {}
 
+const TITLE_CONTROL_RE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+
+function checkedTitle(value: string): string {
+  if (value.trim() === '') throw new UsageError('title required');
+  if (TITLE_CONTROL_RE.test(value)) throw new UsageError('title must be a single line without control characters');
+  return value;
+}
+
 /** A claim that lost: the card is not claimable by this actor right now.
  *  Extends UsageError so every surface that already reports usage errors
  *  degrades to a clear message; surfaces that know about claims can read the
@@ -445,7 +453,7 @@ export function applyAutomationRules(
 export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
   const operationNow = Date.now();
   const config = board.config;
-  if (opts.title.trim() === '') throw new UsageError('title required');
+  const title = checkedTitle(opts.title);
   const template = opts.template === undefined ? null : config.templates.find((candidate) => candidate.id === opts.template);
   if (opts.template !== undefined && template === undefined) {
     throw new UsageError(`no template "${opts.template}": templates: ${config.templates.map((candidate) => candidate.id).join(', ') || 'none'}`);
@@ -467,13 +475,20 @@ export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
   const snooze = checkedDate(opts.snooze, 'snooze') ?? null;
 
   const existing = board.cards.map((c) => c.id);
-  const id = config.ids === 'seq' ? nextSeqId(existing) : newHashId(existing);
+  let id: string;
+  try {
+    id = config.ids === 'seq' ? nextSeqId(existing) : newHashId(existing);
+  } catch (err) {
+    if (err instanceof RangeError) throw new UsageError(err.message);
+    throw err;
+  }
   const fields = checkedCustomFields(board, { ...(template?.fields ?? {}), ...(opts.fields ?? {}) }, false);
   const body = opts.body ?? template?.body ?? '';
-  if (bodyHasSection(body, 'Log')) throw new UsageError('initial card body must not contain a Log section');
+  const expandedBody = body.replaceAll('{{title}}', title);
+  if (bodyHasSection(expandedBody, 'Log')) throw new UsageError('initial card body must not contain a Log section');
   const card: Card = {
     id,
-    title: opts.title,
+    title,
     laneId: pos.laneId,
     substate: pos.substate,
     type,
@@ -501,8 +516,8 @@ export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
     created: nowDate(operationNow),
     updated: null,
     extra: fields,
-    file: `cards/${id}-${slugify(opts.title)}.md`,
-    body: body.replaceAll('{{title}}', opts.title),
+    file: `cards/${id}-${slugify(title)}.md`,
+    body: expandedBody,
   };
   logMutation(card, opts.actor, `created in ${positionLabel(pos)}`, operationNow, false);
   if (wip.log !== null) logMutation(card, opts.actor, wip.log, operationNow, false);
@@ -799,7 +814,7 @@ export interface EditPatch {
 }
 
 export function opEdit(card: Card, patch: EditPatch, actor: string, board?: LoadedBoard): Card {
-  if (patch.title !== undefined && patch.title.trim() === '') throw new UsageError('title required');
+  const title = patch.title === undefined ? undefined : checkedTitle(patch.title);
   const labels = patch.labels === undefined ? undefined : checkedLabels(patch.labels);
   const priority = patch.priority === undefined ? undefined : (checkedPriority(patch.priority) ?? null);
   const assignee = patch.assignee === undefined ? undefined : (cleanActorField(patch.assignee) ?? null);
@@ -828,8 +843,8 @@ export function opEdit(card: Card, patch: EditPatch, actor: string, board?: Load
   }
 
   const changed: string[] = [];
-  if (patch.title !== undefined && patch.title !== card.title) {
-    card.title = patch.title;
+  if (title !== undefined && title !== card.title) {
+    card.title = title;
     changed.push('title');
   }
   if (labels !== undefined && !sameValue(labels, card.labels)) {

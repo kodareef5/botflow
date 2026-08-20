@@ -14,6 +14,7 @@ export type YamlValue = string | number | boolean | null | YamlValue[] | { [key:
 
 const KEY_RE = /^([A-Za-z0-9_-]+):(.*)$/;
 const INT_RE = /^-?(0|[1-9][0-9]*)$/;
+const RESERVED_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
 /** Nesting bound: the parser recurses per level, so an unbounded document
  *  would escape as a stack-overflow crash instead of a YamlError. */
@@ -149,6 +150,7 @@ class Parser {
     const m = KEY_RE.exec(content);
     if (!m) throw new YamlError('expected "key: value"', line);
     const key = m[1]!;
+    if (RESERVED_KEYS.has(key)) throw new YamlError(`reserved key "${key}" is not supported`, line);
     let rest = m[2]!;
     if (rest !== '' && !rest.startsWith(' ')) throw new YamlError('colon after a key must be followed by a space', line);
     rest = rest.trim();
@@ -227,7 +229,10 @@ function parseScalar(s: string, line: number): YamlValue {
   if (s === 'true') return true;
   if (s === 'false') return false;
   if (s === 'null' || s === '~') return null;
-  if (INT_RE.test(s)) return parseInt(s, 10);
+  if (INT_RE.test(s)) {
+    const value = Number(s);
+    return Number.isSafeInteger(value) ? value : s;
+  }
   return s;
 }
 

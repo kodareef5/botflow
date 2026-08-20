@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { initBoard, addCard } from '../src/core/mutate.ts';
 import { UsageError } from '../src/core/ops.ts';
 import { instantiate } from '../src/core/template.ts';
-import { loadRemote, pull, push, remoteAdd } from '../src/cli/remote.ts';
+import { MAX_REMOTE_RESPONSE_BYTES, loadRemote, pull, push, readResponseJson, remoteAdd } from '../src/cli/remote.ts';
 
 function serveExport(payload: unknown): Promise<{ server: Server; url: string }> {
   return new Promise((resolvePromise) => {
@@ -223,6 +223,38 @@ test('pull: a manager that never responds times out instead of hanging forever',
     server.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('pull: oversized remote responses are refused before buffering', async () => {
+  const server = createServer((_req, res) => {
+    res.writeHead(200, {
+      'content-type': 'application/json',
+      'content-length': String(MAX_REMOTE_RESPONSE_BYTES + 1),
+    });
+    res.end('{}');
+  });
+  await new Promise<void>((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise));
+  const addr = server.address() as { port: number };
+  const { dir, root } = boardDir(`http://127.0.0.1:${addr.port}`);
+  try {
+    await assert.rejects(pull(root, 'bfk_test'), /remote response exceeds/);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('remote response ceiling also counts chunked bodies with no declared length', async () => {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"a":"'));
+      controller.enqueue(new TextEncoder().encode('too-long"}'));
+      controller.close();
+    },
+  });
+  await assert.rejects(readResponseJson(new Response(stream), 10), /remote response exceeds/);
+  assert.deepEqual(await readResponseJson(new Response('null')), {}, 'non-object JSON cannot confuse response handling');
 });
 
 test('template: a dest that exists as a file is a usage error, not an ENOTDIR crash', () => {

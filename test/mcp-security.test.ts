@@ -23,8 +23,8 @@ function initBoard(name: string): string {
   return dir;
 }
 
-function startServer(dir: string) {
-  const child = spawn(process.execPath, [ENTRY, 'mcp', '--board', dir, '--actor', 'sec-test'], {
+function startServer(dir: string, pinActor = false) {
+  const child = spawn(process.execPath, [ENTRY, 'mcp', '--board', dir, '--actor', 'sec-test', ...(pinActor ? ['--pin-actor'] : [])], {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   child.stderr.resume(); // drain the startup banner
@@ -131,10 +131,25 @@ test('mcp security: internal tool error is -32603 with the original request id',
     };
     assert.ok(res.error, `expected an error, got ${JSON.stringify(res)}`);
     assert.equal(res.error.code, -32603);
+    assert.equal(res.error.message, 'internal server error', 'host filesystem details stay server-side');
     assert.equal(typeof res.id, 'number', 'request id must survive (no -32700 mislabeling)');
   } finally {
     s.child.kill();
     spawnSync('chmod', ['-R', 'u+w', join(dir, '.botflow')]);
+  }
+});
+
+test('mcp security: --pin-actor prevents client-supplied attribution spoofing', async () => {
+  const s = startServer(initBoard('sec-pin-actor'), true);
+  try {
+    const added = await s.callTool('card_add', { title: 'pinned', actor: 'ceo' });
+    assert.equal(added.isError, false, added.text);
+    const id = (JSON.parse(added.text) as { id: string }).id;
+    const shown = await s.callTool('card_show', { id });
+    const card = JSON.parse(shown.text) as { parsed: { log: { actor: string }[] } };
+    assert.equal(card.parsed.log[0]!.actor, 'sec-test');
+  } finally {
+    s.child.kill();
   }
 });
 

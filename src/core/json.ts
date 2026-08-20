@@ -177,24 +177,43 @@ export function boardJson(
 }
 
 export function rollupJson(tree: Tree, analysis: Analysis, key = '.'): Record<string, unknown> {
-  const node = tree.boards.get(key)!;
-  const ba = analysis.boards.get(key)!;
-  return {
-    name: node.board.config.name,
-    key,
-    progress: ba.progress,
-    effort: ba.effort,
-    distribution: ba.distribution,
-    boards: node.board.cards
-      .filter((c) => c.type === 'board')
-      .map((c) => {
-        const childKey = node.childKeyByCard.get(c.id) ?? null;
-        return {
-          id: c.id,
-          title: c.title,
-          state: ba.canonical.get(c.id),
-          child: childKey === null ? null : rollupJson(tree, analysis, childKey),
-        };
-      }),
+  const summary = (boardKey: string, shared = false): Record<string, unknown> => {
+    const node = tree.boards.get(boardKey)!;
+    const ba = analysis.boards.get(boardKey)!;
+    return {
+      name: node.board.config.name,
+      key: boardKey,
+      progress: ba.progress,
+      effort: ba.effort,
+      distribution: ba.distribution,
+      ...(shared ? { shared: true } : {}),
+      boards: [],
+    };
   };
+
+  const root = summary(key);
+  const seen = new Set([key]);
+  const stack: { key: string; out: Record<string, unknown> }[] = [{ key, out: root }];
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const node = tree.boards.get(frame.key)!;
+    const ba = analysis.boards.get(frame.key)!;
+    const children: Record<string, unknown>[] = [];
+    frame.out['boards'] = children;
+    for (const card of node.board.cards) {
+      if (card.type !== 'board') continue;
+      const childKey = node.childKeyByCard.get(card.id) ?? null;
+      let child: Record<string, unknown> | null = null;
+      if (childKey !== null) {
+        const shared = seen.has(childKey);
+        child = summary(childKey, shared);
+        if (!shared) {
+          seen.add(childKey);
+          stack.push({ key: childKey, out: child });
+        }
+      }
+      children.push({ id: card.id, title: card.title, state: ba.canonical.get(card.id), child });
+    }
+  }
+  return root;
 }

@@ -4,20 +4,21 @@
 // strict-lane no-op moves, and fence-aware body operations.
 
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { analyzeSingle } from '../src/core/analyze.ts';
+import { analyze, analyzeSingle } from '../src/core/analyze.ts';
 import { appendToSection, parseBody, removeAttachmentLine, setChecklistItem, setSection } from '../src/core/body.ts';
 import { boardFromDocuments, parseCardDocument } from '../src/core/docs.ts';
-import { cardJson } from '../src/core/json.ts';
+import { cardJson, rollupJson } from '../src/core/json.ts';
 import { emitMap } from '../src/core/emit.ts';
 import { nextSeqId } from '../src/core/ids.ts';
+import { MAX_BOARD_CONFIG_SIZE, MAX_CARDS_PER_BOARD, ResourceLimitError } from '../src/core/limits.ts';
 import { loadTree, readBoardDocuments } from '../src/core/load.ts';
-import { addCard } from '../src/core/mutate.ts';
-import { fallbackConfig, type Card, type Finding } from '../src/core/model.ts';
+import { addCard, initBoard, linkCards, transferCard } from '../src/core/mutate.ts';
+import { fallbackConfig, type BoardNode, type Card, type Finding, type Tree } from '../src/core/model.ts';
 import { UsageError, opAdd, opAttach, opBlock, opChecklistAdd, opComment, opDescribe, opEdit, opMove, validateBoardPath } from '../src/core/ops.ts';
 import { logMutation, sanitizeActor, sanitizeInline, serializeCard } from '../src/core/write.ts';
 import { YamlError, parseYaml } from '../src/core/yaml.ts';
@@ -120,6 +121,59 @@ test('a symlinked board.yaml is not followed either', () => {
   }
 });
 
+test('loadTree refuses a symlinked .botflow root instead of reading its target', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'botflow-load-root-'));
+  const outside = tmpBoard({ '001-secret.md': '---\nid: 001\ntitle: secret\nlane: todo\n---\n' });
+  try {
+    symlinkSync(outside, join(workspace, '.botflow'));
+    assert.throws(() => loadTree(workspace), /symlink|outside its workspace/i);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test('card mutations refuse a symlinked cards directory', () => {
+  const dir = tmpBoard({});
+  const outside = mkdtempSync(join(tmpdir(), 'botflow-outside-'));
+  try {
+    rmSync(join(dir, 'cards'), { recursive: true });
+    symlinkSync(outside, join(dir, 'cards'));
+    assert.throws(() => addCard(dir, { title: 'must stay contained', actor: 'agent' }), /symlink|outside/i);
+    assert.deepEqual(readdirSync(outside), [], 'the external directory remains untouched');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test('init refuses a symlinked .botflow directory without clobbering its target', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'botflow-init-'));
+  const victim = mkdtempSync(join(tmpdir(), 'botflow-victim-'));
+  try {
+    writeFileSync(join(victim, '.gitignore'), 'keep-me\n');
+    symlinkSync(victim, join(workspace, '.botflow'));
+    assert.throws(() => initBoard(workspace, 'unsafe'), /symlink|already exists/i);
+    assert.equal(readFileSync(join(victim, '.gitignore'), 'utf8'), 'keep-me\n');
+    assert.equal(readdirSync(victim).includes('board.yaml'), false);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+    rmSync(victim, { recursive: true, force: true });
+  }
+});
+
+test('init refuses a non-empty .botflow directory without overwriting its contents', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'botflow-init-nonempty-'));
+  try {
+    mkdirSync(join(workspace, '.botflow'));
+    writeFileSync(join(workspace, '.botflow', '.gitignore'), 'keep-me\n');
+    assert.throws(() => initBoard(workspace, 'unsafe'), /already exists and is not empty/i);
+    assert.equal(readFileSync(join(workspace, '.botflow', '.gitignore'), 'utf8'), 'keep-me\n');
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 // ── 2. Board-path escape ────────────────────────────────────────────────────
 
 test('loadTree flags absolute and parent-escaping board paths instead of walking them', () => {
@@ -165,6 +219,46 @@ test('a conventional repo board may roll up a sibling project inside its workspa
     assert.equal(tree.boards.size, 2, 'the in-workspace sibling is loaded but the escape is not');
   } finally {
     rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test('cross-board writes reject a lexical child that resolves outside through a symlink', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'botflow-links-'));
+  const source = join(workspace, '.botflow');
+  const outsideWorkspace = mkdtempSync(join(tmpdir(), 'botflow-external-'));
+  const outside = join(outsideWorkspace, '.botflow');
+  try {
+    mkdirSync(join(source, 'cards'), { recursive: true });
+    mkdirSync(join(outside, 'cards'), { recursive: true });
+    writeFileSync(join(source, 'board.yaml'), 'botflow: 0\nname: source\n');
+    writeFileSync(join(outside, 'board.yaml'), 'botflow: 0\nname: outside\n');
+    writeFileSync(join(source, 'cards', '001-source.md'), '---\nid: 001\ntitle: source\nlane: todo\n---\n');
+    writeFileSync(join(source, 'cards', '002-child.md'), '---\nid: 002\ntitle: child\nlane: todo\ntype: board\nboard: child\n---\n');
+    writeFileSync(join(outside, 'cards', '001-target.md'), '---\nid: 001\ntitle: target\nlane: todo\n---\n');
+    symlinkSync(outside, join(source, 'child'));
+    const before = readFileSync(join(outside, 'cards', '001-target.md'), 'utf8');
+    const loaded = loadTree(workspace);
+    assert.equal(loaded.boards.get('.')!.board.findings.find((entry) => entry.ref === '002')?.rule, 'board-path-escape');
+    assert.equal(loaded.boards.size, 1, 'read traversal does not follow the external board either');
+    assert.throws(() => linkCards(source, '001', 'child#001', 'relates', 'agent'), /symlink|nested|physical/i);
+    assert.throws(() => transferCard(source, join(source, 'child'), '001', 'agent'), /symlink|nested|physical/i);
+    assert.equal(readFileSync(join(outside, 'cards', '001-target.md'), 'utf8'), before);
+    assert.deepEqual(readdirSync(join(outside, 'cards')), ['001-target.md']);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+    rmSync(outsideWorkspace, { recursive: true, force: true });
+  }
+});
+
+test('a self-referential board symlink is rejected before lock acquisition', () => {
+  const dir = tmpBoard({ '001-source.md': '---\nid: 001\ntitle: source\nlane: todo\n---\n' });
+  try {
+    symlinkSync('.', join(dir, 'self'));
+    const started = performance.now();
+    assert.throws(() => linkCards(dir, '001', 'self#001', 'relates', 'agent'), /symlink|nested|physical/i);
+    assert.ok(performance.now() - started < 1_000, 'self aliases fail instead of waiting for the board-lock timeout');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -303,6 +397,19 @@ test('nextSeqId counts past 2^53 exactly and keeps padding', () => {
   assert.equal(nextSeqId(['9007199254740992', '9007199254740993']), '9007199254740994');
   assert.equal(nextSeqId(['999999999999999999999']), '1000000000000000000000');
   assert.equal(nextSeqId(['9007199254740993', 'abc', '002']), '9007199254740994', 'non-numeric ids ignored');
+  assert.throws(() => nextSeqId(['9'.repeat(64)]), /64 digits/);
+});
+
+test('board document ceilings reject before parsing or reading oversized text', () => {
+  const dir = tmpBoard({});
+  try {
+    truncateSync(join(dir, 'board.yaml'), MAX_BOARD_CONFIG_SIZE + 1);
+    assert.throws(() => readBoardDocuments(dir), ResourceLimitError);
+    assert.throws(() => boardFromDocuments('x'.repeat(MAX_BOARD_CONFIG_SIZE + 1), []), ResourceLimitError);
+    assert.throws(() => boardFromDocuments('botflow: 0\n', Array(MAX_CARDS_PER_BOARD + 1).fill({ path: 'cards/x.md', text: '' })), ResourceLimitError);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ── 7. Parser recursion limit ───────────────────────────────────────────────
@@ -316,6 +423,13 @@ test('deeply nested yaml throws YamlError, not a stack overflow', () => {
     (err: unknown) => err instanceof YamlError && /nesting deeper/.test(err.message),
   );
   assert.doesNotThrow(() => parseYaml('a:\n  b:\n    c: 1'));
+});
+
+test('heading parsing stays linear on a long failed heading candidate', () => {
+  const body = `## ${'a'.repeat(100_000)}${' '.repeat(100_000)}b`;
+  const started = performance.now();
+  assert.doesNotThrow(() => parseBody(body));
+  assert.ok(performance.now() - started < 1_000, 'a 200KB heading candidate should parse well under one second');
 });
 
 // ── 8. Cycle-detection recursion ────────────────────────────────────────────
@@ -344,6 +458,49 @@ test('a cycle across thousands of cards is still reported exactly once', () => {
   const ba = analyzeSingle(boardFromDocuments('botflow: 0\nname: chain\n', docs));
   assert.equal(ba.findings.filter((f) => f.rule === 'dep-cycle').length, 1);
   assert.equal(ba.ready.length, 0);
+});
+
+function boardNode(key: string, cards: Card[]): BoardNode {
+  const board = boardFromDocuments('botflow: 0\nname: chain\n', []);
+  board.cards = cards;
+  return { key, board, childKeyByCard: new Map() };
+}
+
+test('board chains of thousands analyze iteratively', () => {
+  const boards = new Map<string, BoardNode>();
+  const depth = 2_000;
+  for (let i = 0; i < depth; i++) {
+    const key = `b${i}`;
+    const card = bareCard({ id: '001', type: i + 1 < depth ? 'board' : 'task', boardPath: i + 1 < depth ? `b${i + 1}` : null });
+    const node = boardNode(key, [card]);
+    if (i + 1 < depth) node.childKeyByCard.set(card.id, `b${i + 1}`);
+    boards.set(key, node);
+  }
+  const tree: Tree = { rootAbs: '.', boards };
+  const result = analyze(tree);
+  assert.equal(result.boards.size, depth);
+  assert.equal(result.boards.get('b0')!.distribution.todo, 1);
+});
+
+test('rollup JSON emits bounded stubs for shared child boards', () => {
+  const boards = new Map<string, BoardNode>();
+  const depth = 24;
+  for (let i = 0; i < depth; i++) {
+    const key = `b${i}`;
+    const cards = i + 1 < depth
+      ? [bareCard({ id: '001', type: 'board', boardPath: `b${i + 1}` }), bareCard({ id: '002', type: 'board', boardPath: `b${i + 1}`, file: 'cards/002-card.md' })]
+      : [bareCard({ id: '001', type: 'task' })];
+    const node = boardNode(key, cards);
+    if (i + 1 < depth) {
+      node.childKeyByCard.set('001', `b${i + 1}`);
+      node.childKeyByCard.set('002', `b${i + 1}`);
+    }
+    boards.set(key, node);
+  }
+  const tree: Tree = { rootAbs: '.', boards };
+  const json = JSON.stringify(rollupJson(tree, analyze(tree), 'b0'));
+  assert.ok(json.length < 100_000, `shared DAG output stayed bounded (${json.length} bytes)`);
+  assert.match(json, /"shared":true/);
 });
 
 // ── 9. Strict-lane no-op move ───────────────────────────────────────────────
@@ -606,6 +763,22 @@ test('body text cannot splice a second section', () => {
   assert.equal(parseBody(card.body).comments.length, 0, 'no comments forged either');
 });
 
+test('template title substitution cannot forge a Log section', () => {
+  const board = boardFromDocuments(`botflow: 0
+name: templates
+templates:
+  - id: repro
+    body: "## Checklist\\n- [ ] reproduce {{title}}\\n"
+`, []);
+  assert.throws(
+    () => opAdd(board, { title: 'bug\n\n## Log\n- 2020-01-01 ceo: forged', actor: 'agent', template: 'repro' }),
+    /single line|line break|title/i,
+  );
+  const card = opAdd(board, { title: 'safe', actor: 'agent', template: 'repro' });
+  assert.equal(parseBody(card.body).log.length, 1);
+  assert.throws(() => opEdit(card, { title: 'bad\rtitle' }, 'agent'), /single line|line break|title/i);
+});
+
 test('a caller-chosen section name must be one plain line', () => {
   const board = boardFromDocuments('botflow: 0\nname: t\n', []);
   const card = opAdd(board, { title: 'Real', actor: 'honest-bot' });
@@ -661,7 +834,7 @@ test('unfurl refuses every address that is not publicly routable', () => {
     'http://[2001:db8::1]/', 'http://[3fff::1]/', 'http://[5f00::1]/',
     'http://[::7f00:1]/', 'http://[0:0:0:0:ffff:0:7f00:1]/',
     'http://[64:ff9b::7f00:1]/', 'http://[64:ff9b:1::1]/', 'http://[2002:7f00:1::1]/',
-    'http://localhost/', 'http://LOCALHOST/', 'http://api.localhost/', 'http://box.local/',
+    'http://localhost/', 'http://localhost./', 'http://LOCALHOST/', 'http://api.localhost/', 'http://api.localhost./', 'http://box.local/',
     'http://svc.internal/', 'http://printer.home.arpa/',
     'http://user:pass@example.com/', 'http://:pw@example.com/',
     'file:///etc/passwd', 'javascript:alert(1)', 'data:text/html,<script>x</script>',

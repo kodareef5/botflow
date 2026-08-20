@@ -4,8 +4,8 @@
 // single source of truth, and two processes on the same tree cannot interleave
 // load-mutate-write or mint the same seq id.
 
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
-import { basename, join, relative, resolve, sep } from 'node:path';
+import { closeSync, existsSync, lstatSync, mkdirSync, opendirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import process from 'node:process';
 
 import type { Card, LoadedBoard } from './model.ts';
@@ -81,6 +81,84 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+function isContained(base: string, target: string): boolean {
+  const rel = relative(base, target);
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+/** Resolve a writable board root without allowing the final path or config to
+ *  be a symlink. Ancestor symlinks used to access a worktree remain usable;
+ *  containment comparisons below operate on the resulting physical path. */
+function physicalBoardRoot(rootValue: string): string {
+  const root = resolve(rootValue);
+  try {
+    const stat = lstatSync(root);
+    if (stat.isSymbolicLink()) throw new UsageError(`refusing writable symlink board root: ${root}`);
+    if (!stat.isDirectory()) throw new UsageError(`board root is not a directory: ${root}`);
+    const config = join(root, 'board.yaml');
+    if (existsSync(config) && lstatSync(config).isSymbolicLink()) {
+      throw new UsageError(`refusing symlinked board.yaml on writable board: ${config}`);
+    }
+    return realpathSync(root);
+  } catch (err) {
+    if (err instanceof UsageError) throw err;
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') throw new UsageError(`board root does not exist: ${root}`);
+    throw err;
+  }
+}
+
+/** Every existing directory between base and target must be a real directory,
+ *  not a symlink. This closes the gap that a final realpath-only check leaves
+ *  when a symlink happens to point back inside the workspace. */
+function assertDirectoryChain(baseValue: string, targetValue: string): void {
+  const base = resolve(baseValue);
+  const target = resolve(targetValue);
+  if (!isContained(base, target)) throw new UsageError(`write target escapes its physical workspace: ${target}`);
+  const rel = relative(base, target);
+  let cursor = base;
+  for (const part of rel === '' ? [] : rel.split(sep)) {
+    cursor = join(cursor, part);
+    const stat = lstatSync(cursor);
+    if (stat.isSymbolicLink()) throw new UsageError(`refusing symlinked writable directory: ${cursor}`);
+    if (!stat.isDirectory()) throw new UsageError(`write parent is not a directory: ${cursor}`);
+  }
+}
+
+function assertMutationTarget(boardRootValue: string, targetValue: string): string {
+  const boardRoot = resolve(boardRootValue);
+  const target = resolve(targetValue);
+  const parent = dirname(target);
+  if (!isContained(boardRoot, target)) throw new UsageError(`write target escapes board root: ${target}`);
+  const physicalRoot = physicalBoardRoot(boardRoot);
+  assertDirectoryChain(boardRoot, parent);
+  const physicalParent = realpathSync(parent);
+  if (!isContained(physicalRoot, physicalParent)) throw new UsageError(`write target escapes physical board root: ${target}`);
+  if (existsSync(target) && lstatSync(target).isSymbolicLink()) {
+    throw new UsageError(`refusing symlinked write target: ${target}`);
+  }
+  return target;
+}
+
+function workspaceRootFor(boardRoot: string): string {
+  return basename(boardRoot) === '.botflow' ? dirname(boardRoot) : boardRoot;
+}
+
+/** Return canonical physical board roots after proving the target is inside
+ *  both the lexical and physical source workspace with no symlink hop. */
+function containedBoardRoots(sourceValue: string, targetValue: string, message: string): { sourceRoot: string; targetRoot: string } {
+  const sourceLogical = resolve(sourceValue);
+  const targetLogical = resolve(targetValue);
+  const workspaceLogical = workspaceRootFor(sourceLogical);
+  if (!isContained(workspaceLogical, targetLogical)) throw new UsageError(message);
+  assertDirectoryChain(workspaceLogical, targetLogical);
+  const sourceRoot = physicalBoardRoot(sourceLogical);
+  const targetRoot = physicalBoardRoot(targetLogical);
+  const workspacePhysical = realpathSync(workspaceLogical);
+  if (!isContained(workspacePhysical, targetRoot)) throw new UsageError(message);
+  return { sourceRoot, targetRoot };
+}
+
 /** Remove a lock whose owner is provably gone. A live pid is NEVER age-reaped:
  *  long legitimate holds (a big pull applying hundreds of cards) must not have
  *  the lock stolen mid-flight. The mtime fallback exists only for locks whose
@@ -108,7 +186,11 @@ function reapStaleLock(lock: string): void {
 /** Run fn holding <root>/board.lock; waits briefly, reaps dead owners, and
  *  fails with a usage error rather than proceeding unlocked. */
 export function withBoardLock<T>(root: string, fn: () => T): T {
-  const lock = join(root, 'board.lock');
+  const physicalRoot = physicalBoardRoot(root);
+  const lock = join(physicalRoot, 'board.lock');
+  if (existsSync(lock) && lstatSync(lock).isSymbolicLink()) {
+    throw new UsageError(`refusing symlinked board lock: ${lock}`);
+  }
   const deadline = Date.now() + lockWaitMs();
   for (;;) {
     try {
@@ -144,16 +226,33 @@ export function atomicWrite(path: string, content: string): void {
 }
 
 export function writeCard(boardRoot: string, card: Card): void {
-  atomicWrite(join(boardRoot, card.file), serializeCard(card));
+  const target = assertMutationTarget(boardRoot, join(boardRoot, card.file));
+  atomicWrite(target, serializeCard(card));
 }
 
 export function initBoard(dir: string, name?: string): string {
   const abs = resolve(dir);
-  if (resolveBoardRoot(abs) !== null) throw new UsageError(`a board already exists at ${abs}`);
   const root = join(abs, '.botflow');
-  mkdirSync(join(root, 'cards'), { recursive: true });
-  writeFileSync(join(root, 'board.yaml'), defaultBoardYaml(name ?? basename(abs)));
-  writeFileSync(join(root, '.gitignore'), 'index.db\nindex.db-*\nboard.lock\n');
+  if (existsSync(abs) && lstatSync(abs).isSymbolicLink()) throw new UsageError(`refusing to initialize through symlink directory: ${abs}`);
+  if (existsSync(root)) {
+    const stat = lstatSync(root);
+    if (stat.isSymbolicLink()) throw new UsageError(`refusing symlinked board directory: ${root}`);
+    if (!stat.isDirectory()) throw new UsageError(`board directory already exists and is not empty: ${root}`);
+    const directory = opendirSync(root);
+    let empty = false;
+    try {
+      empty = directory.readSync() === null;
+    } finally {
+      directory.closeSync();
+    }
+    if (!empty) throw new UsageError(`board directory already exists and is not empty: ${root}`);
+  }
+  if (resolveBoardRoot(abs) !== null) throw new UsageError(`a board already exists at ${abs}`);
+  mkdirSync(abs, { recursive: true });
+  mkdirSync(root, { recursive: true });
+  mkdirSync(join(root, 'cards'));
+  writeFileSync(join(root, 'board.yaml'), defaultBoardYaml(name ?? basename(abs)), { flag: 'wx' });
+  writeFileSync(join(root, '.gitignore'), 'index.db\nindex.db-*\nboard.lock\n', { flag: 'wx' });
   return root;
 }
 
@@ -198,7 +297,7 @@ function mutateRelation(
 ): RelationMutationResult {
   const parsed = parseCardReference(targetValue);
   if (parsed === null) throw new UsageError(`invalid relation target "${targetValue}"`);
-  const sourceRoot = resolveBoardRoot(rootValue) ?? resolve(rootValue);
+  let sourceRoot = resolveBoardRoot(rootValue) ?? resolve(rootValue);
   if (parsed.boardRef === null) {
     return mutateCard(sourceRoot, (board) => {
       const result = unlink
@@ -212,14 +311,13 @@ function mutateRelation(
     });
   }
   if (parsed.boardRef.startsWith('project:')) throw new UsageError('local relation targets use a relative board ref, not project:');
-  const targetRoot = resolveBoardRoot(resolve(sourceRoot, parsed.boardRef));
-  if (targetRoot === null) throw new UsageError(`no target board at ${parsed.boardRef}`);
-  if (resolve(sourceRoot) === resolve(targetRoot)) {
+  const resolvedTarget = resolveBoardRoot(resolve(sourceRoot, parsed.boardRef));
+  if (resolvedTarget === null) throw new UsageError(`no target board at ${parsed.boardRef}`);
+  const contained = containedBoardRoots(sourceRoot, resolvedTarget, 'relation target board must be nested inside the source project tree');
+  sourceRoot = contained.sourceRoot;
+  const targetRoot = contained.targetRoot;
+  if (sourceRoot === targetRoot) {
     return mutateRelation(sourceRoot, sourceId, parsed.cardId, type, actor, unlink);
-  }
-  const targetPath = relative(sourceRoot, targetRoot);
-  if (targetPath === '..' || targetPath.startsWith(`..${sep}`)) {
-    throw new UsageError('relation target board must be nested inside the source project tree');
   }
   return withBoardLocks([sourceRoot, targetRoot], () => {
     const sourceBoard = loadBoard(sourceRoot);
@@ -331,7 +429,7 @@ function cardReference(fromRoot: string, toRoot: string, id: string): string {
 
 /** Acquire several board locks in stable path order to avoid AB/BA deadlock. */
 function withBoardLocks<T>(roots: string[], fn: () => T): T {
-  const ordered = [...new Set(roots.map((root) => resolve(root)))].sort();
+  const ordered = [...new Set(roots.map((root) => physicalBoardRoot(root)))].sort();
   const enter = (index: number): T => index === ordered.length ? fn() : withBoardLock(ordered[index]!, () => enter(index + 1));
   return enter(0);
 }
@@ -343,14 +441,11 @@ export function transferCard(
   actor: string,
   options: { move?: boolean | undefined; lane?: string | undefined } = {},
 ): TransferResult {
-  const sourceRoot = resolveBoardRoot(sourceRootValue) ?? resolve(sourceRootValue);
-  const targetRoot = resolveBoardRoot(targetDir);
-  if (targetRoot === null) throw new UsageError(`no target board at ${targetDir}`);
-  if (resolve(sourceRoot) === resolve(targetRoot)) throw new UsageError('source and target boards must differ');
-  const targetPath = relative(sourceRoot, targetRoot);
-  if (targetPath === '..' || targetPath.startsWith(`..${sep}`)) {
-    throw new UsageError('target board must be nested inside the source project tree');
-  }
+  const sourceResolved = resolveBoardRoot(sourceRootValue) ?? resolve(sourceRootValue);
+  const targetResolved = resolveBoardRoot(targetDir);
+  if (targetResolved === null) throw new UsageError(`no target board at ${targetDir}`);
+  const { sourceRoot, targetRoot } = containedBoardRoots(sourceResolved, targetResolved, 'target board must be nested inside the source project tree');
+  if (sourceRoot === targetRoot) throw new UsageError('source and target boards must differ');
   return withBoardLocks([sourceRoot, targetRoot], () => {
     const sourceBoard = loadBoard(sourceRoot);
     const targetBoard = loadBoard(targetRoot);
@@ -514,7 +609,8 @@ export function boostCard(root: string, id: string, actor: string, text: string)
 }
 
 function writeBoardConfig(root: string, board: LoadedBoard): void {
-  atomicWrite(join(root, 'board.yaml'), emitBoardYaml(board.config));
+  const target = assertMutationTarget(root, join(root, 'board.yaml'));
+  atomicWrite(target, emitBoardYaml(board.config));
 }
 
 export function saveFilter(root: string, id: string, query: string, actor: string, name?: string): ReturnType<typeof opSaveFilter> {

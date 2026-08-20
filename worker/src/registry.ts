@@ -165,6 +165,7 @@ const BASIC_CACHE_MS = 5 * 60 * 1000;
  * enough to distinguish live links without turning every public poll into a
  * serialized RegistryDO mutation. */
 const SHARE_VIEW_TOUCH_MS = 15 * 60 * 1000;
+const API_KEY_TOUCH_MS = 15 * 60 * 1000;
 
 // Failed-credential throttle. PBKDF2 is the only other brake on guessing, and
 // it is also what makes a flood expensive to serve.
@@ -736,7 +737,11 @@ export class RegistryDO extends DurableObject {
     const scope = this.checkNewMember(username, password, 'owner', 'org', null);
     if ('error' in scope) return scope;
     const passHash = await hashPassword(password);
-    const memberId = this.ctx.storage.transactionSync(() => {
+    const memberId = this.ctx.storage.transactionSync((): string | null => {
+      // PBKDF2 above yields outside the storage transaction. Re-check under
+      // the serialized write boundary so two distinct first-run requests
+      // cannot both install owners after observing an empty deployment.
+      if (this.initialized()) return null;
       const created = new Date().toISOString();
       if (this.sql.exec('SELECT COUNT(*) AS n FROM org').one()['n'] !== 1) {
         this.sql.exec('INSERT INTO org(id, name, admin_hash, created) VALUES (1, ?, ?, ?)', cleanName(name, 'company'), '', created);
@@ -747,6 +752,7 @@ export class RegistryDO extends DurableObject {
       this.audit(username, 'setup', 'company initialized');
       return id;
     });
+    if (memberId === null) return { error: 'already initialized' };
     return this.startSession(memberId);
   }
 
@@ -1112,7 +1118,13 @@ export class RegistryDO extends DurableObject {
     const row = this.sql.exec('SELECT id, member_id FROM member_keys WHERE hash = ? AND revoked = 0', hash).toArray()[0];
     if (!row) return null;
     const identity = this.memberById(row['member_id'] as string);
-    if (identity !== null) this.sql.exec('UPDATE member_keys SET last_used = ? WHERE id = ?', new Date().toISOString(), row['id'] as string);
+    if (identity !== null) {
+      const now = new Date();
+      this.sql.exec(
+        'UPDATE member_keys SET last_used = ? WHERE id = ? AND (last_used IS NULL OR last_used < ?)',
+        now.toISOString(), row['id'] as string, new Date(now.getTime() - API_KEY_TOUCH_MS).toISOString(),
+      );
+    }
     return identity;
   }
 

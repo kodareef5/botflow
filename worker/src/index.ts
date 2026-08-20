@@ -56,12 +56,17 @@ export interface Env {
 // operator session. The sandbox CSP below is the second lock on that door.
 const INLINE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'application/pdf', 'text/plain']);
 const MAX_UPLOAD = 10 * 1024 * 1024;
+const MAX_API_JSON = 1024 * 1024;
 
 /** App and share pages carry destructive in-page-confirm owner actions, so
  *  they never load inside a frame (clickjacking). */
 const HTML_HEADERS = {
   'content-type': 'text/html; charset=utf-8',
-  'content-security-policy': "frame-ancestors 'none'",
+  'content-security-policy': "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+  'cache-control': 'no-store',
+  'referrer-policy': 'no-referrer',
+  'x-content-type-options': 'nosniff',
+  'x-frame-options': 'DENY',
 };
 
 /** Every uploaded object's key/size/type: the export's uploads manifest. */
@@ -88,7 +93,14 @@ const UNFURL_DAILY_CAP = 200;
 const UNFURL_BATCH = 3;
 
 const json = (value: unknown, status = 200): Response =>
-  new Response(JSON.stringify(value, null, 2), { status, headers: { 'content-type': 'application/json' } });
+  new Response(JSON.stringify(value, null, 2), {
+    status,
+    headers: {
+      'cache-control': 'no-store',
+      'content-type': 'application/json',
+      'x-content-type-options': 'nosniff',
+    },
+  });
 
 /** Reads ?limit as an integer in [1, 500]: SQLite treats a negative LIMIT as
  *  unlimited, so clamp the low end as well as the high. */
@@ -100,14 +112,21 @@ const limitParam = (value: string | null): number =>
 const bodyTooBig = (req: Request, max: number): boolean =>
   Number(req.headers.get('content-length') ?? 0) > max;
 
-/** Credential and admin endpoints take small JSON. A chunked request declares
- *  no content-length, so `bodyTooBig` waves it through and the isolate buffers
- *  whatever arrives: this reads with a real ceiling instead. Returns null when
- *  the body is unusable, which every caller treats as an empty object. */
-async function smallJson(req: Request, max = 64 * 1024): Promise<Record<string, unknown> | null> {
-  if (bodyTooBig(req, max)) return null;
+class RequestBodyError extends Error {
+  readonly status: 400 | 413;
+  constructor(message: string, status: 400 | 413) {
+    super(message);
+    this.name = 'RequestBodyError';
+    this.status = status;
+  }
+}
+
+/** Buffer a request with a real ceiling. A declared length is only an early
+ *  reject; chunked bodies are counted while reading. */
+async function boundedBody(req: Request, max: number, label: string): Promise<Uint8Array> {
+  if (bodyTooBig(req, max)) throw new RequestBodyError(`${label} exceeds ${max} bytes`, 413);
   const reader = req.body?.getReader();
-  if (!reader) return null;
+  if (!reader) return new Uint8Array();
   const chunks: Uint8Array[] = [];
   let size = 0;
   for (;;) {
@@ -116,18 +135,29 @@ async function smallJson(req: Request, max = 64 * 1024): Promise<Record<string, 
     size += value.byteLength;
     if (size > max) {
       await reader.cancel().catch(() => {});
-      return null;
+      throw new RequestBodyError(`${label} exceeds ${max} bytes`, 413);
     }
     chunks.push(value);
   }
   const joined = new Uint8Array(size);
   let at = 0;
   for (const c of chunks) { joined.set(c, at); at += c.byteLength; }
+  return joined;
+}
+
+/** Stream and parse a JSON object with a real ceiling. Empty bodies become
+ *  {}, preserving optional-body actions without letting an oversized or
+ *  malformed body degrade into an authorized mutation. */
+async function smallJson(req: Request, max = 64 * 1024): Promise<Record<string, unknown>> {
+  const joined = await boundedBody(req, max, 'JSON body');
+  if (joined.byteLength === 0) return {};
   try {
     const parsed: unknown = JSON.parse(new TextDecoder().decode(joined));
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
+    if (!isRecord(parsed)) throw new RequestBodyError('JSON body must be an object', 400);
+    return parsed;
+  } catch (err) {
+    if (err instanceof RequestBodyError) throw err;
+    throw new RequestBodyError('invalid JSON body', 400);
   }
 }
 
@@ -477,6 +507,10 @@ export default {
         if (cached) return cached;
         const pid = url.searchParams.get('p') ?? '';
         if (!/^p-[a-z0-9]+$/.test(pid)) return json({ error: 'not found' }, 404);
+        // Resolve registry existence before obtaining/calling a project stub:
+        // a Durable Object RPC instantiates persistent SQLite storage even
+        // when the project id was invented by an anonymous caller.
+        if ((await registry.projectName(pid)) === null) return json({ error: 'not found' }, 404);
         const source = await project(pid).unfurlImageFor(ogMatch[1]!);
         if (source === null) return json({ error: 'not found' }, 404);
         const image = await fetchImage(source, env.UNFURL_ALLOW_PRIVATE === 'on');
@@ -519,7 +553,7 @@ export default {
         // A setup key is only meaningful where setupAccess would demand one.
         // Asking for it on a loopback dev instance that ignores it is just
         // friction, so the form is told which of the two cases it is in.
-        const probe = setupAccess(url.hostname, env.SETUP_KEY, undefined);
+        const probe = await setupAccess(url.hostname, env.SETUP_KEY, undefined);
         return json({
           shares: status0.initialized ? await registry.listGateShares() : [],
           setup: { needsKey: !probe.ok && probe.status === 403, locked: !probe.ok && probe.status === 503 },
@@ -580,10 +614,20 @@ export default {
       }
       if (req.method === 'POST' && url.pathname === '/api/setup') {
         if (status.initialized) return json({ error: 'already initialized' }, 409);
-        if (bodyTooBig(req, MAX_UPLOAD)) return json({ error: 'body exceeds 10 MiB' }, 413);
         const body = ((await smallJson(req)) ?? {}) as { name?: string; username?: string; password?: string; setupKey?: string };
-        const access = setupAccess(url.hostname, env.SETUP_KEY, body.setupKey);
-        if (!access.ok) return json({ error: access.error }, access.status);
+        const throttleKey = '__setup_key__';
+        const retryAfter = await registry.authRetryAfter(client, throttleKey);
+        if (retryAfter > 0) {
+          return new Response(JSON.stringify({ error: 'too many failed attempts: wait before trying again', retryAfter }, null, 2), {
+            status: 429, headers: { 'content-type': 'application/json', 'retry-after': String(retryAfter) },
+          });
+        }
+        const access = await setupAccess(url.hostname, env.SETUP_KEY, body.setupKey);
+        if (!access.ok) {
+          await registry.authFailed(client, throttleKey);
+          return json({ error: access.error }, access.status);
+        }
+        await registry.authSucceeded(client, throttleKey);
         const res = await registry.setup(
           typeof body.name === 'string' && body.name !== '' ? body.name : 'company',
           typeof body.username === 'string' ? body.username : '',
@@ -595,10 +639,20 @@ export default {
       // the SETUP_KEY secret (loopback stays zero-config). It mints a fresh
       // admin token and kills the old one; the audit log records it.
       if (req.method === 'POST' && url.pathname === '/api/recover') {
-        if (bodyTooBig(req, MAX_UPLOAD)) return json({ error: 'body exceeds 10 MiB' }, 413);
         const body = ((await smallJson(req)) ?? {}) as { username?: string; password?: string; setupKey?: string };
-        const access = setupAccess(url.hostname, env.SETUP_KEY, body.setupKey);
-        if (!access.ok) return json({ error: access.error }, access.status);
+        const throttleKey = '__setup_key__';
+        const retryAfter = await registry.authRetryAfter(client, throttleKey);
+        if (retryAfter > 0) {
+          return new Response(JSON.stringify({ error: 'too many failed attempts: wait before trying again', retryAfter }, null, 2), {
+            status: 429, headers: { 'content-type': 'application/json', 'retry-after': String(retryAfter) },
+          });
+        }
+        const access = await setupAccess(url.hostname, env.SETUP_KEY, body.setupKey);
+        if (!access.ok) {
+          await registry.authFailed(client, throttleKey);
+          return json({ error: access.error }, access.status);
+        }
+        await registry.authSucceeded(client, throttleKey);
         const res = await registry.recover(
           typeof body.username === 'string' ? body.username : '',
           typeof body.password === 'string' ? body.password : '',
@@ -608,7 +662,6 @@ export default {
       // Logging in is public by definition: it is how a credential is obtained.
       if (req.method === 'POST' && url.pathname === '/api/login') {
         if (!status.initialized) return json({ error: 'not initialized: use setup' }, 409);
-        if (bodyTooBig(req, MAX_UPLOAD)) return json({ error: 'body exceeds 10 MiB' }, 413);
         const body = ((await smallJson(req)) ?? {}) as { username?: string; password?: string };
         const res = await registry.login(
           typeof body.username === 'string' ? body.username : '',
@@ -751,8 +804,7 @@ export default {
         if (denied) return denied;
         if (req.method === 'GET') return json({ ...(await registry.getTheme()), ...(await registry.getPrefs()) });
         if (req.method === 'POST') {
-          const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
-          if (body === null) return json({ error: 'invalid JSON body' }, 400);
+          const body = await smallJson(req);
           const theme = await registry.setTheme(body as never);
           const prefs = 'gateShares' in body || 'cardTagLimit' in body ? await registry.setPrefs(body) : await registry.getPrefs();
           await registry.audit(actor, 'settings', `style ${theme.style}/${theme.accent} ${theme.density}, mode ${theme.mode}, card tags ${prefs.cardTagLimit}, gate shares ${prefs.gateShares ? 'on' : 'off'}`);
@@ -802,7 +854,7 @@ export default {
         if (denied) return denied;
         const isDemo = url.pathname === '/api/demo';
         if (!isDemo && bodyTooBig(req, MAX_UPLOAD)) return json({ error: 'import exceeds 10 MiB' }, 413);
-        const rawPayload: unknown = isDemo ? DEMO : await req.json().catch(() => null);
+        const rawPayload: unknown = isDemo ? DEMO : await smallJson(req, MAX_UPLOAD);
         const validationError = validateOrgImportPayload(rawPayload, env.UNFURL_ALLOW_PRIVATE === 'on');
         if (validationError) return json({ error: validationError }, 400);
         const payload = rawPayload as OrgImport;
@@ -950,7 +1002,7 @@ export default {
       if (req.method === 'POST' && url.pathname === '/api/spaces') {
         const denied = requireOwner();
         if (denied) return denied;
-        const body = (await req.json().catch(() => ({}))) as { name?: string };
+        const body = await smallJson(req) as { name?: string };
         if (!body.name) return json({ error: 'name required' }, 400);
         const created = await registry.createSpace(body.name);
         await registry.audit(actor, 'create-space', `"${body.name}" (${created.id})`);
@@ -959,7 +1011,7 @@ export default {
       if (req.method === 'POST' && url.pathname === '/api/projects') {
         const denied = requireWrite();
         if (denied) return denied;
-        const body = (await req.json().catch(() => ({}))) as { space?: string; parent?: string; name?: string; lane?: string };
+        const body = await smallJson(req) as { space?: string; parent?: string; name?: string; lane?: string };
         if (!body.name) return json({ error: 'name required' }, 400);
         if (!body.parent) {
           // A root project reshapes the company, exactly like creating the
@@ -1008,7 +1060,7 @@ export default {
         if (subject instanceof Response) return subject;
         if (req.method === 'GET') return json(await registry.listKeys(subject));
         if (req.method === 'POST') {
-          const body = (await req.json().catch(() => ({}))) as { label?: unknown };
+          const body = await smallJson(req) as { label?: unknown };
           const res = await registry.createKey(subject, body.label);
           if ('error' in res) return json(res, 400);
           await registry.audit(actor, 'create-key', `"${res.label}"${subject === identity.memberId ? '' : ` for ${subject}`}`);
@@ -1036,7 +1088,7 @@ export default {
           return json(res);
         }
         if (req.method === 'PATCH' && keyOne[2] === undefined) {
-          const body = (await req.json().catch(() => ({}))) as { label?: unknown };
+          const body = await smallJson(req) as { label?: unknown };
           const res = await registry.renameKey(kid, body.label);
           if ('error' in res) return json(res, 400);
           await registry.audit(actor, 'rename-key', `${kid} is now "${res.label}"`);
@@ -1172,12 +1224,10 @@ export default {
       if (!match) return json({ error: 'not found' }, 404);
       const pid = match[1]!;
       const rest = match[2] ?? '';
-      if ((await registry.projectName(pid)) === null) return json({ error: `no project ${pid}` }, 404);
+      if ((await registry.projectName(pid)) === null) return json({ error: 'project not found' }, 404);
       // A member reaches whatever its scope covers: the whole company, one
       // space, or one project and everything nested beneath it.
-      if (!(await registry.reaches(identity, pid))) {
-        return json({ error: 'this project is outside your scope' }, 403);
-      }
+      if (!(await registry.reaches(identity, pid))) return json({ error: 'project not found' }, 404);
       const stub = project(pid);
 
       if (req.method === 'DELETE' && (rest === '' || rest === '/')) {
@@ -1215,7 +1265,7 @@ export default {
         // Board shape is workflow policy: admins reshape it, agents work it.
         const denied = requireAdmin();
         if (denied) return denied;
-        const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+        const body = await smallJson(req, MAX_API_JSON);
         const res = await stub.editBoardConfig(body, actor);
         if (!('error' in res)) await registry.audit(actor, 'board-edit', `reshaped board of ${pid}`);
         return 'error' in res ? json(res, 400) : json(res);
@@ -1224,7 +1274,7 @@ export default {
       if (req.method === 'PUT' && rest === '/import') {
         const denied = requireWrite();
         if (denied) return denied;
-        const body = (await req.json().catch(() => ({}))) as { config?: string; cards?: BoardDocument[]; actor?: string };
+        const body = await smallJson(req, MAX_UPLOAD) as { config?: string; cards?: BoardDocument[]; actor?: string };
         if (typeof body.config !== 'string' || !Array.isArray(body.cards)) return json({ error: 'config and cards required' }, 400);
         const res = await stub.importDocs(body.config, body.cards, actor, roleAllows(identity.role, 'admin'));
         if ('error' in res) return json(res, res['forbidden'] === true ? 403 : 400);
@@ -1396,7 +1446,7 @@ export default {
       if (req.method === 'POST' && buttonRun) {
         const denied = requireWrite();
         if (denied) return denied;
-        const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+        const body = await smallJson(req, MAX_API_JSON);
         if (body['card'] !== undefined && body['card'] !== null && typeof body['card'] !== 'string') {
           return json({ error: 'card must be a string or null' }, 400);
         }
@@ -1427,7 +1477,7 @@ export default {
         if (req.method === 'POST') {
           const denied = requireWrite();
           if (denied) return denied;
-          const body = (await req.json().catch(() => null)) as { id?: unknown; name?: unknown; query?: unknown } | null;
+          const body = await smallJson(req) as { id?: unknown; name?: unknown; query?: unknown };
           if (body === null || typeof body.id !== 'string' || typeof body.query !== 'string') return json({ error: 'id and query strings required' }, 400);
           if (body.name !== undefined && typeof body.name !== 'string') return json({ error: 'name must be a string' }, 400);
           const res = await stub.saveFilter(body.id, body.query, typeof body.name === 'string' ? body.name : null, actor);
@@ -1445,7 +1495,7 @@ export default {
       if (req.method === 'POST' && laneSubscribe) {
         const denied = requireWrite();
         if (denied) return denied;
-        const body = (await req.json().catch(() => ({}))) as { active?: unknown };
+        const body = await smallJson(req) as { active?: unknown };
         if (body.active !== undefined && typeof body.active !== 'boolean') return json({ error: 'active must be a boolean' }, 400);
         const res = await stub.subscribeLane(laneSubscribe[1]!, actor, body.active !== false);
         return 'error' in res ? json(res, 400) : json(res);
@@ -1455,8 +1505,7 @@ export default {
         if (denied) return denied;
         if (req.method === 'GET') return json(await registry.listShares(pid));
         if (req.method === 'POST') {
-          const body = (await req.json().catch(() => null)) as { label?: string; card?: string } | null;
-          if (body === null) return json({ error: 'invalid JSON body' }, 400);
+          const body = await smallJson(req) as { label?: string; card?: string };
           let cardId: string | null = null;
           if (typeof body.card === 'string' && body.card !== '') {
             if ((await stub.card(body.card)) === null) return json({ error: `no card ${body.card}` }, 400);
@@ -1472,8 +1521,7 @@ export default {
       if (rest === '/feeds') {
         if (req.method === 'GET') return json(await registry.listFeeds(pid, identity.memberId));
         if (req.method === 'POST') {
-          const body = (await req.json().catch(() => null)) as { label?: unknown; card?: unknown; lane?: unknown; filter?: unknown } | null;
-          if (body === null) return json({ error: 'invalid JSON body' }, 400);
+          const body = await smallJson(req) as { label?: unknown; card?: unknown; lane?: unknown; filter?: unknown };
           for (const field of ['label', 'card', 'lane', 'filter'] as const) {
             if (body[field] !== undefined && typeof body[field] !== 'string') return json({ error: `${field} must be a string` }, 400);
           }
@@ -1501,7 +1549,7 @@ export default {
       if (req.method === 'POST' && rest === '/cards') {
         const denied = requireWrite();
         if (denied) return denied;
-        const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+        const body = await smallJson(req, MAX_API_JSON);
         if (typeof body['title'] !== 'string' || body['title'] === '') return json({ error: 'title required' }, 400);
         // A list field that is not a list is a client bug, and silently
         // dropping it looks exactly like success. Say so instead.
@@ -1578,7 +1626,7 @@ export default {
       if (req.method === 'POST' && rest === '/cards/quick') {
         const denied = requireWrite();
         if (denied) return denied;
-        const body = (await req.json().catch(() => null)) as { text?: unknown } | null;
+        const body = await smallJson(req, MAX_API_JSON) as { text?: unknown };
         if (body === null || typeof body.text !== 'string' || body.text.trim() === '') return json({ error: 'text required' }, 400);
         const res = await stub.quickAdd(body.text, actor);
         return 'error' in res ? json(res, 400) : json(res);
@@ -1586,7 +1634,7 @@ export default {
       if (req.method === 'POST' && rest === '/cards/bulk') {
         const denied = requireWrite();
         if (denied) return denied;
-        const body = (await req.json().catch(() => null)) as { ids?: unknown; action?: unknown } | null;
+        const body = await smallJson(req, MAX_API_JSON) as { ids?: unknown; action?: unknown };
         if (body === null || !Array.isArray(body.ids) || !body.ids.every((id) => typeof id === 'string')) return json({ error: 'ids must be a list of strings' }, 400);
         if (body.action === null || typeof body.action !== 'object' || Array.isArray(body.action)) return json({ error: 'action must be an object' }, 400);
         const action = body.action as Record<string, unknown>;
@@ -1625,10 +1673,8 @@ export default {
           if (!env.ATTACHMENTS) return json({ error: 'uploads are not enabled: bind an R2 bucket as ATTACHMENTS' }, 503);
           const name = (url.searchParams.get('name') ?? 'file').replace(/[^\w.\- ]+/g, '_').slice(0, 80) || 'file';
           const type = (req.headers.get('content-type') ?? 'application/octet-stream').split(';')[0]!.trim();
-          if (bodyTooBig(req, MAX_UPLOAD)) return json({ error: 'upload exceeds 10 MiB' }, 413);
-          const bytes = await req.arrayBuffer();
+          const bytes = await boundedBody(req, MAX_UPLOAD, 'upload');
           if (bytes.byteLength === 0) return json({ error: 'empty upload' }, 400);
-          if (bytes.byteLength > MAX_UPLOAD) return json({ error: 'upload exceeds 10 MiB' }, 413);
           if ((await stub.card(cid)) === null) return json({ error: `no card ${cid}` }, 404);
           // 128 bits of key entropy: the URL is a permanent bearer capability
           // (it must render in <img> and on public pages), so make guessing
@@ -1644,7 +1690,7 @@ export default {
           return json({ url: `/files/${key}`, name });
         }
         if (req.method === 'POST' && action !== undefined) {
-          const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+          const body = await smallJson(req, MAX_API_JSON);
           if (action === 'edit' && Array.isArray(body['deps'])) {
             const refs = await stub.validateReferenceChanges({ cardId: cid, deps: (body['deps'] as unknown[]).map(String) });
             if ('error' in refs) return json(refs, 400);
@@ -1732,6 +1778,7 @@ export default {
       }
       return json({ error: 'not found' }, 404);
     } catch (err) {
+      if (err instanceof RequestBodyError) return json({ error: err.message }, err.status);
       console.error('unhandled request failure:', err);
       return json({ error: 'internal error' }, 500);
     }

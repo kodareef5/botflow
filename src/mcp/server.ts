@@ -45,6 +45,7 @@ import type { CardRepeat } from '../core/model.ts';
 import { boardJson, cardJson, renderPrime, rollupJson } from '../cli/render.ts';
 import { cardDetailJson } from '../core/json.ts';
 import { queryCards } from '../core/query.ts';
+import { writeStderr } from '../cli/terminal.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_INFO = { name: 'botflow', version: '0.1.0' };
@@ -73,8 +74,10 @@ function schema(required: string[], props: Json): Json {
   return { type: 'object', properties: props, required, additionalProperties: false };
 }
 
-function buildTools(root: string, defaultActor: string): Tool[] {
-  const actorOf = (args: Json): string => (typeof args['actor'] === 'string' ? (args['actor'] as string) : defaultActor);
+function buildTools(root: string, defaultActor: string, pinActor: boolean): Tool[] {
+  const actorOf = (args: Json): string => pinActor
+    ? defaultActor
+    : (typeof args['actor'] === 'string' ? (args['actor'] as string) : defaultActor);
   const opt = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
   // Arguments arrive off the wire unchecked (the schema is only advisory), so
   // reject wrong shapes loudly instead of coercing: String(obj) would write
@@ -586,8 +589,14 @@ function buildTools(root: string, defaultActor: string): Tool[] {
   ];
 }
 
-export function startMcpServer(root: string, defaultActor: string, input: Readable, output: Writable): void {
-  const tools = buildTools(root, defaultActor);
+export function startMcpServer(
+  root: string,
+  defaultActor: string,
+  input: Readable,
+  output: Writable,
+  options: { pinActor?: boolean } = {},
+): void {
+  const tools = buildTools(root, defaultActor, options.pinActor === true);
   const byName = new Map(tools.map((t) => [t.name, t]));
   const send = (msg: Json): void => void output.write(JSON.stringify(msg) + '\n');
 
@@ -647,7 +656,8 @@ export function startMcpServer(root: string, defaultActor: string, input: Readab
             send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `error: ${err.message}` }], isError: true } });
           } else {
             const message = err instanceof Error ? err.message : String(err);
-            send({ jsonrpc: '2.0', id, error: { code: -32603, message: `internal error: ${message}` } });
+            writeStderr(`botflow mcp internal error: ${message}`);
+            send({ jsonrpc: '2.0', id, error: { code: -32603, message: 'internal server error' } });
           }
         }
         return;
@@ -663,7 +673,7 @@ export function startMcpServer(root: string, defaultActor: string, input: Readab
   input.on('data', (chunk: string) => {
     buffer += chunk;
     if (buffer.length > MAX_BUFFER_BYTES) {
-      process.stderr.write(`botflow mcp: message exceeds ${MAX_BUFFER_BYTES} bytes; shutting down\n`);
+      writeStderr(`botflow mcp: message exceeds ${MAX_BUFFER_BYTES} bytes; shutting down`);
       process.exit(1);
     }
     for (;;) {

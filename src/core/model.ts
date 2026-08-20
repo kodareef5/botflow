@@ -52,7 +52,7 @@ export function finding(rule: string, ref: string, message: string): Finding {
 }
 
 export const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
-export const SEQ_ID_RE = /^[0-9]{3,}$/;
+export const SEQ_ID_RE = /^[0-9]{3,64}$/;
 export const HASH_ID_RE = /^[a-z0-9]{6}$/;
 
 export interface Lane {

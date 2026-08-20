@@ -260,51 +260,79 @@ export function analyze(tree: Tree, nowValue: number | Date = Date.now()): Analy
   const memo = new Map<string, BoardAnalysis>();
   const stateMemo = new Map<string, Canonical>();
 
-  const effectiveState = (key: string, card: Card): Canonical => {
-    const memoKey = `${key}\u0000${card.id}`;
-    const known = stateMemo.get(memoKey);
-    if (known !== undefined) return known;
-    const node = tree.boards.get(key)!;
-    const laneCanonical = node.board.config.lanes.find((lane) => lane.id === card.laneId)?.canonical ?? 'todo';
-    const flagged = card.blocked !== null && laneCanonical !== 'done' && laneCanonical !== 'archive';
-    if (flagged || card.type === 'task') {
-      const state = flagged ? 'blocked' : laneCanonical;
-      stateMemo.set(memoKey, state);
-      return state;
+  // Child boards must be ready before their parents, but recursive descent on
+  // a long board chain can exhaust the JS call stack. Build one iterative
+  // post-order that also naturally visits a shared DAG node only once.
+  const postOrder: string[] = [];
+  const color = new Map<string, 1 | 2>();
+  for (const start of tree.boards.keys()) {
+    if (color.has(start)) continue;
+    const stack: { key: string; children: string[]; next: number }[] = [];
+    const push = (key: string): void => {
+      const node = tree.boards.get(key);
+      if (node === undefined) return;
+      color.set(key, 1);
+      stack.push({
+        key,
+        children: [...new Set([...node.childKeyByCard.values()].filter((value): value is string => value !== null))],
+        next: 0,
+      });
+    };
+    push(start);
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1]!;
+      const child = frame.children[frame.next++];
+      if (child !== undefined) {
+        if (!color.has(child)) push(child);
+        // A load-time board-cycle edge normally resolves to null. If a custom
+        // Tree still contains a back-edge, do not recurse or loop here.
+        continue;
+      }
+      stack.pop();
+      color.set(frame.key, 2);
+      postOrder.push(frame.key);
     }
-    const childKey = node.childKeyByCard.get(card.id) ?? null;
-    if (childKey === null) {
-      stateMemo.set(memoKey, laneCanonical);
-      return laneCanonical;
-    }
-    const child = tree.boards.get(childKey)!;
-    const distribution = emptyDistribution();
-    for (const childCard of child.board.cards) distribution[effectiveState(childKey, childCard)]++;
-    const countable = distributionTotal(distribution) - distribution.archive;
-    const state = countable === 0 ? laneCanonical : rollupState(distribution, countable, node.board.config.rollup);
-    stateMemo.set(memoKey, state);
-    return state;
-  };
+  }
 
-  const analyzeNode = (key: string): BoardAnalysis => {
-    const done = memo.get(key);
-    if (done) return done;
-    const node = tree.boards.get(key);
-    if (!node) throw new Error(`analyze: unknown board key ${key}`);
+  const memoKey = (key: string, card: Card): string => `${key}\u0000${card.id}`;
+
+  // Effective state depends only on child effective distributions, so it can
+  // be materialized bottom-up before dependency/reference analysis begins.
+  for (const key of postOrder) {
+    const node = tree.boards.get(key)!;
+    for (const card of node.board.cards) {
+      const laneCanonical = node.board.config.lanes.find((lane) => lane.id === card.laneId)?.canonical ?? 'todo';
+      const flagged = card.blocked !== null && laneCanonical !== 'done' && laneCanonical !== 'archive';
+      let state: Canonical = flagged ? 'blocked' : laneCanonical;
+      if (!flagged && card.type === 'board') {
+        const childKey = node.childKeyByCard.get(card.id) ?? null;
+        const child = childKey === null ? undefined : tree.boards.get(childKey);
+        if (child !== undefined) {
+          const distribution = emptyDistribution();
+          for (const childCard of child.board.cards) {
+            const childState = stateMemo.get(memoKey(childKey!, childCard));
+            if (childState !== undefined) distribution[childState]++;
+          }
+          const countable = distributionTotal(distribution) - distribution.archive;
+          if (countable > 0) state = rollupState(distribution, countable, node.board.config.rollup);
+        }
+      }
+      stateMemo.set(memoKey(key, card), state);
+    }
+  }
+
+  for (const key of postOrder) {
+    const node = tree.boards.get(key)!;
     const analysis = analyzeBoard(node.board, (card) => {
       const childKey = node.childKeyByCard.get(card.id) ?? null;
-      if (childKey === null) return null;
-      const child = analyzeNode(childKey);
-      return { distribution: child.distribution, progress: child.progress };
+      const child = childKey === null ? undefined : memo.get(childKey);
+      return child === undefined ? null : { distribution: child.distribution, progress: child.progress };
     }, (reference) => {
       const target = resolveTreeCardReference(tree, key, reference);
-      return target === null ? null : { state: effectiveState(target.key, target.card) };
+      return target === null ? null : { state: stateMemo.get(memoKey(target.key, target.card)) ?? null };
     }, nowValue);
     memo.set(key, analysis);
-    return analysis;
-  };
-
-  for (const key of tree.boards.keys()) analyzeNode(key);
+  }
   reportCrossBoardDependencyCycles(tree, memo);
   return { boards: memo };
 }

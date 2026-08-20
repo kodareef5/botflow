@@ -12,6 +12,7 @@ import type { BoardConfig, Card, Finding, LoadedBoard, Tree } from './model.ts';
 import { HASH_ID_RE, SEQ_ID_RE, fallbackConfig, finding } from './model.ts';
 import { labelGroupConflict, validCustomFieldValue } from './presentation.ts';
 import { parseCardReference } from './refs.ts';
+import { ResourceLimitError, boardDocumentLimitError } from './limits.ts';
 
 export interface BoardDocument {
   /** Path relative to the board root, e.g. "cards/042-fix-auth.md". */
@@ -80,6 +81,8 @@ export function boardFromDocuments(
   cardDocs: BoardDocument[],
   fallbackName = 'board',
 ): LoadedBoard {
+  const limitError = boardDocumentLimitError(configText, cardDocs);
+  if (limitError !== null) throw new ResourceLimitError(limitError);
   const findings: Finding[] = [];
   let config: BoardConfig;
   if (configText === null) {
@@ -152,6 +155,8 @@ export function validateBoardDocuments(config: unknown, cards: unknown): Snapsho
     seenPaths.add(doc.path);
     docs.push({ path: doc.path, text: doc.text });
   }
+  const limitError = boardDocumentLimitError(config, docs);
+  if (limitError !== null) return { error: limitError };
   const board = boardFromDocuments(config, docs, 'import');
   const fatalRules = new Set(['yaml-error', 'frontmatter-missing', 'schema', 'dup-id']);
   const errors = board.findings.filter((f) => fatalRules.has(f.rule));

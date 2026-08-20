@@ -19,8 +19,13 @@ const CARD_FEATURES = join(import.meta.dirname, 'fixtures', 'card-features');
 test('viewer: serve exposes page and live data', async () => {
   const { server, url } = await serveBoard(NESTED, 0);
   try {
+    assert.match(new URL(url).pathname, /^\/[a-f0-9]{48}\/$/, 'viewer URL carries a per-process capability');
     const page = await fetch(url);
     assert.equal(page.status, 200);
+    assert.match(page.headers.get('content-security-policy') ?? '', /default-src 'none'/);
+    assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
+    assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(page.headers.get('cache-control'), 'no-store');
     const html = await page.text();
     assert.match(html, /__LIVE__=true/);
     assert.match(html, /<title>platform<\/title>/);
@@ -33,6 +38,10 @@ test('viewer: serve exposes page and live data', async () => {
 
     const missing = await fetch(url + 'nope');
     assert.equal(missing.status, 404);
+    assert.equal((await fetch(url + 'api/data', { method: 'POST' })).status, 405);
+    const head = await fetch(url + 'api/data', { method: 'HEAD' });
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), '');
   } finally {
     server.close();
   }
@@ -182,12 +191,13 @@ test('viewer: emitted calendar and timeline render structured dates', () => {
   assert.match(rendered.timeline, /2026-08-02 through 2026-08-20/);
 });
 
-test('viewer: serve answers only loopback Host headers (DNS-rebinding guard)', async () => {
-  const { server, port } = await serveBoard(NESTED, 0);
+test('viewer: serve requires its capability and answers only loopback Host headers', async () => {
+  const { server, port, url } = await serveBoard(NESTED, 0);
+  const dataPath = `${new URL(url).pathname}api/data`;
   // node:http lets us set Host arbitrarily; fetch (undici) forbids it.
-  const status = (host?: string): Promise<number> =>
+  const status = (host?: string, path = dataPath): Promise<number> =>
     new Promise((resolve, reject) => {
-      const req = get({ host: '127.0.0.1', port, path: '/api/data', headers: host === undefined ? {} : { host } }, (res) => {
+      const req = get({ host: '127.0.0.1', port, path, headers: host === undefined ? {} : { host } }, (res) => {
         res.resume();
         res.on('end', () => resolve(res.statusCode ?? 0));
       });
@@ -199,9 +209,13 @@ test('viewer: serve answers only loopback Host headers (DNS-rebinding guard)', a
     assert.equal(await status('localhost:4666'), 200);
     assert.equal(await status('[::1]'), 200);
     assert.equal(await status('[::1]:4666'), 200);
+    assert.equal(await status('LOCALHOST'), 200);
+    assert.equal(await status(`127.0.0.1:${port}`, '/api/data'), 404, 'the bare local port does not expose board data');
     assert.equal(await status('evil.com'), 403);
     assert.equal(await status('127.0.0.1.evil.com'), 403);
     assert.equal(await status('localhost.evil.com:4666'), 403);
+    assert.equal(await status('[::1].evil'), 403);
+    assert.equal(await status('localhost:evil'), 403);
   } finally {
     server.close();
   }
@@ -211,4 +225,11 @@ test('viewer: board key is escaped in the findings heading', () => {
   // A hostile board directory name lands in CUR; it must go through esc().
   const html = viewerHtml(null, { live: true });
   assert.ok(html.includes(`'<h3>findings: '+esc(CUR)+'</h3>'`), 'findings heading must escape CUR');
+});
+
+test('viewer: custom-field labels are escaped and remote images are not fetched', () => {
+  const html = viewerHtml(null, { live: true });
+  assert.ok(html.includes("rows.map(r=>'<tr><td>'+esc(r[0])"), 'drawer labels pass through the HTML escaper');
+  assert.ok(html.includes("img-src 'self' data: blob:"), 'CSP blocks attacker-controlled third-party image fetches');
+  assert.ok(html.includes('c.cover&&imageOk(c.cover)'), 'card markup omits non-local covers');
 });

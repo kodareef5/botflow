@@ -43,7 +43,6 @@ export interface ParsedBody {
   log: BodyEntry[];
 }
 
-const HEADING_RE = /^##\s+(.+?)\s*$/;
 const TASK_RE = /^\s*- \[([ xX])\]\s+(.*)$/;
 const LINK_RE = /^-\s+\[(.*?)\]\((\S+?)\)\s*$/;
 const ENTRY_RE = /^-\s+(\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2})?)\s+(.+?):\s+(.*)$/;
@@ -52,6 +51,12 @@ const IMAGE_RE = /\.(png|jpe?g|gif|webp|svg|avif)(\?.*)?$|^data:image\//i;
 const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
 
 type Fence = { char: string; len: number } | null;
+
+/** Parse the exact level-two heading marker used by the format without a
+ *  backtracking regex. Trailing whitespace is presentation-only. */
+function headingName(line: string): string | null {
+  return line.startsWith('## ') ? line.slice(3).trimEnd() : null;
+}
 
 /** Update fenced-code state after consuming `line`: an opening fence is 3+
  *  backticks or tildes (up to 3 spaces indent); it closes on the same marker
@@ -119,6 +124,7 @@ export function parseBody(body: string): ParsedBody {
   const comments: BodyEntry[] = [];
   const boosts: BodyEntry[] = [];
   const mentions: string[] = [];
+  const mentionSet = new Set<string>();
   const log: BodyEntry[] = [];
   let taskIndex = 0;
   let fence: Fence = null;
@@ -130,7 +136,10 @@ export function parseBody(body: string): ParsedBody {
       // sentence punctuation. Keep alice.smith; drop the trailing full stop.
       const name = match[1]!.replace(/\.+$/, '');
       if (name === '') continue;
-      if (!mentions.includes(name)) mentions.push(name);
+      if (!mentionSet.has(name)) {
+        mentionSet.add(name);
+        mentions.push(name);
+      }
     }
   };
 
@@ -142,9 +151,9 @@ export function parseBody(body: string): ParsedBody {
       if (section === 'Description') descLines.push(line);
       continue;
     }
-    const h = HEADING_RE.exec(line);
-    if (h) {
-      section = h[1]!;
+    const heading = headingName(line);
+    if (heading !== null) {
+      section = heading;
       continue;
     }
     const task = TASK_RE.exec(line);
@@ -275,9 +284,9 @@ export function removeAttachmentLine(body: string, index: number): string | null
     const fenced = fence !== null;
     fence = fenceAfter(lines[i]!, fence);
     if (fenced) continue;
-    const h = HEADING_RE.exec(lines[i]!);
-    if (h) {
-      section = h[1]!;
+    const heading = headingName(lines[i]!);
+    if (heading !== null) {
+      section = heading;
       continue;
     }
     if (section === 'Attachments' && LINK_RE.test(lines[i]!.trim())) {

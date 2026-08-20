@@ -472,7 +472,8 @@ test('ui: a link preview can become cover art without overriding cover: none', (
   // so the decision cannot be made from cover alone.
   assert.match(app, /function coverOf\(c\)\{/);
   assert.match(app, /if\(!c\.coverAuto\)return null/, 'cover: none outranks a preview');
-  assert.match(app, /if\(c\.cover\)return c\.cover/, 'an explicit cover still wins');
+  assert.match(app, /if\(c\.cover\)return imageOk\(c\.cover\)\?c\.cover:null/,
+    'a same-origin explicit cover wins while remote tracking images stay blocked');
   assert.match(app, /ps\.find\(x=>youtubeLink\(x\.url\)\)\|\|ps\[0\]/, 'YouTube art wins over a generic earlier link');
   // Card face and modal both go through it, so they cannot disagree.
   assert.match(app, /coverOf\(c\)\)\)/);

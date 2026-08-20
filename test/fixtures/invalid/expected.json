@@ -158,6 +158,18 @@
         "ref": "abc123"
       }
     ],
+    "oversized-seq-id": [
+      {
+        "rule": "id-scheme-mismatch",
+        "ref": "99999999999999999999999999999999999999999999999999999999999999999"
+      }
+    ],
+    "reserved-yaml-key": [
+      {
+        "rule": "yaml-error",
+        "ref": "board.yaml"
+      }
+    ],
     "label-group-conflict": [
       {
         "rule": "label-group-conflict",

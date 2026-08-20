@@ -3,13 +3,13 @@
 
 export type SetupAccess = { ok: true } | { ok: false; status: 403 | 503; error: string };
 
-export function setupAccess(hostname: string, configured: string | undefined, supplied: string | undefined): SetupAccess {
+export async function setupAccess(hostname: string, configured: string | undefined, supplied: string | undefined): Promise<SetupAccess> {
   const setupKey = typeof configured === 'string' && configured !== '' ? configured : null;
   const loopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1';
   if (setupKey === null && !loopback) {
     return { ok: false, status: 503, error: 'setup is locked: configure the SETUP_KEY Worker secret, then enter it here' };
   }
-  if (setupKey !== null && supplied !== setupKey) {
+  if (setupKey !== null && !(await sameSecret(typeof supplied === 'string' ? supplied : '', setupKey))) {
     return { ok: false, status: 403, error: 'this deployment requires a setup key' };
   }
   return { ok: true };
@@ -101,12 +101,14 @@ async function derive(password: string, salt: Uint8Array<ArrayBuffer>, iteration
   return toHex(new Uint8Array(bits));
 }
 
-/** Length-independent equality: compare digests of both sides so a mismatch
- *  in length leaks nothing through timing either. */
-function sameSecret(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
+/** Hash variable-length material, then compare the fixed-size digests without
+ *  an early return. WebCrypto is available in both workerd and Node >= 24. */
+async function sameSecret(a: string, b: string): Promise<boolean> {
+  const digest = async (value: string): Promise<Uint8Array<ArrayBuffer>> =>
+    new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
+  const [aDigest, bDigest] = await Promise.all([digest(a), digest(b)]);
   let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  for (let i = 0; i < aDigest.length; i++) diff |= aDigest[i]! ^ bDigest[i]!;
   return diff === 0;
 }
 
@@ -282,7 +284,7 @@ function privateIpv6(groups: number[]): boolean {
 }
 
 function blockedHost(hostname: string): boolean {
-  const host = hostname.toLowerCase();
+  const host = hostname.toLowerCase().replace(/\.$/, '');
   if (host === '' || host === 'localhost' || host.endsWith('.localhost')) return true;
   // Names that only resolve inside a network, so nothing public can own them.
   if (host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.home.arpa')) return true;

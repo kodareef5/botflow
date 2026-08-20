@@ -13,6 +13,7 @@
 // write is temp+rename; the set is not atomic, so an interrupted pull leaves
 // valid files that a re-run converges.
 
+import { Buffer } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
@@ -31,6 +32,7 @@ export interface RemoteConfig {
 
 const REMOTE_FILE = 'remote.yaml';
 const CALL_TIMEOUT_MS = 30_000;
+export const MAX_REMOTE_RESPONSE_BYTES = 64 * 1024 * 1024;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 
 /** The token is sent to whatever URL the committed remote.yaml names, so a
@@ -64,6 +66,33 @@ export function loadRemote(root: string): RemoteConfig {
   return { url: data.url.replace(/\/+$/, ''), project: data.project };
 }
 
+export async function readResponseJson(res: Response, maxBytes = MAX_REMOTE_RESPONSE_BYTES): Promise<Record<string, unknown>> {
+  const declared = Number(res.headers.get('content-length') ?? 0);
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new UsageError(`remote response exceeds the ${maxBytes}-byte limit`);
+  }
+  if (res.body === null) return {};
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new UsageError(`remote response exceeds the ${maxBytes}-byte limit`);
+    }
+    chunks.push(value);
+  }
+  try {
+    const parsed: unknown = JSON.parse(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total).toString('utf8'));
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
 async function call(remote: RemoteConfig, token: string, path: string, init?: RequestInit, timeoutMs = CALL_TIMEOUT_MS): Promise<unknown> {
   // Enforced on every request, not just in `remote add`: the committed file
   // may be hand-edited (or committed hostile) afterwards.
@@ -76,7 +105,7 @@ async function call(remote: RemoteConfig, token: string, path: string, init?: Re
     const why = err.name === 'TimeoutError' ? `timed out after ${timeoutMs / 1000}s` : err.message;
     throw new UsageError(`cannot reach ${remote.url}: ${why}`);
   });
-  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  const body = await readResponseJson(res);
   if (!res.ok) throw new UsageError(`remote ${res.status}: ${String(body['error'] ?? 'request failed')}`);
   return body;
 }

@@ -6,12 +6,13 @@ export function nextSeqId(existing: string[]): string {
   let max = 0n; // BigInt: ids past 2^53 must not round down into a collision
   let width = 3;
   for (const id of existing) {
-    if (!/^[0-9]+$/.test(id)) continue;
+    if (!/^[0-9]{1,64}$/.test(id)) continue;
     const n = BigInt(id);
     if (n > max) max = n;
     width = Math.max(width, id.length);
   }
   const next = (max + 1n).toString();
+  if (next.length > 64) throw new RangeError('sequential card id space is exhausted (64 digits)');
   return next.padStart(Math.max(width, 3), '0');
 }
 

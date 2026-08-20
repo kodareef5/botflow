@@ -1,6 +1,14 @@
 node_modules/
 dist/
 .wrangler/
+CARD-FEATURES.md
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.*
+!.env.example
+*.tgz
 .botflow/index.db
 *.db-journal
 *.db-wal

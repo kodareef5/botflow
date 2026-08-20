@@ -82,9 +82,13 @@ export function relationInverse(type: RelationType): RelationType {
  * common in dates and prose to infer safely. Order is text order, deduped. */
 export function textCardReferences(text: string): string[] {
   const out: string[] = [];
+  const seen = new Set<string>();
   for (const match of text.matchAll(/\[\[([^\]\r\n]+)\]\]/g)) {
     const ref = match[1]!.trim();
-    if (parseCardReference(ref) !== null && !out.includes(ref)) out.push(ref);
+    if (parseCardReference(ref) !== null && !seen.has(ref)) {
+      seen.add(ref);
+      out.push(ref);
+    }
   }
   return out;
 }

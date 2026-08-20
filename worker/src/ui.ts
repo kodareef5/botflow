@@ -448,6 +448,7 @@ const THEMES=window.__THEMES__;
 const $=(s,el)=>(el||document).querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const linkOk=u=>{try{return['https:','http:','mailto:'].includes(new URL(u,location.href).protocol)}catch{return false}};
+const imageOk=u=>{try{const x=new URL(u,location.href);return x.protocol==='data:'?/^data:image\//i.test(u):x.protocol==='blob:'||((x.protocol==='http:'||x.protocol==='https:')&&x.origin===location.origin)}catch{return false}};
 const pct=p=>p==null?'·':Math.round(p*100)+'%';
 const IC={check:'<svg class="ic" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" rx="3"/><path d="M5 8.2l2.2 2.2L11.5 6"/></svg>',
   chat:'<svg class="ic" viewBox="0 0 16 16"><path d="M2.5 3.5h11v7h-6l-3 3v-3h-2z"/></svg>',
@@ -462,7 +463,7 @@ let RO=!!PUB;
 const cardApi=cid=>PUB?'/api/public/'+PUB+'/cards/'+cid:'/api/projects/'+SEL+'/cards/'+cid;
 const cardReadApi=cid=>cardApi(cid)+'?compact=1';
 const cardHistoryApi=(cid,kind)=>cardApi(cid)+'/'+kind;
-let THEME={style:'harbor',accent:'pacific',mode:'system',density:'relaxed',custom:null};
+let THEME={style:'harbor',accent:'pacific',mode:'system',density:'relaxed',custom:null,cardTagLimit:${DEFAULT_CARD_TAG_LIMIT}};
 let ORG=null,SEL=null,VIEW='board',BOARD=null,timer=null,MODAL=null,UPLOADS=false;
 let LAYOUT=localStorage.getItem('bf_layout')||'kanban';
 if(!['kanban','table','swimlane','calendar','timeline','grouped','metrics','hill'].includes(LAYOUT))LAYOUT='kanban';
@@ -1043,11 +1044,11 @@ function customPayload(defs,data,clear){
 function hostOf(u){try{return new URL(u,location.href).hostname.replace(/^www\./,'')}catch{return 'link'}}
 function youtubeLink(u){const h=hostOf(u).replace(/\.$/,'');return h==='youtube.com'||h==='m.youtube.com'||h==='music.youtube.com'||h==='youtu.be'||h==='youtube-nocookie.com'}
 function coverOf(c){
-  if(c.cover)return c.cover;
+  if(c.cover)return imageOk(c.cover)?c.cover:null;
   if(!c.coverAuto)return null;
   const ps=c.previews||[];
   const p=ps.find(x=>youtubeLink(x.url))||ps[0];
-  return p?p.image:null;
+  return p&&imageOk(p.image)?p.image:null;
 }
 function badge(ic,txt,cls){return '<span class="'+(cls||'')+'">'+ic+(txt!==undefined?' '+txt:'')+'</span>'}
 function fieldText(v){return Array.isArray(v)?v.join(', '):v===true?'yes':v===false?'no':String(v)}
@@ -1103,7 +1104,7 @@ function cardHtml(b,c){
   const age=c.metrics&&c.metrics.agingLevel||0;
   return '<div class="card '+(c.blocked?'blocked ':'')+(c.blocker?'namedblocked ':'')+(c.coverColor?'has-color ':'')+(age?'age-'+age:'')+'"'+(c.coverColor?' style="--cover-color:'+esc(c.coverColor)+'"':'')+' data-card="'+esc(c.id)+'" tabindex="0" role="button"'
     +(RO?'':' aria-keyshortcuts="Shift+ArrowLeft Shift+ArrowRight Shift+ArrowUp Shift+ArrowDown"')+'>'
-    +((cov=>cov?'<img class="art" src="'+esc(cov)+'" alt="" loading="lazy">':'')(coverOf(c)))
+    +((cov=>cov?'<img class="art" src="'+esc(cov)+'" alt="" loading="lazy" referrerpolicy="no-referrer">':'')(coverOf(c)))
     +'<div class="inner"><div class="cid">'+esc(c.id)+'</div><div class="t">'+esc(c.title)+'</div>'
     +'<div class="badges">'+faceBadges(b,c)+'</div>'
     +((c.checklistPreview||[]).length?'<div class="previewtasks">'+c.checklistPreview.slice(0,2).map(i=>'<span title="'+esc(i.section)+'">'+esc(i.text)+'</span>').join('')+'</div>':'')
@@ -2077,7 +2078,7 @@ function cardModalHtml(c,tab){
   }
   const tabs=[['card','card'],['chat','chat '+(c.comments||'')],['activity','activity']];
   return (c.coverColor?'<div class="coverband" style="--cover-color:'+esc(c.coverColor)+'"></div>':'')
-    +((cov=>cov?'<img class="banner" src="'+esc(cov)+'" alt="">':'')(coverOf(c)))
+    +((cov=>cov?'<img class="banner" src="'+esc(cov)+'" alt="" referrerpolicy="no-referrer">':'')(coverOf(c)))
     +'<div class="inner"><button class="close ghost" data-x aria-label="close card">✕</button>'
     +'<div class="cid">'+esc(c.id)+'</div><h2>'+esc(c.title)+'</h2>'
     +'<div class="metaline">'+meta.join(' ')+'</div>'
@@ -2127,11 +2128,11 @@ function paneCard(c){
   // preview tile opens the page it came from, not the picture: the point of
   // the thumbnail is to stand for the link.
   const tiles=(p.images||[]).map(u=>({img:u,href:u,kind:'image'}))
-    .concat((c.previews||[]).map(v=>({img:v.image,href:v.url,kind:'link'})));
+    .concat((c.previews||[]).map(v=>({img:v.image,href:v.url,kind:'link'}))).filter(t=>imageOk(t.img));
   if(tiles.length){
     out+='<h4>gallery'+(RO?'':' <span class="h-act">'+(c.cover?'<button data-cover="none">hide art</button>':'<button data-cover="auto">auto art</button>')+'</span>')+'</h4><div class="gallery">'
       +tiles.map(t=>'<div class="shot">'
-        +(linkOk(t.href)?'<a href="'+esc(t.href)+'" target="_blank" rel="noopener"><img src="'+esc(t.img)+'" alt="" loading="lazy"></a>':'<img src="'+esc(t.img)+'" alt="" loading="lazy">')
+        +(linkOk(t.href)?'<a href="'+esc(t.href)+'" target="_blank" rel="noopener"><img src="'+esc(t.img)+'" alt="" loading="lazy" referrerpolicy="no-referrer"></a>':'<img src="'+esc(t.img)+'" alt="" loading="lazy" referrerpolicy="no-referrer">')
         +(t.kind==='link'?'<span class="src" title="'+esc(t.href)+'">'+esc(hostOf(t.href))+'</span>':'')
         +(RO?'':'<button class="setcov primary" data-cover="'+esc(t.img)+'">☆ cover</button>')+'</div>').join('')+'</div>';
   }

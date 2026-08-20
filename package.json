@@ -10,6 +10,18 @@
   "bin": {
     "botflow": "./bin/botflow.js"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "spec/",
+    "templates/",
+    "worker/src/",
+    "worker/tsconfig.json",
+    "demo/",
+    "wrangler.jsonc",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "node --test",
     "typecheck": "tsc --noEmit && tsc --noEmit -p worker",

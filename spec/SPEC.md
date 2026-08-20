@@ -135,8 +135,11 @@ Template map keys:
 
 Explicit card-create arguments override template defaults; a supplied custom-field map
 merges over template fields. Instantiation copies values into an ordinary card and opens
-its normal Log. The resulting card has no live link to the template. Unknown keys inside
-a template map are preserved like other board configuration maps.
+its normal Log. The title MUST pass
+the card title's single-line validation before `{{title}}` substitution, and the expanded
+body MUST be checked for a pre-existing `## Log` section before the real creation entry is
+appended. The resulting card has no live link to the template. Unknown keys inside a
+template map are preserved like other board configuration maps.
 
 Saved-filter map keys:
 
@@ -210,7 +213,7 @@ Frontmatter keys:
 | Key | Type | Required | Meaning |
 |---|---|---|---|
 | `id` | string | yes | Unique within the board (§8). |
-| `title` | string | yes | |
+| `title` | string | yes | Non-empty and single-line. Mutation tools MUST reject CR/LF and other line-breaking controls rather than interpolating them into templates or structured markdown. |
 | `lane` | `laneId` or `laneId.substate` | yes | Current position. |
 | `type` | `task` \| `board` | no (default `task`) | |
 | `board` | relative path | iff `type: board` | Child board reference (§3). |
@@ -508,11 +511,11 @@ resolved child's structural progress (or one/zero from its effective state when 
 child is unresolved). The result is `null` when no countable card is estimated. Tools
 MUST label this as estimated effort, not elapsed time, and SHOULD expose per-lane sums.
 
-**Recursion** is depth-first. Implementations MUST detect reference cycles and MUST NOT loop: the reference that closes a cycle resolves to nothing, so its board-card falls back to `canonical(c)` (rule 1) and lint reports error `board-cycle`; references upstream of the broken edge roll up over it normally. Aggregate ("rollup") views may render the tree to any depth; canonical distributions are the only cross-level interface.
+**Recursion** is depth-first. Implementations MUST detect reference cycles and MUST NOT loop: the reference that closes a cycle resolves to nothing, so its board-card falls back to `canonical(c)` (rule 1) and lint reports error `board-cycle`; references upstream of the broken edge roll up over it normally. Aggregate ("rollup") views may render the tree to any depth; canonical distributions are the only cross-level interface. A physical child board may be referenced by more than one board-card. Aggregate serializers MUST represent a repeated child with a bounded reference/stub instead of expanding its subtree again, so output work is linear in boards plus references rather than exponential in paths.
 
 ## 8. Card ids & merge semantics
 
-- `ids: seq` (default): decimal, zero-padded to at least 3 (`042`; padding grows naturally). Next id = max existing + 1. Simple and readable; concurrent creation on two branches can collide: after merge, lint error `dup-id`; resolve by re-iding one card (file rename + `id` + inbound `deps`).
+- `ids: seq` (default): 3–64 decimal digits, zero-padded to at least 3 (`042`; padding grows naturally). Next id = max conforming existing id + 1; allocation MUST fail clearly if that result would exceed 64 digits. Simple and readable; concurrent creation on two branches can collide: after merge, lint error `dup-id`; resolve by re-iding one card (file rename + `id` + inbound `deps`).
 - `ids: hash`: 6 lowercase base36 characters, generated randomly, checked against existing ids at creation. Use for boards where multiple agents create cards concurrently on diverging branches.
 
 One card = one file, so edits to different cards never conflict in git. Same-card edits merge as ordinary text; the append-only Log usually auto-merges. Tools MUST NOT renumber or rewrite cards they weren't asked to touch.
@@ -522,9 +525,9 @@ One card = one file, so edits to different cards never conflict in git. Same-car
 botflow documents (board.yaml and card frontmatter) use a deliberately small YAML subset. Conforming parsers MUST accept exactly this; anything else is lint error `yaml-error`.
 
 Supported:
-- **Mappings**: `key: value`; nesting by 2-space indentation, bounded at 100 levels deep (deeper is a parse error, not a crash). Keys are plain scalars (`[A-Za-z0-9_-]+`). The one inline mapping form is `{}`, the empty map.
+- **Mappings**: `key: value`; nesting by 2-space indentation, bounded at 100 levels deep (deeper is a parse error, not a crash). Keys are plain scalars (`[A-Za-z0-9_-]+`), except the prototype-sensitive names `__proto__`, `prototype`, and `constructor`, which are parse errors at every depth. The one inline mapping form is `{}`, the empty map.
 - **Sequences**: block form (`- item`, including `- key: v` starting an inline map whose further keys sit 2 spaces deeper), and flow form `[a, b, c]` for scalar items only.
-- **Scalars**: plain, `"double-quoted"` (escapes: `\\`, `\"`, `\n`, `\t`), `'single-quoted'` (escape: `''`). Plain scalars type as: `true`/`false` → bool, `null`/empty → null, `-?(0|[1-9][0-9]*)` → int, anything else → string. Digit tokens with leading zeros (`042`) are **strings**: this keeps zero-padded card ids intact. Date-like plain scalars (`2026-08-16`, ISO datetimes) are strings: there is no date type. The key/value separator is the **first** `: ` on the line, so plain values may contain colons; a value containing ` #` (which would start a comment) MUST be quoted. Anything ambiguous MUST be quoted.
+- **Scalars**: plain, `"double-quoted"` (escapes: `\\`, `\"`, `\n`, `\t`), `'single-quoted'` (escape: `''`). Plain scalars type as: `true`/`false` → bool, `null`/empty → null, `-?(0|[1-9][0-9]*)` within the implementation language's exact safe-integer range → int, anything else → string. Out-of-range integer tokens remain their exact decimal strings; they MUST NOT be rounded or emitted later in exponent form. Digit tokens with leading zeros (`042`) are **strings**: this keeps zero-padded card ids intact. Date-like plain scalars (`2026-08-16`, ISO datetimes) are strings: there is no date type. The key/value separator is the **first** `: ` on the line, so plain values may contain colons; a value containing ` #` (which would start a comment) MUST be quoted. Anything ambiguous MUST be quoted.
 - **Comments**: `#` at line start or preceded by whitespace, to end of line.
 - Blank lines anywhere; `\r\n` normalized to `\n`.
 
@@ -593,6 +596,9 @@ Expected files record, per board: lint findings (rule ids + card ids), per-card 
 - **Multi-line body text stays inside its section.** Free-text written into a section (a description, say) and any caller-chosen section name MUST NOT be able to introduce a `## ` heading: tools MUST escape heading markers in that text, and MUST reject a section name that is not a single plain line. Otherwise a writer can splice a second `## Log` ahead of the real one, and since section-aware appends target the *first* matching heading, every later entry lands in the forged section: the append-only Log becomes attacker-chosen, and anything derived from it (such as a card's creator) reports whatever the forged entry says. `## Log` is never a valid target for a checklist item.
 - Section-aware body edits (set/append section, checklist toggles, attachment removal) MUST ignore lines inside fenced code blocks: a literal `## ` or `- [ ]` inside a fence is content, not structure.
 - **Same-tree concurrency.** git covers branch races (§8); two processes in one worktree are the tool's job. A mutating tool MUST serialize its load-mutate-write cycle against other processes (e.g. a short-lived `board.lock` file with stale-owner reaping), MUST allocate seq ids inside that critical section, and SHOULD write files crash-safely (temp file + rename). Lock files are derived state: never committed, safe to delete when their owner is gone.
+- **Physical filesystem containment.** Lexical `..` checks are not enough for local mutations. Before locking or writing, tools MUST resolve the physical board and destination parent directories, reject a symlink used as a board root or writable directory, and prove every destination remains under the intended physical board/workspace. Cross-board operations MUST compare and de-duplicate physical paths (including cross-drive absolute results) before acquiring locks. Initialization MUST refuse a pre-existing symlink or non-empty board directory rather than following or overwriting it.
+- **Resource bounds.** Parsers, tree walkers, serializers, sync clients, and network handlers MUST apply documented finite limits to attacker-controlled documents and bodies before unbounded buffering or recursion. Exceeding a limit MUST fail with a deliberate user-facing error and no partial mutation, never a stack overflow, runaway expansion, or process out-of-memory. Implementations MAY choose limits appropriate to their runtime; limits are transport/implementation policy, not additional stored fields.
+- **Local viewer access.** A loopback HTTP viewer SHOULD issue an unguessable per-process capability URL and require it for both HTML and board-data requests. It MUST also reject non-loopback `Host` values (DNS-rebinding defense) and non-read methods. The capability is local operational state and is never stored in board documents.
 - **Filesystem batch durability.** A multi-card local action MUST validate every member before its first write and hold one lock through the batch, so ordinary validation/concurrency failures leave all cards unchanged. Each file replacement is crash-safe, but the filesystem format does not claim a cross-file transaction: process or machine failure between renames may leave a valid partial batch. Recovery tooling and replay-safe cross-board operations MUST converge when retried. Hosted implementations MAY provide stronger transactional guarantees through their durable store.
 - Preserve unknown card-frontmatter and `board.yaml` keys and all body content outside the section being edited.
 - Watching and voting are idempotent set mutations. Boosts append and never edit history. A saved-filter or lane-subscription edit is a board mutation and follows the same locking/read-only rules as every other `board.yaml` rewrite.

@@ -13,6 +13,7 @@ import { cardDetailJson } from '../core/json.ts';
 import { parseCustomFieldText } from '../core/presentation.ts';
 import { queryCards } from '../core/query.ts';
 import { loadRemote, pull, push, remoteAdd } from './remote.ts';
+import { sanitizeTerminalText, writeStderr } from './terminal.ts';
 
 import { analyze, lintBoard } from '../core/analyze.ts';
 import { discoverBoardRoot, loadTree, resolveBoardRoot } from '../core/load.ts';
@@ -74,11 +75,13 @@ usage: botflow <command> [args]
   board [--rollup] [--json]             render the board
   board --html [--out <file>]           self-contained HTML snapshot
   serve [--port ${DEFAULT_PORT}]                     read-only local web view
-  mcp                                   MCP server on stdio (same verbs as tools)
+  mcp [--pin-actor]                     MCP server on stdio; pin attribution to --actor
   new <src>[#branch] <dir> [--name n]   instantiate a workspace template
   setup [agents|claude|codex]           wire the playbook into AGENTS.md/CLAUDE.md
   remote add <url> <project-id>         link this board to a hosted manager project
-  push | pull [--token t]               snapshot-sync with the hosted manager;
+  push | pull                            snapshot-sync with the hosted manager;
+                                        set BOTFLOW_TOKEN (preferred; --token is
+                                        retained but exposes secrets in argv);
                                         pull refuses over uncommitted board
                                         changes unless --force
   ready [--json]                        unblocked todo cards
@@ -223,12 +226,12 @@ function fieldAssignments(root: string, entries: string[] | undefined): Record<s
 /** Card text is repo-carried, so it arrives from whoever can commit: titles,
  *  labels and log lines all reach the terminal verbatim. Escape sequences in
  *  that text would let a hostile card repaint the screen, hide lines, or fake
- *  output on anyone who runs `botflow board`. Strip C0/DEL here, the single
+ *  output on anyone who runs `botflow board`. Strip C0/C1/DEL here, the single
  *  place human-facing text leaves the CLI, keeping tab and newline. JSON goes
  *  out through this too and is unaffected: JSON.stringify has already escaped
  *  those bytes as \uXXXX, so there is nothing raw left to strip. */
 const out = (s: string): void => {
-  const safe = s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+  const safe = sanitizeTerminalText(s);
   void process.stdout.write(safe.endsWith('\n') ? safe : safe + '\n');
 };
 const emitJson = (v: unknown): void => out(JSON.stringify(v, null, 2));
@@ -289,7 +292,7 @@ export function run(argv: string[]): number {
       void serveBoard(root, port).then(
         (running) => out(`▤ botflow viewer (read-only) · ${running.url}  (board: ${root})`),
         (err: Error) => {
-          process.stderr.write(`botflow: serve failed: ${err.message}\n`);
+          writeStderr(`botflow: serve failed: ${err.message}`);
           process.exitCode = 1;
         },
       );
@@ -432,7 +435,7 @@ export function run(argv: string[]): number {
       const [sub, url, project] = positionals;
       if (sub === 'add' && url && project) {
         remoteAdd(getRoot(values), url, project);
-        out(`✓ remote set: ${url} project ${project} (token via BOTFLOW_TOKEN or --token)`);
+        out(`✓ remote set: ${url} project ${project} (token via BOTFLOW_TOKEN)`);
         return 0;
       }
       if (sub === 'show') {
@@ -447,12 +450,12 @@ export function run(argv: string[]): number {
       const { values } = parse(rest, { ...COMMON, token: { type: 'string' }, force: { type: 'boolean', default: false } });
       const root = getRoot(values);
       const token = (values['token'] as string | undefined) ?? process.env['BOTFLOW_TOKEN'];
-      if (!token) throw new UsageError('a token is required: --token or BOTFLOW_TOKEN');
+      if (!token) throw new UsageError('a token is required: set BOTFLOW_TOKEN (the --token compatibility flag exposes secrets in argv)');
       if (cmd === 'push') {
         void push(root, token, getActor(values)).then(
           (res) => out(`✓ pushed · ${res.imported} cards imported (${res.findings} findings on remote)`),
           (err: Error) => {
-            process.stderr.write(`botflow: ${err.message}\n`);
+            writeStderr(`botflow: ${err.message}`);
             process.exitCode = 1;
           },
         );
@@ -460,7 +463,7 @@ export function run(argv: string[]): number {
         void pull(root, token, values['force'] as boolean).then(
           (res) => out(`✓ pulled · ${res.written} cards written, ${res.removed} removed`),
           (err: Error) => {
-            process.stderr.write(`botflow: ${err.message}\n`);
+            writeStderr(`botflow: ${err.message}`);
             process.exitCode = 1;
           },
         );
@@ -488,10 +491,10 @@ export function run(argv: string[]): number {
       return 0;
     }
     case 'mcp': {
-      const { values } = parse(rest, COMMON);
+      const { values } = parse(rest, { ...COMMON, 'pin-actor': { type: 'boolean', default: false } });
       const root = getRoot(values);
-      process.stderr.write(`botflow mcp server on stdio (board: ${root})\n`);
-      startMcpServer(root, getActor(values), process.stdin, process.stdout);
+      writeStderr(`botflow mcp server on stdio (board: ${root})`);
+      startMcpServer(root, getActor(values), process.stdin, process.stdout, { pinActor: values['pin-actor'] as boolean });
       return 0;
     }
     case 'log': {
@@ -916,7 +919,7 @@ export function main(argv: string[]): void {
     process.exitCode = run(argv);
   } catch (err) {
     if (err instanceof UsageError) {
-      process.stderr.write(`botflow: ${err.message}\n`);
+      writeStderr(`botflow: ${err.message}`);
       process.exitCode = 1;
     } else {
       throw err;

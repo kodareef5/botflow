@@ -453,7 +453,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       return { webhook: { id, name, url: target.url, allowEvents, denyEvents, active: true, failureCount: 0, circuitUntil: null, created: now, updated: now }, secret };
     } catch (error) {
       if (error instanceof UsageError) return { error: error.message };
-      if (error instanceof Error) return { error: error.message };
+      console.error('create webhook failed:', error);
       return { error: 'could not create webhook' };
     }
   }
@@ -585,7 +585,8 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       );
       return { route: { id, name, kind, lane, card, actor, active: true, created: now, updated: now }, token };
     } catch (error) {
-      if (error instanceof Error) return { error: error.message };
+      if (error instanceof UsageError) return { error: error.message };
+      console.error('create email route failed:', error);
       return { error: 'could not create email route' };
     }
   }
@@ -680,7 +681,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       this.rescheduleAlarm();
       return outcome;
     } catch (error) {
-      if (error instanceof Error) return { error: error.message };
+      console.error('process inbound email failed:', error);
       return { error: 'could not process inbound email' };
     }
   }
@@ -701,7 +702,8 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       );
       return { subscription: { id, name, recipients, allowEvents, denyEvents, active: true, created: now, updated: now } };
     } catch (error) {
-      if (error instanceof Error) return { error: error.message };
+      if (error instanceof UsageError) return { error: error.message };
+      console.error('create email subscription failed:', error);
       return { error: 'could not create email subscription' };
     }
   }

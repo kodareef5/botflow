@@ -34,12 +34,15 @@ test('iCalendar is CRLF, read-only, due-only, escaped, and UTF-8 folded', () => 
       { id: '001', title: 'All-day, launch', due: '2026-08-21', lane: 'doing', state: 'doing', updated: null },
       { id: '002', title: 'Timed review', due: '2026-08-22T14:30:00Z', lane: 'todo', state: 'todo', updated: null },
       { id: '003', title: `Very long ${'🚀'.repeat(40)} title`, due: '2026-08-23', lane: 'todo', state: 'todo', updated: null },
+      { id: '004', title: 'Meeting\rBEGIN:VEVENT\rATTENDEE:evil@example.test', due: '2026-08-24', lane: 'todo', state: 'todo', updated: null },
     ],
   });
   assert.equal(ics.includes('\n') && !ics.includes('\r\n'), false, 'all line breaks are CRLF');
   assert.match(ics, /DTSTART;VALUE=DATE:20260821\r\nDTEND;VALUE=DATE:20260822/);
   assert.match(ics, /DTSTART:20260822T143000Z/);
   assert.match(ics, /SUMMARY:All-day\\, launch/);
+  assert.match(ics, /SUMMARY:Meeting\\nBEGIN:VEVENT\\nATTENDEE:evil@example\.test/);
+  assert.equal(ics.replaceAll('\r\n', '').includes('\r'), false, 'untrusted lone CR bytes cannot inject calendar properties');
   assert.match(ics, /\r\n /, 'long UTF-8 line is folded with a continuation');
   assert.match(ics, /METHOD:PUBLISH/);
   assert.doesNotMatch(ics, /METHOD:REQUEST/);

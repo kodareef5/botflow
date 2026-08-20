@@ -43,10 +43,22 @@ botflow card claim 001 --actor me
 botflow card close 001 --reason "done"
 botflow board                      # terminal view · --json for machines
 botflow serve                      # read-only web view on 127.0.0.1:4666
+botflow mcp --actor codex --pin-actor  # stdio MCP; fixed audit identity
 botflow setup claude               # wire the playbook into CLAUDE.md/AGENTS.md
 ```
 
 Run from a checkout with `node src/cli/botflow.ts …` or link the bin (`npm link`).
+
+The MCP transport is local stdio, not an authenticated network service. By default a
+client may supply the `actor` written to card history; use `--pin-actor` with a trusted
+launcher to ignore per-call actor values. Some tools that present current work also run
+due lazy automation before reading, so give MCP clients the same filesystem trust as the
+CLI rather than treating every nominally read-oriented tool as side-effect-free.
+
+`botflow serve` prints a new unguessable loopback URL for each process. The capability
+path is required for both the page and `/api/data`; requests to the bare port, untrusted
+`Host` headers, and non-read methods are refused. Treat the printed URL as local session
+material rather than publishing or proxying it.
 
 ### Structured card faces
 
@@ -256,7 +268,9 @@ botflow-manager --cwd <repo>`); source changes hot-reload. Deleting `.wrangler/`
 instance: company, accounts, boards, everything. Loopback setup is intentionally zero-config;
 an internet-hosted deployment refuses initialization until `SETUP_KEY` is configured as a
 Worker secret. Deploy-button users can add it under **Settings → Variables and Secrets** in
-the Cloudflare dashboard. Enter that value once in the setup form; it is not your password.
+the Cloudflare dashboard. Use at least 32 random bytes (for example, generate a value with
+`openssl rand -hex 32`) and enter it once in the setup form; it is not your password. Never
+put it in tracked `.env` or `.dev.vars` files; those local-secret names are gitignored here.
 The same secret is the recovery path: "lost access?" on the login page resets an owner's
 password (ending every live session), and anyone can change their own password from settings.
 Both are audited.
@@ -305,7 +319,11 @@ spellings of private IPv4), re-checks every redirect hop, caps size and
 time, and only reads `text/html`. What it cannot see is DNS: a public hostname that
 resolves to a private address passes the check. Cloudflare's edge will not route there, so
 a deployed Worker is covered; a self-hosted `workerd` on a LAN is not, which is why you
-turn this on rather than it being assumed.
+turn this on rather than it being assumed. On a self-hosted network, keep link previews and
+webhooks disabled unless outbound DNS and egress also enforce public-address-only routing;
+string-level URL validation cannot prevent DNS rebinding by itself. Direct third-party image
+URLs are not rendered by the manager or local viewer; uploaded `/files/…` images and proxied
+`/og/…` preview images remain same-origin.
 
 ### Webhooks and email bridges
 
@@ -368,6 +386,9 @@ Link a repo board and sync snapshots (`BOTFLOW_TOKEN` takes an api key):
 botflow remote add https://manager.example.workers.dev p-abc123
 BOTFLOW_TOKEN=bfk_… botflow push   # or pull
 ```
+
+Prefer `BOTFLOW_TOKEN` (or another protected environment injection) over `--token`: command
+line arguments may be visible in process listings and shell history.
 
 Hosted actions are always logged under the authenticated member: a request body cannot name a
 different actor, so `botflow push --actor X` is ignored by the manager (it still applies to a
