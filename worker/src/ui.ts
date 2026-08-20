@@ -1037,6 +1037,7 @@ function faceBadges(b,c){
     :'<span class="blk" title="'+esc(c.blocked)+'">⛔ blocked</span>')}
   if(c.snooze)items.push('<span class="snoozed" title="snoozed until '+esc(c.snooze)+'">☾ snoozed</span>');
   const due=dueFace(c);if(due)items.push(due);
+  if(c.metrics&&c.metrics.dueChanges)items.push('<span title="due date changed '+c.metrics.dueChanges+' time(s)">↻ '+c.metrics.dueChanges+'</span>');
   if(c.assignee)items.push('<span title="accountable assignee">@'+esc(who(c.assignee))+'</span>');
   if(c.delegate)items.push('<span title="executing delegate">⇢ @'+esc(who(c.delegate))+'</span>');
   for(const l of c.labelDetails||[])items.push(labelBadge(l));
@@ -2662,7 +2663,7 @@ async function refreshIntegrations(){
     ],'create',async d=>{
       const list=v=>v?v.split(',').map(x=>x.trim()).filter(Boolean):[];
       const r=await api('/api/projects/'+SEL+'/webhooks',{method:'POST',body:JSON.stringify({name:d.name,url:d.url,allowEvents:list(d.allow),denyEvents:list(d.deny)})});
-      INTEGRATION_NOTICE={title:'Webhook signing secret',value:r.secret,note:'Copy this secret now. It is never shown again; rotating it invalidates the old secret.'};
+      INTEGRATION_NOTICE={title:'Webhook signing secret',value:r.secret,note:'Copy this secret now. It is not shown again in this screen; protected company exports include it for restore. Rotating it invalidates the old secret.'};
       await refreshIntegrations();
     });
     $('#mkemailroute').onclick=()=>formModal('New inbound email route',[
@@ -2695,7 +2696,7 @@ async function refreshIntegrations(){
       const rotate=e.target.closest('[data-whrotate]');
       if(rotate){confirmModal('Rotate webhook secret','The old signing secret stops working immediately. Pending deliveries use the new secret.','rotate',async()=>{
         const r=await api('/api/projects/'+SEL+'/webhooks/'+encodeURIComponent(rotate.dataset.whrotate)+'/rotate',{method:'POST',body:'{}'});
-        INTEGRATION_NOTICE={title:'New webhook signing secret',value:r.secret,note:'Copy this secret now. It is never shown again.'};await refreshIntegrations()});return}
+        INTEGRATION_NOTICE={title:'New webhook signing secret',value:r.secret,note:'Copy this secret now. It is not shown again in this screen; protected company exports include it for restore.'};await refreshIntegrations()});return}
       const revoke=e.target.closest('[data-whrevoke]');
       if(revoke){confirmModal('Revoke webhook','Queued deliveries are cancelled and the endpoint stops receiving events. History remains visible.','revoke',async()=>{
         await api('/api/projects/'+SEL+'/webhooks/'+encodeURIComponent(revoke.dataset.whrevoke),{method:'DELETE'});await refreshIntegrations()});return}
@@ -2836,7 +2837,7 @@ function renderSettings(main){
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">company data</h4>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button id="orgexp">download company export</button>'
     +'<button id="demoload">load the Scoops Empire demo</button></div>'
-    +'<p style="color:var(--muted);font-size:12px;margin-top:6px">The export is restore-grade JSON: every space, project, board, card, member (password hashes included), api key hash, public share, and private feed capability. Store it like a credential: it is one. Uploaded files are NOT inside it: they live in the R2 bucket (the export lists their keys), so back the bucket up separately before any deletion. File urls are permanent bearer links: anyone holding one can fetch that file, and revoking a share does not revoke it. The demo adds a sample ice cream company as a new space.</p>'
+    +'<p style="color:var(--muted);font-size:12px;margin-top:6px">The export is restore-grade JSON: every space, project, board, card, member (password hashes included), api key hash, public share, private feed capability, and active webhook/email configuration (including signing secrets and route token hashes). Store it like a credential: it is one. A restore resets webhook delivery history and health plus email queues, history, leases, and dedupe records; old frozen events are never replayed under remapped project ids. Uploaded files are NOT inside it: they live in the R2 bucket (the export lists their keys), so back the bucket up separately before any deletion. File urls are permanent bearer links: anyone holding one can fetch that file, and revoking a share does not revoke it. The demo adds a sample ice cream company as a new space.</p>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">manage: spaces and projects</h4>'
     +'<div id="mtree" style="max-width:560px"></div>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">manage: capabilities</h4>'

@@ -240,6 +240,7 @@ function badge(c){
   if(c.priority)b.push('<span class="'+(c.priority==='p0'?'p0':c.priority==='p1'?'p1':'')+'">'+c.priority+'</span>');
   if(c.blocked)b.push('<span class="blk" title="'+esc(c.blocked)+'">⛔ blocked</span>');
   const due=dueFace(c);if(due)b.push(due);
+  if(c.metrics&&c.metrics.dueChanges)b.push('<span title="due date changed '+c.metrics.dueChanges+' time(s)">↻ '+c.metrics.dueChanges+'</span>');
   if(c.assignee)b.push('<span title="accountable assignee">@'+esc(c.assignee)+'</span>');
   if(c.delegate)b.push('<span title="executing delegate">⇢ @'+esc(c.delegate)+'</span>');
   for(const l of c.labelDetails||[])b.push(labelBadge(l));

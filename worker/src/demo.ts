@@ -5,6 +5,7 @@
 
 import { emitMap } from '../../src/core/emit.ts';
 import { joinFrontmatter } from '../../src/core/frontmatter.ts';
+import type { IntegrationSnapshot } from './integration-snapshot.ts';
 
 export interface BoardImport {
   config: string;
@@ -16,6 +17,8 @@ export interface ProjectImport {
   /** Exported project id; import maps it to the new id and rewrites refs. */
   id?: string;
   board?: BoardImport;
+  /** Hosted-only integration configuration (company export v4+). */
+  integrations?: IntegrationSnapshot;
   children?: ProjectImport[];
   /** Lane for this project's card in its parent board (children only). */
   lane?: string;
@@ -29,7 +32,7 @@ export interface SpaceImport {
 }
 
 export interface OrgImport {
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
   name?: string;
   theme?: Record<string, unknown>;
   prefs?: Record<string, unknown>;

@@ -80,7 +80,7 @@ test('viewer: structured card faces carry parity data without body heuristics', 
   assert.deepEqual((card['checklistPreview'] as { text: string }[]).map((item) => item.text), ['rendered']);
   assert.deepEqual((card['faceFields'] as { id: string }[]).map((field) => field.id), ['sprint', 'risk']);
   const html = viewerHtml(data, { live: false });
-  for (const needle of ['checklistPreview.slice(0,2)', 'c.faceFields||[]', 'c.labelDetails||[]', 'metrics.agingLevel', 'lane.estimate']) {
+  for (const needle of ['checklistPreview.slice(0,2)', 'c.faceFields||[]', 'c.labelDetails||[]', 'metrics.agingLevel', 'metrics.dueChanges', 'lane.estimate']) {
     assert.ok(html.includes(needle), `local viewer missing ${needle}`);
   }
 });

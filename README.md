@@ -263,7 +263,9 @@ Visitors get a consumer pitch at `/about`, live public share links can optionall
 login page (admin-controlled and off by default), and settings offers a one-click **Scoops Empire** demo
 company plus a full **company export** (every space, project, board, and card as one
 restore-grade JSON, including member records with password hashes, api key hashes, and share
-links; store it like a credential, because it is one). The demo source ships in
+links, plus active webhook and email integration configuration; store it like a credential,
+because it is one). Delivery queues/history and uploaded bytes are separate operational data,
+not part of that JSON. The demo source ships in
 `demo/icecream-empire.json`.
 
 The first visit creates the **owner** account: a username and a password, and nothing else.
@@ -272,13 +274,14 @@ on a deployment that actually requires one, so loopback development asks for two
 the UI: create spaces and projects, add members, search and filter cards, collaborate,
 subscribe to lanes, create personal feeds, and watch boards and activity live.
 
-> **Upgrading an existing deployment is a deliberate auth reset.** The admin
+> **Legacy auth migration:** deployments from before member accounts deliberately reset
+> authentication on their first upgrade to the members model. The old admin
 > token and every `bfk_` agent key stop working, and a company export taken
-> before this change restores its boards but not its keys. Spaces, projects,
+> before that migration restores its boards but not its old project-keyed keys. Spaces, projects,
 > boards, and cards are untouched: the instance reports itself uninitialized,
 > you re-run setup behind `SETUP_KEY` to create the owner account, and
 > everything is where you left it. Re-issue bot credentials from each member's
-> account afterwards.
+> account afterwards. Current additive card-feature and integration tables require no reset.
 
 ### Link previews (opt-in)
 
@@ -313,6 +316,11 @@ and acknowledges using its ordinary `bfk_` credential. The bridgeâ€”not botflowâ
 mail provider, signature verification, SPF/DKIM, bounces, and deliverability. The exact
 payloads, receiver verification algorithm, retry behavior, bridge API, and threat models
 are documented in [Hosted integration contracts](docs/integrations.md).
+Company export v4 preserves active integration configuration, including webhook signing
+secrets and inbound route token hashes, while deliberately resetting delivery queues,
+dedupe records, history, retries, and circuit state on restore.
+The complete card-feature scope, migration decisions, security/accessibility audit, and
+release evidence are in [Card feature release review](docs/card-features-review.md).
 
 ### Members, scopes, and roles
 

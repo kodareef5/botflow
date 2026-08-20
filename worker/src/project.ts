@@ -87,6 +87,10 @@ import {
   randomEmailToken,
 } from './email.ts';
 import {
+  readIntegrationSnapshot,
+  type IntegrationSnapshot,
+} from './integration-snapshot.ts';
+import {
   WEBHOOK_BACKOFF_MS,
   WEBHOOK_CIRCUIT_FAILURES,
   WEBHOOK_CIRCUIT_MS,
@@ -788,6 +792,85 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
         sent: typeof row['sent'] === 'string' ? row['sent'] : null, created: String(row['created']),
       })),
       next: rows.length > limit ? Number(page.at(-1)?.['seq']) : null,
+    };
+  }
+
+  /** Restore-grade configuration only. Delivery/audit state is deliberately
+   * excluded because company import remaps project ids; an old frozen event
+   * body must never be delivered as though it belonged to the new project. */
+  exportIntegrations(): IntegrationSnapshot {
+    const webhooks = this.sql.exec(
+      'SELECT id, name, url, secret, allow_events, deny_events, active, created, updated FROM webhooks WHERE active = 1 ORDER BY created',
+    ).toArray().map((row) => ({
+      id: String(row['id']), name: String(row['name']), url: String(row['url']), secret: String(row['secret']),
+      allowEvents: eventList(row['allow_events']), denyEvents: eventList(row['deny_events']), active: Number(row['active']) === 1,
+      created: String(row['created']), updated: String(row['updated']),
+    }));
+    const emailRoutes = this.sql.exec(
+      'SELECT id, name, token_hash, kind, lane_id, card_id, actor, active, created, updated FROM email_routes WHERE active = 1 ORDER BY created',
+    ).toArray().map((row) => ({
+      id: String(row['id']), name: String(row['name']), tokenHash: String(row['token_hash']),
+      kind: row['kind'] === 'comment' ? 'comment' as const : 'create' as const,
+      lane: typeof row['lane_id'] === 'string' ? row['lane_id'] : null,
+      card: typeof row['card_id'] === 'string' ? row['card_id'] : null,
+      actor: String(row['actor']), active: Number(row['active']) === 1,
+      created: String(row['created']), updated: String(row['updated']),
+    }));
+    const emailSubscriptions = this.sql.exec(
+      'SELECT id, name, recipients, allow_events, deny_events, active, created, updated FROM email_subscriptions WHERE active = 1 ORDER BY created',
+    ).toArray().map((row) => ({
+      id: String(row['id']), name: String(row['name']), recipients: eventList(row['recipients']),
+      allowEvents: eventList(row['allow_events']), denyEvents: eventList(row['deny_events']), active: Number(row['active']) === 1,
+      created: String(row['created']), updated: String(row['updated']),
+    }));
+    return { schema: 'botflow.integrations.v1', webhooks, emailRoutes, emailSubscriptions };
+  }
+
+  restoreIntegrations(input: unknown): ActionResult {
+    const parsed = readIntegrationSnapshot(input, this.env.UNFURL_ALLOW_PRIVATE === 'on');
+    if (!parsed.ok) return { error: parsed.error };
+    const board = this.loadBoardDocs();
+    for (const route of parsed.value.emailRoutes) {
+      if (route.kind === 'comment' && !board.cards.some((card) => card.id === route.card)) {
+        return { error: `email route ${route.id} names missing card ${route.card}` };
+      }
+      if (route.kind === 'create' && route.lane !== null) {
+        const valid = board.config.lanes.some((lane) => lane.id === route.lane || lane.substates.some((substate) => `${lane.id}.${substate}` === route.lane));
+        if (!valid) return { error: `email route ${route.id} names missing lane or substate ${route.lane}` };
+      }
+    }
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec('DELETE FROM webhook_deliveries');
+      this.sql.exec('DELETE FROM webhooks');
+      this.sql.exec('DELETE FROM email_inbound_messages');
+      this.sql.exec('DELETE FROM email_outbox');
+      this.sql.exec('DELETE FROM email_routes');
+      this.sql.exec('DELETE FROM email_subscriptions');
+      for (const hook of parsed.value.webhooks) {
+        this.sql.exec(
+          'INSERT INTO webhooks(id, name, url, secret, allow_events, deny_events, active, failure_count, circuit_until, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)',
+          hook.id, hook.name, hook.url, hook.secret, JSON.stringify(hook.allowEvents), JSON.stringify(hook.denyEvents), hook.active ? 1 : 0, hook.created, hook.updated,
+        );
+      }
+      for (const route of parsed.value.emailRoutes) {
+        this.sql.exec(
+          'INSERT INTO email_routes(id, name, token_hash, kind, lane_id, card_id, actor, active, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          route.id, route.name, route.tokenHash, route.kind, route.lane, route.card, route.actor, route.active ? 1 : 0, route.created, route.updated,
+        );
+      }
+      for (const subscription of parsed.value.emailSubscriptions) {
+        this.sql.exec(
+          'INSERT INTO email_subscriptions(id, name, recipients, allow_events, deny_events, active, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          subscription.id, subscription.name, JSON.stringify(subscription.recipients), JSON.stringify(subscription.allowEvents), JSON.stringify(subscription.denyEvents), subscription.active ? 1 : 0, subscription.created, subscription.updated,
+        );
+      }
+    });
+    this.rescheduleAlarm();
+    return {
+      webhooks: parsed.value.webhooks.length,
+      emailRoutes: parsed.value.emailRoutes.length,
+      emailSubscriptions: parsed.value.emailSubscriptions.length,
+      operationalStateReset: true,
     };
   }
 

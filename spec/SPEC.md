@@ -352,6 +352,9 @@ day-only precision.
   `evergreen` suppresses the visual level.
 - **Cycle time:** first entry into a `doing`-canonical lane through first completion.
   **Lead time:** `created` (or its creation entry) through first completion.
+- **Due-date changes:** count standard `edited …` Log entries whose exact
+  comma-separated field list contains `due`. Initial creation does not count. This is
+  planning-churn history, not another stored card field.
 - **Blocked duration:** accumulated intervals from `blocked:` or `blocked [id]:` Log
   entries through `unblocked`/completion, including the open interval of a currently
   blocked card. Tools additionally expose the same duration grouped by blocker id;

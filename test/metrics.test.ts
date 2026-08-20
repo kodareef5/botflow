@@ -67,6 +67,7 @@ test('card flow metrics preserve lane re-entry and do not reset on block activit
     agingLevel: 0,
     cycleDays: 9,
     leadDays: 11,
+    dueChanges: 0,
     blockedDays: 2,
     blockerDays: { unclassified: 2 },
     completedAt: '2026-08-12T00:00:00.000Z',
@@ -165,6 +166,17 @@ test('due projections distinguish overdue, today, soon, upcoming, and complete',
     { status: 'upcoming', days: 12 },
     { status: 'complete', days: 0 },
   ]);
+});
+
+test('due-date change count derives only from the exact edited-field log token', () => {
+  const board = boardFromDocuments(CONFIG, [document('001', 'todo', '2026-08-01', [
+    '2026-08-01 agent: created in todo',
+    '2026-08-02 agent: edited due',
+    '2026-08-03 agent: edited title, due, reminders',
+    '2026-08-04 agent: edited overdue-note',
+    '2026-08-05 agent: commented: due',
+  ], ['due: 2026-08-20'])]);
+  assert.equal(cardFlowMetrics(board.cards[0]!, board, 'todo', metricTime('2026-08-20')!).dueChanges, 2);
 });
 
 test('board flow metrics rebuild throughput and end-of-day cumulative flow', () => {

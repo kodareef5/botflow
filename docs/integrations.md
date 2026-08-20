@@ -9,8 +9,9 @@ OAuth token, or provider SDK is required by botflow.
 
 Only a company owner can create, rotate, replay, or revoke a webhook. A webhook has an
 exact allow list and deny list of project event action names. An empty allow list means
-all events; the deny list always wins. The signing secret is returned only when the
-endpoint is created or rotated.
+all events; the deny list always wins. The signing secret is returned when the endpoint
+is created or rotated and is not redisplayed in the integration list. It is also present
+in owner-only company exports so a restored receiver can keep verifying signatures.
 
 Every event is serialized once and that exact body is retained through automatic retry
 and operator replay:
@@ -139,3 +140,32 @@ The bridge owns provider credentials, callback verification, SPF/DKIM/DMARC alig
 bounces, complaints, suppression lists, unsubscribe policy, and final delivery. Give it
 a dedicated `kind: bot`, project-scoped, `role: write` member and mint its key from
 **Settings → Members → + key**; the bridge never needs a human password or owner role.
+
+## Company export and restore
+
+Company export version 4 carries each project's active integration configuration under
+the versioned `botflow.integrations.v1` schema. That includes webhook URLs, filters, and
+signing secrets; inbound email route operation, target, actor, and SHA-256 token hash;
+and outbound email recipients and filters. Revoked configuration is omitted. The export
+already contains member password hashes, API-key hashes, and share capabilities, so this
+is one more reason to encrypt it at rest and restrict it like a credential bundle.
+
+An inbound route's raw `bfmail_…` bearer token is never recoverable from botflow and is
+not placed in an export. A retained raw token continues to work after restore because
+its hash is preserved; update the endpoint to use the newly assigned project id. If the
+raw token was lost, revoke the restored route and create another.
+
+Project ids are remapped during a company restore. Botflow therefore starts every
+restored integration with clean operational state:
+
+- webhook failure counters and circuits reset, and delivery/replay history is empty;
+- inbound provider-message dedupe records are empty;
+- outbound email messages, attempts, leases, errors, and sent history are empty.
+
+This prevents an event body frozen with an old project id from being delivered as if it
+belonged to a new project. Back up provider-side delivery records separately if they are
+part of your audit requirements.
+
+The integration tables are additive SQLite tables created by the existing `ProjectDO`
+on first activation. Deploying this release does not rename a Durable Object class,
+change its migration tag, delete a board, or require an authentication reset.

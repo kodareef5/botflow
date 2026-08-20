@@ -20,13 +20,13 @@ format and subsystem dependency.
 
 ## Delivery phases
 
-Phases 1–8 are complete in local commits. Nothing in this program is pushed until
-the full program is reviewed.
+All nine phases are complete locally. Nothing in this program is pushed until the
+full program is reviewed.
 
 1. **Compatibility foundation** — reserved names; lossless top-level, lane, and
    rollup extras; unknown-major refusal; `features:` declarations.
 2. **Core semantics and metrics** — consistent log datetimes; stalled, age,
-   time-in-lane, blocked, lead/cycle, throughput, and cumulative-flow derivation;
+   time-in-lane, blocked, lead/cycle, due-date churn, throughput, and cumulative-flow derivation;
    `due`, `start`, `estimate`, recurrence, Evergreen, and human-owner/agent-delegate.
 3. **Structured presentation** — description and local-viewer badge parity; due and
    aging signals; scoped label groups and colors; typed custom fields with per-field

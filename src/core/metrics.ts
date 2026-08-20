@@ -35,6 +35,7 @@ export interface CardFlowMetrics {
   agingLevel: 0 | 1 | 2 | 3;
   cycleDays: number | null;
   leadDays: number | null;
+  dueChanges: number;
   blockedDays: number | null;
   blockerDays: Record<string, number>;
   completedAt: string | null;
@@ -222,6 +223,10 @@ export function cardFlowMetrics(card: Card, board: LoadedBoard, current: Canonic
     agingLevel,
     cycleDays: firstDoing !== null && firstDone !== null && firstDone >= firstDoing ? wholeDays(firstDoing, firstDone) : null,
     leadDays: createdAt !== null && firstDone !== null && firstDone >= createdAt ? wholeDays(createdAt, firstDone) : null,
+    dueChanges: entries.filter((entry) => {
+      const edited = /^edited (.+)$/.exec(entry.text);
+      return edited !== null && edited[1]!.split(', ').includes('due');
+    }).length,
     blockedDays: current === 'blocked' && events.at(-1)?.state !== 'blocked' ? null : Math.floor(blockedMs / DAY_MS),
     blockerDays,
     completedAt: firstDone === null ? null : new Date(firstDone).toISOString(),

@@ -40,7 +40,7 @@ async function freePort(): Promise<number> {
   throw new Error('no test port available');
 }
 
-async function stopWorker(child: ReturnType<typeof spawn>, state: string): Promise<void> {
+async function stopWorker(child: ReturnType<typeof spawn>, state: string, removeState = true): Promise<void> {
   const signalGroup = (signal: NodeJS.Signals): void => {
     try {
       if (process.platform === 'win32' || child.pid === undefined) child.kill(signal);
@@ -56,7 +56,7 @@ async function stopWorker(child: ReturnType<typeof spawn>, state: string): Promi
     signalGroup('SIGKILL');
     await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
   }
-  rmSync(state, { recursive: true, force: true });
+  if (removeState) rmSync(state, { recursive: true, force: true });
 }
 
 async function call(path: string, opts: RequestInit & { token?: string } = {}): Promise<{ status: number; body: Record<string, unknown> }> {
@@ -1141,8 +1141,38 @@ vendor:
       body: JSON.stringify({ style: 'fieldnotes', accent: 'redpencil', mode: 'dark', density: 'compact', gateShares: false }),
     });
     assert.equal(themed.body['density'], 'compact');
+
+    // Active integration configuration is a restore concern even though old
+    // delivery bodies, retry queues, dedupe records, and health state are not.
+    // A never-produced event keeps this proof hermetic: no network delivery
+    // can race the export.
+    assert.equal((await call(`/api/projects/${parent}/webhooks`, { token: key })).status, 403,
+      'a scoped bot cannot read owner-held webhook secrets');
+    assert.equal((await call(`/api/projects/${parent}/email/routes`, { token: key })).status, 403,
+      'a scoped bot cannot read inbound route configuration');
+    const restoreWebhookResult = await call(`/api/projects/${parent}/webhooks`, {
+      method: 'POST', token: admin,
+      body: JSON.stringify({ name: 'restore-only hook', url: 'https://hooks.example.com/botflow', allowEvents: ['never-event'] }),
+    });
+    assert.equal(restoreWebhookResult.status, 200, JSON.stringify(restoreWebhookResult.body));
+    const restoreWebhook = restoreWebhookResult.body['webhook'] as { id: string };
+    const restoreWebhookSecret = restoreWebhookResult.body['secret'] as string;
+    const restoreRouteResult = await call(`/api/projects/${parent}/email/routes`, {
+      method: 'POST', token: admin,
+      body: JSON.stringify({ name: 'restore-only inbox', kind: 'create', lane: 'todo' }),
+    });
+    assert.equal(restoreRouteResult.status, 200, JSON.stringify(restoreRouteResult.body));
+    const restoreRoute = restoreRouteResult.body['route'] as { id: string };
+    const restoreRouteToken = restoreRouteResult.body['token'] as string;
+    const restoreSubscriptionResult = await call(`/api/projects/${parent}/email/subscriptions`, {
+      method: 'POST', token: admin,
+      body: JSON.stringify({ name: 'restore-only mail', recipients: ['ops@example.com'], allowEvents: ['never-event'] }),
+    });
+    assert.equal(restoreSubscriptionResult.status, 200, JSON.stringify(restoreSubscriptionResult.body));
+    const restoreSubscription = restoreSubscriptionResult.body['subscription'] as { id: string };
+
     const exported = (await call('/api/org/export', { token: admin })).body as Record<string, unknown>;
-    assert.equal(exported['version'], 3, 'members and member-keyed api keys are a new export shape');
+    assert.equal(exported['version'], 4, 'integration configuration is a versioned restore shape');
     assert.ok(Array.isArray(exported['keys']) && (exported['keys'] as unknown[]).length === 2, 'both of the bot keys exported');
     const exportedMembers = exported['members'] as { username: string; passHash: string; role: string }[];
     assert.ok(Array.isArray(exportedMembers), 'members exported');
@@ -1160,6 +1190,48 @@ vendor:
     );
     const manifest = exported['uploads'] as { key: string }[];
     assert.ok(manifest.some((u) => upUrl === `/files/${u.key}`), 'export manifests uploaded objects');
+    const exportedSpaces = exported['spaces'] as {
+      projects: { id: string; integrations: {
+        schema: string;
+        webhooks: { id: string; secret: string; active: boolean }[];
+        emailRoutes: { id: string; tokenHash: string; token?: string; active: boolean; lane: string | null }[];
+        emailSubscriptions: { id: string; active: boolean }[];
+      } }[];
+    }[];
+    const exportedParent = exportedSpaces.flatMap((item) => item.projects).find((item) => item.id === parent)!;
+    assert.equal(exportedParent.integrations.schema, 'botflow.integrations.v1');
+    assert.equal(exportedParent.integrations.webhooks.find((item) => item.id === restoreWebhook.id)?.secret, restoreWebhookSecret,
+      'webhook signing secret survives in the credential-bearing export');
+    const exportedRoute = exportedParent.integrations.emailRoutes.find((item) => item.id === restoreRoute.id)!;
+    assert.match(exportedRoute.tokenHash, /^[a-f0-9]{64}$/);
+    assert.equal(exportedRoute.token, undefined, 'an export never reveals an inbound route bearer token');
+    assert.ok(exportedParent.integrations.emailSubscriptions.some((item) => item.id === restoreSubscription.id));
+    assert.ok([
+      ...exportedParent.integrations.webhooks,
+      ...exportedParent.integrations.emailRoutes,
+      ...exportedParent.integrations.emailSubscriptions,
+    ].every((item) => item.active), 'revoked integration tombstones are omitted from restore configuration');
+
+    const malformedV4 = structuredClone(exported);
+    const malformedParent = (malformedV4['spaces'] as typeof exportedSpaces)
+      .flatMap((item) => item.projects).find((item) => item.id === parent)!;
+    malformedParent.integrations.webhooks.find((item) => item.id === restoreWebhook.id)!.secret = 'plaintext';
+    const beforeMalformedImport = (await call('/api/org', { token: admin })).body['spaces'];
+    const malformedImport = await call('/api/org/import', { method: 'PUT', token: admin, body: JSON.stringify(malformedV4) });
+    assert.equal(malformedImport.status, 400);
+    assert.match(String(malformedImport.body['error']), /integrations.*secret is invalid/);
+    assert.deepEqual((await call('/api/org', { token: admin })).body['spaces'], beforeMalformedImport,
+      'v4 integration validation finishes before any registry row is created');
+
+    const semanticV4 = structuredClone(exported);
+    const semanticParent = (semanticV4['spaces'] as typeof exportedSpaces)
+      .flatMap((item) => item.projects).find((item) => item.id === parent)!;
+    semanticParent.integrations.emailRoutes.find((item) => item.id === restoreRoute.id)!.lane = 'no-such-lane';
+    const semanticImport = await call('/api/org/import', { method: 'PUT', token: admin, body: JSON.stringify(semanticV4) });
+    assert.equal(semanticImport.status, 400);
+    assert.match(String(semanticImport.body['error']), /missing lane or substate/);
+    assert.deepEqual((await call('/api/org', { token: admin })).body['spaces'], beforeMalformedImport,
+      'a semantically invalid integration target rolls back every project created by that import');
     await call('/api/settings', {
       method: 'POST', token: admin,
       body: JSON.stringify({ style: 'harbor', accent: 'pacific', mode: 'light', density: 'relaxed' }),
@@ -1190,6 +1262,29 @@ vendor:
     const restoredSpace = org2.spaces.find((s) => s.name === 'eng')!;
     const restoredParent = restoredSpace.projects.find((p) => p.name === 'parent')!;
     assert.equal(restoredParent.children.length, 1, 'exactly one restored child, no duplicate project card');
+    const restoredWebhooks = (await call(`/api/projects/${restoredParent.id}/webhooks`, { token: admin })).body['webhooks'] as unknown as {
+      id: string; failureCount: number; circuitUntil: string | null;
+    }[];
+    assert.deepEqual(
+      restoredWebhooks.filter((item) => item.id === restoreWebhook.id).map((item) => ({ failureCount: item.failureCount, circuitUntil: item.circuitUntil })),
+      [{ failureCount: 0, circuitUntil: null }],
+      'active webhook config survives with clean health state',
+    );
+    const restoredRoutes = (await call(`/api/projects/${restoredParent.id}/email/routes`, { token: admin })).body['routes'] as unknown as { id: string }[];
+    assert.ok(restoredRoutes.some((item) => item.id === restoreRoute.id), 'active inbound route survives');
+    const restoredSubscriptions = (await call(`/api/projects/${restoredParent.id}/email/subscriptions`, { token: admin })).body['subscriptions'] as unknown as { id: string }[];
+    assert.ok(restoredSubscriptions.some((item) => item.id === restoreSubscription.id), 'active outbound subscription survives');
+    const restoredOutbox = (await call(`/api/projects/${restoredParent.id}/email/outbox`, { token: admin })).body['messages'] as unknown[];
+    assert.deepEqual(restoredOutbox, [], 'outbox and delivery history reset across remapped project ids');
+    const restoredInbound = await call(`/api/email/inbound/${restoredParent.id}/${restoreRouteToken}`, {
+      method: 'POST', body: JSON.stringify({
+        messageId: 'restored-provider-message-1', from: 'restore@example.com',
+        subject: 'Restored route works', text: 'The hash was restored under the new project id.',
+      }),
+    });
+    assert.equal(restoredInbound.status, 202, JSON.stringify(restoredInbound.body));
+    assert.equal(restoredInbound.body['duplicate'], false,
+      'the original route token authenticates against its restored hash on the new project id');
     const rBoard = (await call(`/api/projects/${restoredParent.id}/board`, { token: admin })).body as {
       cards: number; lanes: { id: string; cards: { id: string; type: string; child: string | null; state: string }[] }[];
     };
@@ -1238,6 +1333,27 @@ vendor:
     assert.ok(afterLegacy.spaces.some((sp) => sp.name === 'legacy space'), 'and its boards come back');
     const legacyAudit = (await call('/api/org/activity?limit=20', { token: admin })).body as unknown as { action: string }[];
     assert.ok(legacyAudit.some((a) => a.action === 'import-legacy-keys-dropped'), 'while saying plainly that its keys did not');
+
+    // Version 3 is the immediately previous credential-bearing shape. An
+    // unvalidated integrations-looking field is ignored rather than trusted,
+    // while all of the version's board data remains restorable.
+    const v3Import = await call('/api/org/import', {
+      method: 'PUT', token: admin, body: JSON.stringify({
+        version: 3, name: 'v3 compatible', members: [], keys: [], shares: [],
+        spaces: [{ id: 's-v3', name: 'v3 space', projects: [{
+          id: 'p-v3', name: 'v3 project',
+          board: { config: 'botflow: 0\nname: v3 project\nlanes:\n  - id: todo\n', cards: [] },
+          integrations: { schema: 'untrusted-old-extension', webhooks: [{ secret: 'plaintext' }] },
+          children: [],
+        }] }],
+      }),
+    });
+    assert.equal(v3Import.status, 200, `a v3 backup still restores: ${JSON.stringify(v3Import.body)}`);
+    const v3Project = ((await call('/api/org', { token: admin })).body['spaces'] as unknown as {
+      name: string; projects: { id: string; name: string }[];
+    }[]).find((item) => item.name === 'v3 space')!.projects.find((item) => item.name === 'v3 project')!;
+    assert.deepEqual((await call(`/api/projects/${v3Project.id}/webhooks`, { token: admin })).body['webhooks'], [],
+      'pre-v4 extension data is never treated as validated integration configuration');
 
     // A restored owner is org-wide by construction: role checks never consult
     // scope, so a row claiming owner+project would gate as owner while the
@@ -1409,6 +1525,126 @@ vendor:
     assert.ok(postRotate.some((a) => a.action === 'recover-owner'), 'recovery audited');
   } finally {
     await stopWorker(child, state);
+  }
+});
+
+test('existing ProjectDO storage gains additive integration tables without losing its board', { timeout: 180_000 }, async () => {
+  const state = mkdtempSync(join(tmpdir(), 'botflow-upgrade-'));
+  const configPath = join(state, 'wrangler.json');
+  const legacyPath = join(state, 'legacy-worker.js');
+  const legacySource = String.raw`
+import { DurableObject } from 'cloudflare:workers';
+export class RegistryDO extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.sql = ctx.storage.sql;
+    this.sql.exec(
+      'CREATE TABLE IF NOT EXISTS spaces(id TEXT PRIMARY KEY, name TEXT NOT NULL, created TEXT NOT NULL);' +
+      'CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, space_id TEXT NOT NULL, parent_id TEXT, name TEXT NOT NULL, created TEXT NOT NULL);'
+    );
+  }
+  seed() {
+    this.sql.exec("INSERT OR IGNORE INTO spaces(id, name, created) VALUES ('legacy-space', 'legacy space', '2026-01-01T00:00:00.000Z')");
+    this.sql.exec("INSERT OR IGNORE INTO projects(id, space_id, parent_id, name, created) VALUES ('legacy-project', 'legacy-space', NULL, 'legacy project', '2026-01-01T00:00:00.000Z')");
+    return { ok: true };
+  }
+}
+export class ProjectDO extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.sql = ctx.storage.sql;
+    this.sql.exec(
+      'CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);' +
+      'CREATE TABLE IF NOT EXISTS cards(id TEXT PRIMARY KEY, file TEXT NOT NULL, text TEXT NOT NULL, updated_at TEXT NOT NULL);' +
+      'CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, card_id TEXT, detail TEXT NOT NULL);' +
+      'CREATE TABLE IF NOT EXISTS unfurls(url TEXT PRIMARY KEY, image TEXT, image_hash TEXT, title TEXT, site TEXT, status TEXT NOT NULL, fetched TEXT NOT NULL);'
+    );
+  }
+  seed() {
+    this.sql.exec("INSERT OR IGNORE INTO meta(key, value) VALUES ('config', ?)", 'botflow: 0\nname: legacy project\nlanes:\n  - id: todo\n');
+    this.sql.exec("INSERT OR IGNORE INTO cards(id, file, text, updated_at) VALUES ('001', 'cards/001-kept.md', ?, '2026-01-01T00:00:00.000Z')",
+      '---\nid: 001\ntitle: Kept through upgrade\nlane: todo\ncreated: 2026-01-01\n---\n## Log\n- 2026-01-01 old: created in todo\n');
+    return { ok: true };
+  }
+}
+export default {
+  async fetch(req, env) {
+    if (new URL(req.url).pathname !== '/seed') return new Response('not found', { status: 404 });
+    await env.REGISTRY.get(env.REGISTRY.idFromName('main')).seed();
+    await env.PROJECT.get(env.PROJECT.idFromName('legacy-project')).seed();
+    return Response.json({ seeded: true });
+  },
+};
+`;
+  writeFileSync(legacyPath, legacySource);
+  const config = (main: string) => ({
+    name: 'botflow-project-upgrade-test', main, compatibility_date: '2026-08-01', compatibility_flags: ['nodejs_compat'],
+    migrations: [{ tag: 'v1', new_sqlite_classes: ['RegistryDO', 'ProjectDO'] }],
+    durable_objects: { bindings: [
+      { name: 'REGISTRY', class_name: 'RegistryDO' },
+      { name: 'PROJECT', class_name: 'ProjectDO' },
+    ] },
+  });
+  writeFileSync(configPath, JSON.stringify(config(legacyPath)));
+  const legacyPort = await freePort();
+  const legacy = spawn(process.execPath, [WRANGLER, 'dev', '--config', configPath, '--port', String(legacyPort), '--persist-to', state], {
+    cwd: join(import.meta.dirname, '..'), stdio: 'ignore', env: { ...process.env }, detached: true,
+  });
+  let current: ReturnType<typeof spawn> | null = null;
+  try {
+    let up = false;
+    for (let i = 0; i < 90 && !up; i++) {
+      up = await fetch(`http://127.0.0.1:${legacyPort}/seed`).then((response) => response.ok, () => false);
+      if (!up) await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    assert.ok(up, 'legacy worker seeded the old schema');
+    await stopWorker(legacy, state, false);
+
+    writeFileSync(configPath, JSON.stringify(config(join(import.meta.dirname, '..', 'worker', 'src', 'index.ts'))));
+    const currentPort = await freePort();
+    current = spawn(
+      process.execPath,
+      [WRANGLER, 'dev', '--config', configPath, '--port', String(currentPort), '--persist-to', state, '--var', `SETUP_KEY:${SETUP_KEY}`],
+      { cwd: join(import.meta.dirname, '..'), stdio: 'ignore', env: { ...process.env }, detached: true },
+    );
+    const at = async (path: string, opts: RequestInit & { token?: string } = {}) => {
+      const response = await fetch(`http://127.0.0.1:${currentPort}${path}`, {
+        ...opts,
+        headers: { 'content-type': 'application/json', ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}) },
+      });
+      return { status: response.status, body: (await response.json().catch(() => ({}))) as Record<string, unknown> };
+    };
+    let ready = false;
+    for (let i = 0; i < 90 && !ready; i++) {
+      ready = await fetch(`http://127.0.0.1:${currentPort}/api/public/gate`).then((response) => response.ok, () => false);
+      if (!ready) await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    assert.ok(ready, 'current worker reopened the persisted namespace');
+    const setup = await at('/api/setup', {
+      method: 'POST', body: JSON.stringify({ name: 'upgraded', username: 'root', password: 'upgrade-password-1', setupKey: SETUP_KEY }),
+    });
+    assert.equal(setup.status, 200, JSON.stringify(setup.body));
+    const token = setup.body['token'] as string;
+    const board = await at('/api/projects/legacy-project/board', { token });
+    assert.equal(board.status, 200, JSON.stringify(board.body));
+    assert.ok(((board.body['lanes'] as unknown as { cards: { title: string }[] }[])
+      .flatMap((lane) => lane.cards)).some((card) => card.title === 'Kept through upgrade'));
+    assert.deepEqual((await at('/api/projects/legacy-project/webhooks', { token })).body['webhooks'], [],
+      'new additive tables initialize empty');
+    const hook = await at('/api/projects/legacy-project/webhooks', {
+      method: 'POST', token,
+      body: JSON.stringify({ name: 'after upgrade', url: 'https://hooks.example.com/upgrade', allowEvents: ['never-event'] }),
+    });
+    assert.equal(hook.status, 200, JSON.stringify(hook.body));
+    const route = await at('/api/projects/legacy-project/email/routes', {
+      method: 'POST', token, body: JSON.stringify({ name: 'after upgrade', kind: 'create', lane: 'todo' }),
+    });
+    assert.equal(route.status, 200, JSON.stringify(route.body));
+    assert.equal((await at('/api/projects/legacy-project/board', { token })).status, 200,
+      'new overlay writes leave the old board readable');
+  } finally {
+    if (current !== null) await stopWorker(current, state);
+    else await stopWorker(legacy, state);
   }
 });
 

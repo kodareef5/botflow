@@ -319,7 +319,7 @@ test('ui: owners can administer hardened webhook and email integrations', () => 
   ]) assert.ok(app.includes(control), `${control} is wired`);
   assert.match(app, /Webhook signing secret/);
   assert.match(app, /Inbound bridge endpoint/);
-  assert.match(app, /It is never shown again/);
+  assert.match(app, /not shown again in this screen/);
   assert.match(app, /SPF\/DKIM/, 'provider responsibility is visible, not hidden in implementation notes');
 });
 
@@ -342,7 +342,7 @@ test('ui: compact cards and editors expose structured presentation data', () => 
   const app = scripts.join('\n');
   for (const needle of [
     'c.labelDetails||[]', 'c.faceFields||[]', 'c.descriptionPresent', 'c.checklistPreview||[]',
-    'c.coverColor', 'metrics.agingLevel', 'function dueFace(c)', 'lane.estimate',
+    'c.coverColor', 'metrics.agingLevel', 'metrics.dueChanges', 'function dueFace(c)', 'lane.estimate',
     'function customFormFields(', 'function customPayload(', 'data-labeldef', 'data-fielddef',
   ]) assert.ok(page.includes(needle) || app.includes(needle), `structured card UI missing: ${needle}`);
   assert.match(app, /items\.slice\(0,10\)\.join\(''\)/, 'lowest-priority badges degrade away instead of overflowing forever');

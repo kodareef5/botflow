@@ -17,6 +17,7 @@ import { RegistryDO, type Identity, type OrgTree, type ProjectNode } from './reg
 import { atomFeed, calendarFeed, rssFeed } from './feeds.ts';
 import { ABOUT_HTML } from './about.ts';
 import { DEMO, type OrgImport, type ProjectImport } from './demo.ts';
+import { readIntegrationSnapshot } from './integration-snapshot.ts';
 import { roleAllows, setupAccess, validRole, validScopeKind, validUsername } from './security.ts';
 import { fetchImage, fetchOg } from './unfurl.ts';
 import { uiHtml } from './ui.ts';
@@ -221,13 +222,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Validate a company import completely before pass 1 creates any registry
- *  rows. Version 1 remains accepted for old/demo payloads; restore-grade v2
- *  and v3 require stable, unique exported project ids. v3 added members and
+ *  rows. Version 1 remains accepted for old/demo payloads; restore-grade v2+
+ *  require stable, unique exported project ids. v3 added members and
  *  re-keyed api keys from a project to a member, so a v2 payload's `keys`
  *  block is structurally different: it is ignored on restore rather than
- *  rejected, because a board backup should still restore its boards. */
-function validateOrgImportPayload(value: unknown): string | null {
-  if (!isRecord(value) || ![1, 2, 3].includes(value['version'] as number)) return 'version must be 1, 2 or 3';
+ *  rejected, because a board backup should still restore its boards. v4 adds
+ *  validated per-project integration configuration, never old delivery state. */
+function validateOrgImportPayload(value: unknown, allowPrivate = false): string | null {
+  if (!isRecord(value) || ![1, 2, 3, 4].includes(value['version'] as number)) return 'version must be 1, 2, 3 or 4';
   if (!Array.isArray(value['spaces'])) return 'spaces required';
   const version = value['version'] as number;
   const ids = new Set<string>();
@@ -248,6 +250,10 @@ function validateOrgImportPayload(value: unknown): string | null {
       const checked = validateImportDocuments(node['board']['config'], node['board']['cards']);
       if ('error' in checked) return `${ref}.board: ${checked.error}`;
       config = checked.board.config;
+    }
+    if (version >= 4 && node['integrations'] !== undefined) {
+      const integrations = readIntegrationSnapshot(node['integrations'], allowPrivate);
+      if (!integrations.ok) return `${ref}.integrations: ${integrations.error}`;
     }
     const children = node['children'] ?? [];
     if (!Array.isArray(children)) return `${ref}.children must be a list`;
@@ -677,11 +683,12 @@ export default {
           id: n.id,
           name: n.name,
           board: await project(n.id).exportDocs(),
+          integrations: await project(n.id).exportIntegrations(),
           children: await Promise.all(n.children.map(exportNode)),
         });
         await registry.audit(actor, 'export', 'company export downloaded');
         return json({
-          version: 3,
+          version: 4,
           name: tree.name,
           theme: await registry.getTheme(),
           prefs: await registry.getPrefs(),
@@ -712,7 +719,7 @@ export default {
         const isDemo = url.pathname === '/api/demo';
         if (!isDemo && bodyTooBig(req, MAX_UPLOAD)) return json({ error: 'import exceeds 10 MiB' }, 413);
         const rawPayload: unknown = isDemo ? DEMO : await req.json().catch(() => null);
-        const validationError = validateOrgImportPayload(rawPayload);
+        const validationError = validateOrgImportPayload(rawPayload, env.UNFURL_ALLOW_PRIVATE === 'on');
         if (validationError) return json({ error: validationError }, 400);
         const payload = rawPayload as OrgImport;
         const idMap = new Map<string, string>(); // exported id → restored id
@@ -766,6 +773,10 @@ export default {
             }
             await fillTree(child);
           }
+          if (payload.version >= 4 && created.node.integrations !== undefined) {
+            const restored = await project(created.id).restoreIntegrations(created.node.integrations);
+            if ('error' in restored) throw new Error(`integrations: ${restored.error}`);
+          }
         };
         try {
           for (const space of payload.spaces) {
@@ -776,7 +787,7 @@ export default {
             for (const p of space.projects) roots.push(await createTree(s.id, null, p));
             for (const r of roots) await fillTree(r);
           }
-          // Restore-grade metadata (v2 exports): name, theme, prefs, members
+          // Restore-grade metadata: name, theme, prefs, members
           // (password hashes included, or the restore locks its owner out),
           // key hashes (original tokens stay valid), and share links. Members
           // land before keys, which are attached to them by username.
@@ -814,7 +825,7 @@ export default {
             // api keys, and publish share urls, and "1 space(s)" in the audit
             // log does not tell an operator any of that happened.
             const restored = payload.version >= 3
-              ? `${(payload.members ?? []).length} member(s): ${(payload.members ?? []).map((m) => `${m.username}/${m.role}`).join(', ') || 'none'}; ${(payload.keys ?? []).length} api key(s); ${(payload.shares ?? []).length} share link(s)`
+              ? `${(payload.members ?? []).length} member(s): ${(payload.members ?? []).map((m) => `${m.username}/${m.role}`).join(', ') || 'none'}; ${(payload.keys ?? []).length} api key(s); ${(payload.shares ?? []).length} share link(s)${payload.version >= 4 ? '; project integration configuration (delivery state reset)' : ''}`
               : `${(payload.shares ?? []).length} share link(s)`;
             if (restored !== '') await registry.audit(actor, 'import-credentials', restored);
           }
