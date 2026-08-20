@@ -1512,6 +1512,9 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       if (automationError !== undefined) return { error: automationError.message };
       automation.extra = { ...board.config.automation.extra, ...automation.extra };
     }
+    if (automation.archiveDoneAfter !== null && !lanes.some((lane) => lane.canonical === 'archive')) {
+      return { error: 'automation.archive_done_after requires an archive-canonical lane' };
+    }
     for (const card of board.cards) {
       if (card.blocker !== null && !blockers.some((blocker) => blocker.id === card.blocker)) {
         return { error: `card ${card.id}: active blocker "${card.blocker}" is absent from the new blocker registry` };
@@ -1793,7 +1796,11 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
         case 'claim': {
           const mode = args['delegate'] === true ? 'delegate' : 'assign';
           const external = analyzed?.ba.dependencyStates.get(id) as Map<string, string | null> | undefined;
-          const res = opClaim(board, card, actor, args['force'] === true, mode, external, typeof args['wipReason'] === 'string' ? args['wipReason'] : undefined);
+          const res = opClaim(
+            board, card, actor, args['force'] === true, mode, external,
+            typeof args['wipReason'] === 'string' ? args['wipReason'] : undefined,
+            Date.now(), analyzed?.ba.cycleMembers, analyzed?.ba.canonical.get(id),
+          );
           if (res.alreadyYours) return { id, at: res.to, assignee: card.assignee, delegate: card.delegate, alreadyYours: true };
           this.persistCard(card);
           this.event(actor, 'claim', id, `${res.from} → ${res.to}${args['force'] === true ? ' (forced)' : ''}`);
@@ -1806,6 +1813,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
             typeof args['wipReason'] === 'string' ? args['wipReason'] : undefined,
             args['force'] === true,
           );
+          if (res.alreadyClosed) return { id, at: res.to, created: null, alreadyClosed: true };
           this.ctx.storage.transactionSync(() => {
             if (res.created !== undefined) this.persistCard(res.created);
             this.persistCard(card);

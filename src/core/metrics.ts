@@ -7,7 +7,10 @@ import type { Canonical, Card, Distribution, LoadedBoard } from './model.ts';
 import { emptyDistribution } from './model.ts';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MOVE_RE = /\b(?:moved|migrated)\s+([^\s,;]+)\s+→\s+([^\s,;]+)/;
+const POSITION = '([^\\s,;]+)';
+const DIRECT_MOVE_RE = new RegExp(`^(?:moved|migrated|swept)\\s+${POSITION}\\s+→\\s+${POSITION}`);
+const LEGACY_TRANSFER_RE = new RegExp(`^moved\\s+to\\s+[^,]+,\\s*${POSITION}\\s+→\\s+${POSITION}`);
+const EMBEDDED_MOVE_RE = new RegExp(`(?:^|,\\s*)moved\\s+${POSITION}\\s+→\\s+${POSITION}`, 'g');
 const CREATED_RE = /^created in\s+([^\s,;]+)/;
 
 type TimedEntry = BodyEntry & { at: number; order: number };
@@ -82,6 +85,19 @@ function initialPosition(entries: TimedEntry[]): { lane: string; at: number } | 
   return null;
 }
 
+/** Read only transition clauses emitted by botflow mutation verbs. Closing
+ * reasons are user text and may themselves contain an arrow-shaped phrase, so
+ * embedded close/claim transitions use the final tool-appended clause. */
+function transition(text: string): { from: string; to: string } | null {
+  const direct = DIRECT_MOVE_RE.exec(text) ?? LEGACY_TRANSFER_RE.exec(text);
+  if (direct) return { from: direct[1]!, to: direct[2]! };
+  if (!/^(?:claimed|delegated|closed)\b/.test(text)) return null;
+  let found: RegExpExecArray | null = null;
+  EMBEDDED_MOVE_RE.lastIndex = 0;
+  for (let match = EMBEDDED_MOVE_RE.exec(text); match !== null; match = EMBEDDED_MOVE_RE.exec(text)) found = match;
+  return found === null ? null : { from: found[1]!, to: found[2]! };
+}
+
 /** Replay only states and lane positions the Log proves. Current frontmatter
  *  is intentionally not spliced into an incomplete historic tail: doing so
  *  would manufacture transition dates and violate SPEC §6a's null rule. */
@@ -100,9 +116,9 @@ export function cardFlowEvents(card: Card, board: LoadedBoard): FlowEvent[] {
   if (initial) push({ at: initial.at, lane, state });
 
   for (const entry of entries) {
-    const move = MOVE_RE.exec(entry.text);
+    const move = transition(entry.text);
     if (move) {
-      lane = laneOf(move[2]!);
+      lane = laneOf(move.to);
       const laneCanonical = laneState(board, lane);
       state = flagBlocked && laneCanonical !== 'done' && laneCanonical !== 'archive' ? 'blocked' : laneCanonical;
       push({ at: entry.at, lane, state });
@@ -154,7 +170,7 @@ export function cardFlowMetrics(card: Card, board: LoadedBoard, current: Canonic
   const now = typeof nowValue === 'number' ? nowValue : nowValue.getTime();
   const entries = timedLog(card);
   const events = cardFlowEvents(card, board);
-  const last = entries.filter((entry) => !(entry.actor === 'botflow' && /^reminder \d+m for due /.test(entry.text))).at(-1);
+  const last = entries.filter((entry) => !(entry.actor === 'botflow' && (/^reminder \d+m for due /.test(entry.text) || entry.text === 'snooze expired'))).at(-1);
   const lastAt = last?.at ?? null;
   const idleDays = lastAt === null ? null : wholeDays(lastAt, now);
 
@@ -224,7 +240,7 @@ export function cardFlowMetrics(card: Card, board: LoadedBoard, current: Canonic
     cycleDays: firstDoing !== null && firstDone !== null && firstDone >= firstDoing ? wholeDays(firstDoing, firstDone) : null,
     leadDays: createdAt !== null && firstDone !== null && firstDone >= createdAt ? wholeDays(createdAt, firstDone) : null,
     dueChanges: entries.filter((entry) => {
-      const edited = /^edited (.+)$/.exec(entry.text);
+      const edited = /^edited (.+)$/.exec(entry.text.replace(/ \(woke snooze\)$/, ''));
       return edited !== null && edited[1]!.split(', ').includes('due');
     }).length,
     blockedDays: current === 'blocked' && events.at(-1)?.state !== 'blocked' ? null : Math.floor(blockedMs / DAY_MS),

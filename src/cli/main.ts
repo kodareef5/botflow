@@ -619,6 +619,12 @@ function runCard(argv: string[]): number {
           : out(`= ${res.card.id} already yours (${res.to})`);
         return 0;
       }
+      if (res.alreadyClosed) {
+        values['json']
+          ? emitJson({ id: res.card.id, from: res.from, to: res.to, alreadyClosed: true, created: null, warnings: [] })
+          : out(`= ${res.card.id} already closed (${res.to})`);
+        return 0;
+      }
       const holder = values['delegate'] === true ? res.card.delegate : res.card.assignee;
       values['json']
         ? emitJson({ id: res.card.id, from: res.from, to: res.to, assignee: res.card.assignee, delegate: res.card.delegate, created: res.created?.id ?? null, warnings: res.warnings })

@@ -26,6 +26,8 @@ export interface BoardAnalysis {
   effort: { total: number; completed: number; progress: number | null };
   /** Resolved effective state for each dependency ref; null is dangling. */
   dependencyStates: Map<string, Map<string, Canonical | null>>;
+  /** Card ids that participate in a local or resolved cross-board dependency cycle. */
+  cycleMembers: Set<string>;
   /** Semantic findings; combine with LoadedBoard.findings for the full lint. */
   findings: Finding[];
 }
@@ -176,8 +178,10 @@ export function analyzeBoard(
   const color = new Map<string, 1 | 2>(); // 1 = in current path, 2 = done
   const path: string[] = [];
   const seenCycles = new Set<string>();
+  const cycleMembers = new Set<string>();
   const reportCycle = (dep: string): void => {
     const cycle = path.slice(path.indexOf(dep));
+    for (const member of cycle) cycleMembers.add(member);
     const key = [...cycle].sort().join('>');
     if (!seenCycles.has(key)) {
       seenCycles.add(key);
@@ -247,7 +251,7 @@ export function analyzeBoard(
     progress: estimateTotal === 0 ? null : estimateDone / estimateTotal,
   };
 
-  return { canonical, distribution, ready, progress, effort, dependencyStates, findings };
+  return { canonical, distribution, ready: ready.filter((id) => !cycleMembers.has(id)), progress, effort, dependencyStates, cycleMembers, findings };
 }
 
 export function analyze(tree: Tree, nowValue: number | Date = Date.now()): Analysis {
@@ -355,6 +359,14 @@ function reportCrossBoardDependencyCycles(tree: Tree, analyses: Map<string, Boar
         const key = [...cycle].sort().join('>');
         if (reported.has(key)) continue;
         reported.add(key);
+        for (const member of cycle) {
+          const [memberBoard, memberCard] = member.split('\u0000');
+          const memberAnalysis = analyses.get(memberBoard!);
+          if (memberAnalysis !== undefined) {
+            memberAnalysis.cycleMembers.add(memberCard!);
+            memberAnalysis.ready = memberAnalysis.ready.filter((candidate) => candidate !== memberCard);
+          }
+        }
         const [sourceBoard, sourceCard] = cycle[0]!.split('\u0000');
         analyses.get(sourceBoard!)!.findings.push(finding('dep-cycle', sourceCard!, `dependency cycle: ${[...cycle, edge].map(display).join(' → ')}`));
       }

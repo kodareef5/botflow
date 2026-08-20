@@ -252,6 +252,9 @@ export function parseBoardConfig(value: YamlValue, findings: Finding[]): BoardCo
   const buttons = parseButtons(map['buttons'], findings, lanes, savedFilters);
   const rules = parseRules(map['rules'], findings, lanes, savedFilters);
   const automation = parseAutomation(map['automation'], findings);
+  if (automation.archiveDoneAfter !== null && !lanes.some((lane) => lane.canonical === 'archive')) {
+    findings.push(finding('schema', REF, 'automation.archive_done_after requires an archive-canonical lane'));
+  }
 
   const known = new Set([
     'botflow', 'name', 'ids', 'features', 'lanes', 'labels', 'fields', 'templates',
@@ -506,8 +509,10 @@ export function parseRules(
     const lane = typeof map['lane'] === 'string' && lanes.some((candidate) => candidate.id === map['lane']) ? map['lane'] : null;
     if (event === 'enter' && lane === null) findings.push(finding('schema', REF, `enter rule "${id}" requires a valid lane`));
     if (event !== null && event !== 'enter' && map['lane'] !== undefined && map['lane'] !== null) findings.push(finding('schema', REF, `rule "${id}": lane only applies to enter`));
-    const filter = typeof map['filter'] === 'string' && filters.some((candidate) => candidate.id === map['filter']) ? map['filter'] : null;
-    if (map['filter'] !== undefined && map['filter'] !== null && filter === null) findings.push(finding('schema', REF, `rule "${id}": filter must name a saved filter`));
+    const filterDeclared = map['filter'] !== undefined && map['filter'] !== null;
+    const filter = typeof map['filter'] === 'string' && map['filter'] !== '' ? map['filter'] : null;
+    const filterValid = !filterDeclared || (filter !== null && filters.some((candidate) => candidate.id === filter));
+    if (!filterValid) findings.push(finding('schema', REF, `rule "${id}": filter must name a saved filter`));
     const action = ['label', 'unlabel', 'assign', 'delegate', 'comment'].includes(String(map['action']))
       ? map['action'] as AutomationRule['action'] : null;
     if (action === null) findings.push(finding('schema', REF, `rule "${id}": unsupported action`));
@@ -521,7 +526,7 @@ export function parseRules(
       }
     }
     if (event !== null && action !== null && ruleValue !== null) {
-      out.push({ id, event, lane: event === 'enter' ? lane : null, filter, action, value: ruleValue, extra });
+      out.push({ id, event, lane: event === 'enter' ? lane : null, filter, filterValid, action, value: ruleValue, extra });
     }
   }
   return out;

@@ -435,7 +435,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       inputSchema: schema(['id'], { id: str, reason: str, force: bool, wip_reason: str, actor: str }),
       run: (args) => {
         const res = closeCard(root, strOf(args['id'], 'id'), actorOf(args), opt(args['reason']), opt(args['wip_reason']), args['force'] === true);
-        return { id: res.card.id, from: res.from, to: res.to, created: res.created?.id ?? null };
+        return { id: res.card.id, from: res.from, to: res.to, created: res.created?.id ?? null, alreadyClosed: res.alreadyClosed === true };
       },
     },
     {

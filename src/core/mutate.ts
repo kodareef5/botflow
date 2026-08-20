@@ -363,14 +363,15 @@ export function moveCard(root: string, id: string, spec: string, actor: string, 
 
 export function claimCard(root: string, id: string, actor: string, force = false, mode: ClaimMode = 'assign', wipJustification?: string): MoveResult {
   return mutateCard(root, (board) => {
-    let externalDependencies: Map<string, string | null> | undefined;
     const card = getCard(board, id);
-    if (card.deps.some((dep) => dep.includes('#'))) {
-      const tree = loadTree(root);
-      const ba = analyze(tree).boards.get('.');
-      externalDependencies = ba?.dependencyStates.get(id) as Map<string, string | null> | undefined;
-    }
-    const res = opClaim(board, card, actor, force, mode, externalDependencies, wipJustification);
+    // Claimability is projection-sensitive: board-card rollups, local deps,
+    // cross-board deps, and cycle membership must come from one tree analysis.
+    const ba = analyze(loadTree(root)).boards.get('.');
+    const externalDependencies = ba?.dependencyStates.get(id) as Map<string, string | null> | undefined;
+    const res = opClaim(
+      board, card, actor, force, mode, externalDependencies, wipJustification,
+      Date.now(), ba?.cycleMembers, ba?.canonical.get(id),
+    );
     if (!res.alreadyYours) writeCard(root, res.card);
     return res;
   });
@@ -379,6 +380,7 @@ export function claimCard(root: string, id: string, actor: string, force = false
 export function closeCard(root: string, id: string, actor: string, reason?: string, wipJustification?: string, force = false): MoveResult {
   return mutateCard(root, (board) => {
     const res = opClose(board, getCard(board, id), actor, reason, wipJustification, force);
+    if (res.alreadyClosed) return res;
     if (res.created !== undefined) {
       if (existsSync(join(root, res.created.file))) throw new UsageError(`file collision: ${res.created.file}`);
       writeCard(root, res.created);

@@ -434,6 +434,7 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
         { id: 'needs-qa', canonical: 'doing', wip: 1, wipMode: 'justify' },
         { id: 'review-gate', canonical: 'doing', wip: 1, wipMode: 'deny' },
         { id: 'done' },
+        { id: 'archive' },
       ],
       labels: [{ id: 'Type/Bug', color: '#d03b3b' }],
       fields: [
@@ -460,10 +461,13 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     };
     assert.equal((await call(`/api/projects/${parent}/config`, { method: 'PUT', token: key, body: JSON.stringify(reshape) })).status, 403, 'non-owners cannot reshape boards');
     assert.equal((await call(`/api/projects/${parent}/config`, { method: 'PUT', token: admin, body: JSON.stringify({ name: 'x', lanes: [{ id: 'weird' }] }) })).status, 400, 'custom lane without canonical rejected');
+    const withoutArchive = { ...reshape, lanes: reshape.lanes.filter((lane) => lane.id !== 'archive') };
+    assert.equal((await call(`/api/projects/${parent}/config`, { method: 'PUT', token: admin, body: JSON.stringify(withoutArchive) })).status, 400,
+      'archive automation cannot be saved without an archive-canonical lane');
     const put = await call(`/api/projects/${parent}/config`, { method: 'PUT', token: admin, body: JSON.stringify(reshape) });
     assert.equal(put.status, 200, JSON.stringify(put.body));
     const cfg1 = await call(`/api/projects/${parent}/config`, { token: admin });
-    assert.deepEqual((cfg1.body['lanes'] as { id: string }[]).map((l) => l.id), ['todo', 'doing', 'needs-qa', 'review-gate', 'done']);
+    assert.deepEqual((cfg1.body['lanes'] as { id: string }[]).map((l) => l.id), ['todo', 'doing', 'needs-qa', 'review-gate', 'done', 'archive']);
     assert.equal((cfg1.body['rollup'] as { doingWhen: string }).doingWhen, 'any-doing');
     assert.deepEqual(cfg1.body['labels'], reshape.labels);
     assert.deepEqual(cfg1.body['blockers'], reshape.blockers);
@@ -578,7 +582,7 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.equal(migrated.body['position'], 'doing.design', 'doing card entered the new substate machine');
     assert.match(String(migrated.body['body']), /migrated doing → doing\.design \(board edit\)/, 'migration logged on the card');
     const boardShape = (await call(`/api/projects/${parent}/board`, { token: admin })).body as { lanes: { id: string }[]; findings: unknown[] };
-    assert.deepEqual(boardShape.lanes.map((l) => l.id), ['todo', 'doing', 'needs-qa', 'review-gate', 'done']);
+    assert.deepEqual(boardShape.lanes.map((l) => l.id), ['todo', 'doing', 'needs-qa', 'review-gate', 'done', 'archive']);
     assert.equal(boardShape.findings.filter((f) => (f as { severity: string }).severity === 'error').length, 0, 'reshaped board lints clean');
 
     // Relations/templates/quick-add/bulk and cross-project dependencies all

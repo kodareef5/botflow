@@ -47,6 +47,7 @@ function localState(board: LoadedBoard, card: Card): string {
 export function automationPlan(board: LoadedBoard, nowValue: number | Date = Date.now()): AutomationPlanItem[] {
   const now = typeof nowValue === 'number' ? nowValue : nowValue.getTime();
   const withFile: { item: AutomationPlanItem; file: string; ordinal: number }[] = [];
+  const canSweep = board.config.lanes.some((lane) => lane.canonical === 'archive');
   for (const card of board.cards) {
     const state = localState(board, card);
     if (state !== 'done' && state !== 'archive' && card.due !== null) {
@@ -65,7 +66,7 @@ export function automationPlan(board: LoadedBoard, nowValue: number | Date = Dat
       withFile.push({ item: { kind: 'snooze-expired', cardId: card.id, at: new Date(snoozeAt).toISOString() }, file: card.file, ordinal: 0 });
     }
     const days = board.config.automation.archiveDoneAfter;
-    if (days !== null && state === 'done') {
+    if (days !== null && canSweep && state === 'done') {
       const metrics = cardFlowMetrics(card, board, 'done', now);
       const completed = metricTime(metrics.completedAt);
       if (completed !== null) {

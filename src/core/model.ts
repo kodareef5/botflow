@@ -172,6 +172,8 @@ export interface AutomationRule {
   event: AutomationRuleEvent;
   lane: string | null;
   filter: string | null;
+  /** False when a filter was declared but did not resolve while parsing. */
+  filterValid: boolean;
   action: AutomationRuleAction;
   value: string;
   /** Unknown rule-map keys, preserved across board.yaml rewrites. */
