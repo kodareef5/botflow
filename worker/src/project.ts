@@ -70,9 +70,38 @@ import {
   type EditPatch,
 } from '../../src/core/ops.ts';
 import { newHashId, nextSeqId, slugify } from '../../src/core/ids.ts';
-import { logMutation, serializeCard } from '../../src/core/write.ts';
+import { logMutation, sanitizeBlock, serializeCard } from '../../src/core/write.ts';
 import { queryCards } from '../../src/core/query.ts';
 import { nextAutomationAt } from '../../src/core/scheduling.ts';
+import { youtubeVideoId } from './youtube.ts';
+import {
+  EMAIL_BACKOFF_MS,
+  EMAIL_INBOUND_HOURLY_CAP,
+  EMAIL_LEASE_MS,
+  EMAIL_MAX_ATTEMPTS,
+  EMAIL_MAX_SUBJECT,
+  cleanRecipients,
+  emailTokenHash,
+  normalizeInboundEmail,
+  outboundEmailPayload,
+  randomEmailToken,
+} from './email.ts';
+import {
+  WEBHOOK_BACKOFF_MS,
+  WEBHOOK_CIRCUIT_FAILURES,
+  WEBHOOK_CIRCUIT_MS,
+  WEBHOOK_MAX_ATTEMPTS,
+  WEBHOOK_TIMEOUT_MS,
+  cleanEventList,
+  cleanIntegrationName,
+  eventSelected,
+  postWebhook,
+  randomIntegrationId,
+  randomSigningSecret,
+  webhookPayload,
+  webhookTarget,
+  type WebhookEvent,
+} from './webhooks.ts';
 
 export interface AuditEvent {
   seq: number;
@@ -90,6 +119,8 @@ import type { RegistryDO } from './registry.ts';
 interface ProjectEnv {
   PROJECT: DurableObjectNamespace<ProjectDO>;
   REGISTRY: DurableObjectNamespace<RegistryDO>;
+  /** Test-only loopback allowance shared with the unfurl integration suite. */
+  UNFURL_ALLOW_PRIVATE?: string;
 }
 
 const PROJECT_REF = 'project:';
@@ -108,10 +139,26 @@ export const validateImportDocuments = validateBoardDocuments;
  *  whole document. These caps are generous for real use and finite. */
 const MAX_LINE_TEXT = 4_000;
 const MAX_BODY_TEXT = 100_000;
+const MAX_WEBHOOKS = 25;
+const WEBHOOK_DELIVERY_BATCH = 10;
+const MAX_EMAIL_ROUTES = 25;
+const MAX_EMAIL_SUBSCRIPTIONS = 25;
+const EMAIL_OUTBOX_CLAIM_MAX = 25;
+const MAX_INTEGRATION_HISTORY = 1_000;
+const EMAIL_DEDUPE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
 const clampLine = (value: unknown, fallback: string): string => {
   const text = value === undefined || value === null ? fallback : String(value);
   return text.slice(0, MAX_LINE_TEXT);
+};
+
+const eventList = (value: unknown): string[] => {
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return Array.isArray(parsed) && parsed.every((item) => typeof item === 'string') ? parsed : [];
+  } catch {
+    return [];
+  }
 };
 
 const DDL = `
@@ -119,6 +166,17 @@ const DDL = `
   CREATE TABLE IF NOT EXISTS cards(id TEXT PRIMARY KEY, file TEXT NOT NULL, text TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, card_id TEXT, detail TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS unfurls(url TEXT PRIMARY KEY, image TEXT, image_hash TEXT, title TEXT, site TEXT, status TEXT NOT NULL, fetched TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS webhooks(id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, secret TEXT NOT NULL, allow_events TEXT NOT NULL, deny_events TEXT NOT NULL, active INTEGER NOT NULL, failure_count INTEGER NOT NULL, circuit_until TEXT, created TEXT NOT NULL, updated TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS webhook_deliveries(seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, webhook_id TEXT NOT NULL, event_seq INTEGER NOT NULL, event_action TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL, next_attempt TEXT NOT NULL, last_attempt TEXT, response_status INTEGER, error TEXT, delivered TEXT, replay_of TEXT, created TEXT NOT NULL);
+  CREATE INDEX IF NOT EXISTS webhook_deliveries_due ON webhook_deliveries(status, next_attempt);
+  CREATE INDEX IF NOT EXISTS webhook_deliveries_hook ON webhook_deliveries(webhook_id, seq DESC);
+  CREATE TABLE IF NOT EXISTS email_routes(id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, lane_id TEXT, card_id TEXT, actor TEXT NOT NULL, active INTEGER NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS email_inbound_messages(route_id TEXT NOT NULL, message_id TEXT NOT NULL, outcome TEXT NOT NULL, received TEXT NOT NULL, PRIMARY KEY(route_id, message_id));
+  CREATE INDEX IF NOT EXISTS email_inbound_received ON email_inbound_messages(route_id, received);
+  CREATE TABLE IF NOT EXISTS email_subscriptions(id TEXT PRIMARY KEY, name TEXT NOT NULL, recipients TEXT NOT NULL, allow_events TEXT NOT NULL, deny_events TEXT NOT NULL, active INTEGER NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS email_outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, subscription_id TEXT NOT NULL, event_seq INTEGER NOT NULL, event_action TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL, next_attempt TEXT NOT NULL, lease_token TEXT, lease_until TEXT, leased_by TEXT, error TEXT, sent TEXT, created TEXT NOT NULL);
+  CREATE INDEX IF NOT EXISTS email_outbox_due ON email_outbox(status, next_attempt, lease_until);
+  CREATE INDEX IF NOT EXISTS email_outbox_subscription ON email_outbox(subscription_id, seq DESC);
 `;
 
 export class ProjectDO extends DurableObject<ProjectEnv> {
@@ -160,16 +218,577 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
   }
 
   private event(actor: string, action: string, cardId: string | null, detail: string): void {
-    this.sql.exec('INSERT INTO events(ts, actor, action, card_id, detail) VALUES (?, ?, ?, ?, ?)', new Date().toISOString(), actor, action, cardId, detail);
+    const ts = new Date().toISOString();
+    const cleanDetail = detail.slice(0, MAX_LINE_TEXT);
+    this.sql.exec('INSERT INTO events(ts, actor, action, card_id, detail) VALUES (?, ?, ?, ?, ?)', ts, actor, action, cardId, cleanDetail);
+    const row = this.sql.exec('SELECT last_insert_rowid() AS seq').toArray()[0];
+    const event = { seq: Number(row?.['seq'] ?? 0), ts, actor, action, cardId, detail: cleanDetail };
+    this.enqueueWebhookEvent(event);
+    this.enqueueEmailEvent(event);
   }
 
-  private rescheduleAutomation(board = this.loadBoardDocs()): void {
-    if (board.config.mutationBlocked !== null) return;
-    const next = nextAutomationAt(board);
+  private enqueueWebhookEvent(event: WebhookEvent): void {
+    const now = new Date().toISOString();
+    let queued = false;
+    const hooks = this.sql.exec(
+      'SELECT id, allow_events, deny_events, circuit_until FROM webhooks WHERE active = 1',
+    ).toArray();
+    for (const hook of hooks) {
+      if (!eventSelected(event.action, eventList(hook['allow_events']), eventList(hook['deny_events']))) continue;
+      const circuitUntil = typeof hook['circuit_until'] === 'string' && hook['circuit_until'] > now
+        ? hook['circuit_until']
+        : now;
+      this.sql.exec(
+        'INSERT INTO webhook_deliveries(id, webhook_id, event_seq, event_action, payload, status, attempts, next_attempt, created) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)',
+        randomIntegrationId('whd'), String(hook['id']), event.seq, event.action, webhookPayload(this.selfId(), event), 'pending', circuitUntil, now,
+      );
+      this.sql.exec(
+        "DELETE FROM webhook_deliveries WHERE webhook_id = ? AND status IN ('delivered', 'failed') AND seq NOT IN (SELECT seq FROM webhook_deliveries WHERE webhook_id = ? AND status IN ('delivered', 'failed') ORDER BY seq DESC LIMIT ?)",
+        String(hook['id']), String(hook['id']), MAX_INTEGRATION_HISTORY,
+      );
+      queued = true;
+    }
+    // An immediate alarm is safe even for an open circuit: the alarm will
+    // observe the deferred next_attempt and consolidate it with automation.
+    if (queued) this.ctx.waitUntil(this.ctx.storage.setAlarm(Date.now() + 1));
+  }
+
+  private enqueueEmailEvent(event: WebhookEvent): void {
+    const now = new Date().toISOString();
+    const subscriptions = this.sql.exec(
+      'SELECT id, recipients, allow_events, deny_events FROM email_subscriptions WHERE active = 1',
+    ).toArray();
+    for (const subscription of subscriptions) {
+      if (!eventSelected(event.action, eventList(subscription['allow_events']), eventList(subscription['deny_events']))) continue;
+      const id = String(subscription['id']);
+      const recipients = eventList(subscription['recipients']);
+      this.sql.exec(
+        'INSERT INTO email_outbox(id, subscription_id, event_seq, event_action, payload, status, attempts, next_attempt, created) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)',
+        randomIntegrationId('eml'), id, event.seq, event.action, outboundEmailPayload(this.selfId(), id, recipients, event), 'queued', now, now,
+      );
+      this.sql.exec(
+        "DELETE FROM email_outbox WHERE subscription_id = ? AND status IN ('sent', 'failed') AND seq NOT IN (SELECT seq FROM email_outbox WHERE subscription_id = ? AND status IN ('sent', 'failed') ORDER BY seq DESC LIMIT ?)",
+        id, id, MAX_INTEGRATION_HISTORY,
+      );
+    }
+  }
+
+  private nextWebhookAt(): number | null {
+    const row = this.sql.exec(
+      "SELECT MIN(d.next_attempt) AS next_attempt FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id WHERE w.active = 1 AND d.status IN ('pending', 'retry', 'sending')",
+    ).toArray()[0];
+    if (typeof row?.['next_attempt'] !== 'string') return null;
+    const parsed = Date.parse(row['next_attempt']);
+    return Number.isNaN(parsed) ? Date.now() : parsed;
+  }
+
+  private rescheduleAlarm(board = this.loadBoardDocs()): void {
+    const automation = board.config.mutationBlocked === null ? nextAutomationAt(board) : null;
+    const webhook = this.nextWebhookAt();
+    const candidates = [automation, webhook].filter((value): value is number => value !== null);
+    const next = candidates.length === 0 ? null : Math.min(...candidates);
     const pending = next === null
       ? this.ctx.storage.deleteAlarm()
       : this.ctx.storage.setAlarm(Math.max(Date.now() + 1, next));
     this.ctx.waitUntil(pending);
+  }
+
+  private async deliverDueWebhooks(): Promise<void> {
+    const selectedAt = new Date().toISOString();
+    const rows = this.sql.exec(
+      `SELECT d.seq, d.id, d.webhook_id, d.event_action, d.payload, d.attempts,
+              w.url, w.secret, w.failure_count
+         FROM webhook_deliveries d
+         JOIN webhooks w ON w.id = d.webhook_id
+        WHERE w.active = 1
+          AND (w.circuit_until IS NULL OR w.circuit_until <= ?)
+          AND d.status IN ('pending', 'retry', 'sending')
+          AND d.next_attempt <= ?
+        ORDER BY d.next_attempt, d.seq
+        LIMIT ?`,
+      selectedAt, selectedAt, WEBHOOK_DELIVERY_BATCH,
+    ).toArray();
+    const openedCircuits = new Set<string>();
+    const failureCounts = new Map<string, number>();
+    for (const row of rows) {
+      const deliveryId = String(row['id']);
+      const webhookId = String(row['webhook_id']);
+      if (openedCircuits.has(webhookId)) continue;
+      const attempts = Number(row['attempts']) + 1;
+      const attemptedAt = new Date().toISOString();
+      const leaseUntil = new Date(Date.now() + WEBHOOK_TIMEOUT_MS + 2 * 60_000).toISOString();
+      this.sql.exec(
+        "UPDATE webhook_deliveries SET status = 'sending', attempts = ?, last_attempt = ?, next_attempt = ? WHERE id = ?",
+        attempts, attemptedAt, leaseUntil, deliveryId,
+      );
+
+      let result: Awaited<ReturnType<typeof postWebhook>>;
+      try {
+        result = await postWebhook(
+          String(row['url']), String(row['secret']), deliveryId, String(row['event_action']), String(row['payload']),
+          this.env.UNFURL_ALLOW_PRIVATE === 'on',
+        );
+      } catch (error) {
+        result = {
+          ok: false,
+          status: null,
+          retryable: true,
+          retryAfterMs: null,
+          error: error instanceof Error ? error.message.slice(0, 300) : 'delivery failed',
+        };
+      }
+
+      if (result.ok) {
+        const deliveredAt = new Date().toISOString();
+        this.sql.exec(
+          "UPDATE webhook_deliveries SET status = 'delivered', next_attempt = ?, response_status = ?, error = NULL, delivered = ? WHERE id = ?",
+          deliveredAt, result.status, deliveredAt, deliveryId,
+        );
+        this.sql.exec('UPDATE webhooks SET failure_count = 0, circuit_until = NULL, updated = ? WHERE id = ?', deliveredAt, webhookId);
+        failureCounts.set(webhookId, 0);
+        continue;
+      }
+
+      const failureCount = (failureCounts.get(webhookId) ?? Number(row['failure_count'])) + 1;
+      failureCounts.set(webhookId, failureCount);
+      const circuitUntil = failureCount >= WEBHOOK_CIRCUIT_FAILURES
+        ? new Date(Date.now() + WEBHOOK_CIRCUIT_MS).toISOString()
+        : null;
+      this.sql.exec(
+        'UPDATE webhooks SET failure_count = ?, circuit_until = ?, updated = ? WHERE id = ?',
+        failureCount, circuitUntil, new Date().toISOString(), webhookId,
+      );
+      const canRetry = result.retryable && attempts < WEBHOOK_MAX_ATTEMPTS;
+      if (canRetry) {
+        const backoff = WEBHOOK_BACKOFF_MS[Math.min(attempts - 1, WEBHOOK_BACKOFF_MS.length - 1)]!;
+        const delay = Math.max(backoff, result.retryAfterMs ?? 0, circuitUntil === null ? 0 : WEBHOOK_CIRCUIT_MS);
+        const nextAttempt = new Date(Date.now() + delay).toISOString();
+        this.sql.exec(
+          "UPDATE webhook_deliveries SET status = 'retry', next_attempt = ?, response_status = ?, error = ? WHERE id = ?",
+          nextAttempt, result.status, (result.error ?? 'delivery failed').slice(0, 300), deliveryId,
+        );
+      } else {
+        const failedAt = new Date().toISOString();
+        this.sql.exec(
+          "UPDATE webhook_deliveries SET status = 'failed', next_attempt = ?, response_status = ?, error = ? WHERE id = ?",
+          failedAt, result.status, (result.error ?? 'delivery failed').slice(0, 300), deliveryId,
+        );
+      }
+      if (circuitUntil !== null) {
+        openedCircuits.add(webhookId);
+        this.sql.exec(
+          "UPDATE webhook_deliveries SET next_attempt = ? WHERE webhook_id = ? AND status IN ('pending', 'retry') AND next_attempt < ?",
+          circuitUntil, webhookId, circuitUntil,
+        );
+      }
+    }
+  }
+
+  createWebhook(input: Record<string, unknown>): ActionResult {
+    try {
+      const count = Number(this.sql.exec('SELECT COUNT(*) AS count FROM webhooks WHERE active = 1').toArray()[0]?.['count'] ?? 0);
+      if (count >= MAX_WEBHOOKS) throw new UsageError(`a project may have at most ${MAX_WEBHOOKS} active webhooks`);
+      const target = webhookTarget(input['url'], this.env.UNFURL_ALLOW_PRIVATE === 'on');
+      if (!target.ok) throw new UsageError(`invalid webhook url: ${target.error}`);
+      const allowEvents = cleanEventList(input['allowEvents'], 'allowEvents');
+      const denyEvents = cleanEventList(input['denyEvents'], 'denyEvents');
+      const id = randomIntegrationId('wh');
+      const secret = randomSigningSecret();
+      const name = cleanIntegrationName(input['name'], 'Webhook');
+      const now = new Date().toISOString();
+      this.sql.exec(
+        'INSERT INTO webhooks(id, name, url, secret, allow_events, deny_events, active, failure_count, created, updated) VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)',
+        id, name, target.url, secret, JSON.stringify(allowEvents), JSON.stringify(denyEvents), now, now,
+      );
+      return { webhook: { id, name, url: target.url, allowEvents, denyEvents, active: true, failureCount: 0, circuitUntil: null, created: now, updated: now }, secret };
+    } catch (error) {
+      if (error instanceof UsageError) return { error: error.message };
+      if (error instanceof Error) return { error: error.message };
+      return { error: 'could not create webhook' };
+    }
+  }
+
+  listWebhooks(): { webhooks: Record<string, unknown>[] } {
+    const webhooks = this.sql.exec(
+      'SELECT id, name, url, allow_events, deny_events, active, failure_count, circuit_until, created, updated FROM webhooks ORDER BY active DESC, created DESC',
+    ).toArray().map((row) => ({
+      id: String(row['id']),
+      name: String(row['name']),
+      url: String(row['url']),
+      allowEvents: eventList(row['allow_events']),
+      denyEvents: eventList(row['deny_events']),
+      active: Number(row['active']) === 1,
+      failureCount: Number(row['failure_count']),
+      circuitUntil: typeof row['circuit_until'] === 'string' ? row['circuit_until'] : null,
+      created: String(row['created']),
+      updated: String(row['updated']),
+    }));
+    return { webhooks };
+  }
+
+  rotateWebhook(id: string): ActionResult {
+    const row = this.sql.exec('SELECT id FROM webhooks WHERE id = ? AND active = 1', id).toArray()[0];
+    if (row === undefined) return { error: 'webhook not found' };
+    const secret = randomSigningSecret();
+    const now = new Date().toISOString();
+    this.sql.exec('UPDATE webhooks SET secret = ?, failure_count = 0, circuit_until = NULL, updated = ? WHERE id = ?', secret, now, id);
+    return { id, secret, rotated: now };
+  }
+
+  revokeWebhook(id: string): ActionResult {
+    const row = this.sql.exec('SELECT id FROM webhooks WHERE id = ? AND active = 1', id).toArray()[0];
+    if (row === undefined) return { error: 'webhook not found' };
+    const now = new Date().toISOString();
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec('UPDATE webhooks SET active = 0, circuit_until = NULL, updated = ? WHERE id = ?', now, id);
+      this.sql.exec(
+        "UPDATE webhook_deliveries SET status = 'failed', next_attempt = ?, error = 'webhook revoked' WHERE webhook_id = ? AND status IN ('pending', 'retry', 'sending')",
+        now, id,
+      );
+    });
+    this.rescheduleAlarm();
+    return { id, revoked: now };
+  }
+
+  listWebhookDeliveries(webhookId: string, requestedLimit: number, before: number | null): ActionResult {
+    if (this.sql.exec('SELECT id FROM webhooks WHERE id = ?', webhookId).toArray()[0] === undefined) return { error: 'webhook not found' };
+    const limit = Math.max(1, Math.min(100, Number.isInteger(requestedLimit) ? requestedLimit : 25));
+    const rows = before !== null && Number.isInteger(before) && before > 0
+      ? this.sql.exec(
+          'SELECT seq, id, event_seq, event_action, payload, status, attempts, next_attempt, last_attempt, response_status, error, delivered, replay_of, created FROM webhook_deliveries WHERE webhook_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?',
+          webhookId, before, limit + 1,
+        ).toArray()
+      : this.sql.exec(
+          'SELECT seq, id, event_seq, event_action, payload, status, attempts, next_attempt, last_attempt, response_status, error, delivered, replay_of, created FROM webhook_deliveries WHERE webhook_id = ? ORDER BY seq DESC LIMIT ?',
+          webhookId, limit + 1,
+        ).toArray();
+    const page = rows.slice(0, limit);
+    return {
+      deliveries: page.map((row) => ({
+        sequence: Number(row['seq']),
+        id: String(row['id']),
+        eventSequence: Number(row['event_seq']),
+        event: String(row['event_action']),
+        payload: String(row['payload']),
+        status: String(row['status']),
+        attempts: Number(row['attempts']),
+        nextAttempt: String(row['next_attempt']),
+        lastAttempt: typeof row['last_attempt'] === 'string' ? row['last_attempt'] : null,
+        responseStatus: typeof row['response_status'] === 'number' ? row['response_status'] : null,
+        error: typeof row['error'] === 'string' ? row['error'] : null,
+        delivered: typeof row['delivered'] === 'string' ? row['delivered'] : null,
+        replayOf: typeof row['replay_of'] === 'string' ? row['replay_of'] : null,
+        created: String(row['created']),
+      })),
+      next: rows.length > limit ? Number(page.at(-1)?.['seq']) : null,
+    };
+  }
+
+  replayWebhookDelivery(webhookId: string, deliveryId: string): ActionResult {
+    const hook = this.sql.exec('SELECT id FROM webhooks WHERE id = ? AND active = 1', webhookId).toArray()[0];
+    if (hook === undefined) return { error: 'webhook not found' };
+    const original = this.sql.exec(
+      'SELECT event_seq, event_action, payload FROM webhook_deliveries WHERE webhook_id = ? AND id = ?', webhookId, deliveryId,
+    ).toArray()[0];
+    if (original === undefined) return { error: 'delivery not found' };
+    const id = randomIntegrationId('whd');
+    const now = new Date().toISOString();
+    this.ctx.storage.transactionSync(() => {
+      // An operator replay is the circuit's single half-open probe. Other
+      // deferred deliveries stay deferred until this one succeeds.
+      this.sql.exec('UPDATE webhooks SET failure_count = 0, circuit_until = NULL, updated = ? WHERE id = ?', now, webhookId);
+      this.sql.exec(
+        'INSERT INTO webhook_deliveries(id, webhook_id, event_seq, event_action, payload, status, attempts, next_attempt, replay_of, created) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)',
+        id, webhookId, Number(original['event_seq']), String(original['event_action']), String(original['payload']), 'pending', now, deliveryId, now,
+      );
+    });
+    this.ctx.waitUntil(this.ctx.storage.setAlarm(Date.now() + 1));
+    return { id, replayOf: deliveryId, queued: now };
+  }
+
+  async createEmailRoute(input: Record<string, unknown>, actor: string): Promise<ActionResult> {
+    try {
+      const count = Number(this.sql.exec('SELECT COUNT(*) AS count FROM email_routes WHERE active = 1').toArray()[0]?.['count'] ?? 0);
+      if (count >= MAX_EMAIL_ROUTES) throw new UsageError(`a project may have at most ${MAX_EMAIL_ROUTES} active inbound email routes`);
+      const kind = input['kind'];
+      if (kind !== 'create' && kind !== 'comment') throw new UsageError('kind must be create or comment');
+      const board = this.loadBoardDocs();
+      const lane = typeof input['lane'] === 'string' && input['lane'].trim() !== '' ? input['lane'].trim() : null;
+      const card = typeof input['card'] === 'string' && input['card'].trim() !== '' ? input['card'].trim() : null;
+      if (kind === 'create' && card !== null) throw new UsageError('create routes cannot name a card');
+      if (kind === 'comment' && lane !== null) throw new UsageError('comment routes cannot name a lane');
+      if (kind === 'comment' && (card === null || !board.cards.some((candidate) => candidate.id === card))) {
+        throw new UsageError('comment routes require an existing card');
+      }
+      if (kind === 'create' && lane !== null) {
+        const valid = board.config.lanes.some((candidate) => candidate.id === lane || candidate.substates.some((substate) => `${candidate.id}.${substate}` === lane));
+        if (!valid) throw new UsageError(`no lane or substate "${lane}"`);
+      }
+      const id = randomIntegrationId('emr');
+      const token = randomEmailToken();
+      const hash = await emailTokenHash(token);
+      const name = cleanIntegrationName(input['name'], kind === 'create' ? 'Email to board' : `Email to card ${card}`);
+      const now = new Date().toISOString();
+      this.sql.exec(
+        'INSERT INTO email_routes(id, name, token_hash, kind, lane_id, card_id, actor, active, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)',
+        id, name, hash, kind, lane, card, actor, now, now,
+      );
+      return { route: { id, name, kind, lane, card, actor, active: true, created: now, updated: now }, token };
+    } catch (error) {
+      if (error instanceof Error) return { error: error.message };
+      return { error: 'could not create email route' };
+    }
+  }
+
+  listEmailRoutes(): { routes: Record<string, unknown>[] } {
+    return {
+      routes: this.sql.exec(
+        'SELECT id, name, kind, lane_id, card_id, actor, active, created, updated FROM email_routes ORDER BY active DESC, created DESC',
+      ).toArray().map((row) => ({
+        id: String(row['id']), name: String(row['name']), kind: String(row['kind']),
+        lane: typeof row['lane_id'] === 'string' ? row['lane_id'] : null,
+        card: typeof row['card_id'] === 'string' ? row['card_id'] : null,
+        actor: String(row['actor']), active: Number(row['active']) === 1,
+        created: String(row['created']), updated: String(row['updated']),
+      })),
+    };
+  }
+
+  revokeEmailRoute(id: string): ActionResult {
+    if (this.sql.exec('SELECT id FROM email_routes WHERE id = ? AND active = 1', id).toArray()[0] === undefined) return { error: 'email route not found' };
+    const now = new Date().toISOString();
+    this.sql.exec('UPDATE email_routes SET active = 0, updated = ? WHERE id = ?', now, id);
+    return { id, revoked: now };
+  }
+
+  async processInboundEmail(token: string, input: unknown): Promise<ActionResult> {
+    try {
+      const mail = normalizeInboundEmail(input);
+      const hash = await emailTokenHash(token);
+      const route = this.sql.exec(
+        'SELECT id, kind, lane_id, card_id, actor FROM email_routes WHERE token_hash = ? AND active = 1', hash,
+      ).toArray()[0];
+      if (route === undefined) return { error: 'email route not found' };
+      const routeId = String(route['id']);
+      this.sql.exec(
+        'DELETE FROM email_inbound_messages WHERE route_id = ? AND received < ?',
+        routeId, new Date(Date.now() - EMAIL_DEDUPE_RETENTION_MS).toISOString(),
+      );
+      const prior = this.sql.exec(
+        'SELECT outcome FROM email_inbound_messages WHERE route_id = ? AND message_id = ?', routeId, mail.messageId,
+      ).toArray()[0];
+      if (typeof prior?.['outcome'] === 'string') {
+        return { ...(JSON.parse(prior['outcome']) as Record<string, unknown>), duplicate: true };
+      }
+      const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const recent = Number(this.sql.exec(
+        'SELECT COUNT(*) AS count FROM email_inbound_messages WHERE route_id = ? AND received >= ?', routeId, since,
+      ).toArray()[0]?.['count'] ?? 0);
+      if (recent >= EMAIL_INBOUND_HOURLY_CAP) return { error: 'inbound email rate limit exceeded', retryAfter: 3600 };
+
+      const board = this.loadBoardDocs();
+      if (board.config.mutationBlocked !== null) throw new UsageError(`board is read-only: ${board.config.mutationBlocked}`);
+      const emailActor = `email-${String(route['actor'])}`;
+      let outcome: Record<string, unknown> = {};
+      this.ctx.storage.transactionSync(() => {
+        // The provider may retry while a prior request is completing. The DO
+        // is single-writer, but the second check keeps the transaction itself
+        // the source of truth for exactly-once mutation.
+        const duplicate = this.sql.exec(
+          'SELECT outcome FROM email_inbound_messages WHERE route_id = ? AND message_id = ?', routeId, mail.messageId,
+        ).toArray()[0];
+        if (typeof duplicate?.['outcome'] === 'string') {
+          outcome = { ...(JSON.parse(duplicate['outcome']) as Record<string, unknown>), duplicate: true };
+          return;
+        }
+        if (route['kind'] === 'create') {
+          const title = (mail.subject || (mail.from ? `Email from ${mail.from}` : 'Untitled email')).slice(0, EMAIL_MAX_SUBJECT);
+          const description = [mail.from ? `From: ${mail.from}` : '', mail.text].filter(Boolean).join('\n\n');
+          const card = opAdd(board, {
+            title,
+            lane: typeof route['lane_id'] === 'string' ? route['lane_id'] : undefined,
+            body: description === '' ? '' : `## Description\n\n${sanitizeBlock(description)}`,
+            actor: emailActor,
+          });
+          this.persistCard(card);
+          this.event(emailActor, 'add', card.id, `inbound email ${mail.messageId}${mail.from ? ` from ${mail.from}` : ''}`.slice(0, 300));
+          outcome = { accepted: true, duplicate: false, kind: 'create', cardId: card.id };
+        } else {
+          const cardId = String(route['card_id']);
+          const card = getCard(board, cardId);
+          const comment = [mail.from ? `From ${mail.from}` : '', mail.subject, mail.text].filter(Boolean).join(' — ').slice(0, MAX_LINE_TEXT);
+          opComment(card, emailActor, comment);
+          this.persistCard(card);
+          this.event(emailActor, 'comment', card.id, `inbound email ${mail.messageId}${mail.from ? ` from ${mail.from}` : ''}`.slice(0, 300));
+          outcome = { accepted: true, duplicate: false, kind: 'comment', cardId: card.id };
+        }
+        this.sql.exec(
+          'INSERT INTO email_inbound_messages(route_id, message_id, outcome, received) VALUES (?, ?, ?, ?)',
+          routeId, mail.messageId, JSON.stringify(outcome), new Date().toISOString(),
+        );
+      });
+      this.rescheduleAlarm();
+      return outcome;
+    } catch (error) {
+      if (error instanceof Error) return { error: error.message };
+      return { error: 'could not process inbound email' };
+    }
+  }
+
+  createEmailSubscription(input: Record<string, unknown>): ActionResult {
+    try {
+      const count = Number(this.sql.exec('SELECT COUNT(*) AS count FROM email_subscriptions WHERE active = 1').toArray()[0]?.['count'] ?? 0);
+      if (count >= MAX_EMAIL_SUBSCRIPTIONS) throw new UsageError(`a project may have at most ${MAX_EMAIL_SUBSCRIPTIONS} active email subscriptions`);
+      const recipients = cleanRecipients(input['recipients']);
+      const allowEvents = cleanEventList(input['allowEvents'], 'allowEvents');
+      const denyEvents = cleanEventList(input['denyEvents'], 'denyEvents');
+      const id = randomIntegrationId('ems');
+      const name = cleanIntegrationName(input['name'], 'Email notifications');
+      const now = new Date().toISOString();
+      this.sql.exec(
+        'INSERT INTO email_subscriptions(id, name, recipients, allow_events, deny_events, active, created, updated) VALUES (?, ?, ?, ?, ?, 1, ?, ?)',
+        id, name, JSON.stringify(recipients), JSON.stringify(allowEvents), JSON.stringify(denyEvents), now, now,
+      );
+      return { subscription: { id, name, recipients, allowEvents, denyEvents, active: true, created: now, updated: now } };
+    } catch (error) {
+      if (error instanceof Error) return { error: error.message };
+      return { error: 'could not create email subscription' };
+    }
+  }
+
+  listEmailSubscriptions(): { subscriptions: Record<string, unknown>[] } {
+    return {
+      subscriptions: this.sql.exec(
+        'SELECT id, name, recipients, allow_events, deny_events, active, created, updated FROM email_subscriptions ORDER BY active DESC, created DESC',
+      ).toArray().map((row) => ({
+        id: String(row['id']), name: String(row['name']), recipients: eventList(row['recipients']),
+        allowEvents: eventList(row['allow_events']), denyEvents: eventList(row['deny_events']),
+        active: Number(row['active']) === 1, created: String(row['created']), updated: String(row['updated']),
+      })),
+    };
+  }
+
+  revokeEmailSubscription(id: string): ActionResult {
+    if (this.sql.exec('SELECT id FROM email_subscriptions WHERE id = ? AND active = 1', id).toArray()[0] === undefined) return { error: 'email subscription not found' };
+    const now = new Date().toISOString();
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec('UPDATE email_subscriptions SET active = 0, updated = ? WHERE id = ?', now, id);
+      this.sql.exec(
+        "UPDATE email_outbox SET status = 'failed', next_attempt = ?, lease_token = NULL, lease_until = NULL, error = 'subscription revoked' WHERE subscription_id = ? AND status IN ('queued', 'retry', 'sending')",
+        now, id,
+      );
+    });
+    return { id, revoked: now };
+  }
+
+  claimEmailOutbox(requestedLimit: number, bridgeActor: string): { messages: Record<string, unknown>[] } {
+    const limit = Math.max(1, Math.min(EMAIL_OUTBOX_CLAIM_MAX, Number.isInteger(requestedLimit) ? requestedLimit : 10));
+    const now = new Date().toISOString();
+    this.sql.exec(
+      "UPDATE email_outbox SET status = 'failed', next_attempt = ?, lease_token = NULL, lease_until = NULL, error = 'retry budget exhausted' WHERE attempts >= ? AND ((status = 'sending' AND lease_until IS NOT NULL AND lease_until <= ?) OR status IN ('queued', 'retry'))",
+      now, EMAIL_MAX_ATTEMPTS, now,
+    );
+    const rows = this.sql.exec(
+      `SELECT id, payload, attempts
+         FROM email_outbox
+        WHERE attempts < ?
+          AND ((status IN ('queued', 'retry') AND next_attempt <= ?)
+           OR (status = 'sending' AND lease_until IS NOT NULL AND lease_until <= ?))
+        ORDER BY next_attempt, seq
+        LIMIT ?`,
+      EMAIL_MAX_ATTEMPTS, now, now, limit,
+    ).toArray();
+    const messages: Record<string, unknown>[] = [];
+    for (const row of rows) {
+      const id = String(row['id']);
+      const leaseToken = randomIntegrationId('lease');
+      const leaseUntil = new Date(Date.now() + EMAIL_LEASE_MS).toISOString();
+      const attempt = Number(row['attempts']) + 1;
+      this.sql.exec(
+        "UPDATE email_outbox SET status = 'sending', attempts = ?, lease_token = ?, lease_until = ?, leased_by = ?, error = NULL WHERE id = ?",
+        attempt, leaseToken, leaseUntil, bridgeActor, id,
+      );
+      messages.push({ id, leaseToken, leaseUntil, attempt, payload: JSON.parse(String(row['payload'])) as unknown });
+    }
+    return { messages };
+  }
+
+  acknowledgeEmailOutbox(id: string, input: Record<string, unknown>): ActionResult {
+    const leaseToken = typeof input['leaseToken'] === 'string' ? input['leaseToken'] : '';
+    const outcome = input['status'];
+    if (leaseToken === '' || (outcome !== 'sent' && outcome !== 'retry' && outcome !== 'failed')) {
+      return { error: 'leaseToken and status (sent, retry, or failed) are required' };
+    }
+    const row = this.sql.exec(
+      "SELECT attempts FROM email_outbox WHERE id = ? AND status = 'sending' AND lease_token = ?", id, leaseToken,
+    ).toArray()[0];
+    if (row === undefined) return { error: 'email lease not found or no longer current', conflict: true };
+    const now = new Date().toISOString();
+    const error = typeof input['error'] === 'string' ? input['error'].slice(0, 300) : null;
+    if (outcome === 'sent') {
+      this.sql.exec(
+        "UPDATE email_outbox SET status = 'sent', next_attempt = ?, lease_token = NULL, lease_until = NULL, error = NULL, sent = ? WHERE id = ?",
+        now, now, id,
+      );
+      return { id, status: 'sent', sent: now };
+    }
+    const attempts = Number(row['attempts']);
+    if (outcome === 'failed' || attempts >= EMAIL_MAX_ATTEMPTS) {
+      this.sql.exec(
+        "UPDATE email_outbox SET status = 'failed', next_attempt = ?, lease_token = NULL, lease_until = NULL, error = ? WHERE id = ?",
+        now, error ?? (attempts >= EMAIL_MAX_ATTEMPTS ? 'retry budget exhausted' : 'bridge reported permanent failure'), id,
+      );
+      return { id, status: 'failed' };
+    }
+    const requested = typeof input['retryAfterSeconds'] === 'number' && Number.isFinite(input['retryAfterSeconds'])
+      ? Math.max(1, Math.min(86_400, Math.round(input['retryAfterSeconds']))) * 1000
+      : 0;
+    const backoff = EMAIL_BACKOFF_MS[Math.min(attempts - 1, EMAIL_BACKOFF_MS.length - 1)]!;
+    const next = new Date(Date.now() + Math.max(requested, backoff)).toISOString();
+    this.sql.exec(
+      "UPDATE email_outbox SET status = 'retry', next_attempt = ?, lease_token = NULL, lease_until = NULL, error = ? WHERE id = ?",
+      next, error ?? 'bridge requested retry', id,
+    );
+    return { id, status: 'retry', nextAttempt: next };
+  }
+
+  listEmailOutbox(requestedLimit: number, before: number | null, subscriptionId: string | null): ActionResult {
+    const limit = Math.max(1, Math.min(100, Number.isInteger(requestedLimit) ? requestedLimit : 25));
+    let rows;
+    if (subscriptionId !== null && before !== null) {
+      rows = this.sql.exec(
+        'SELECT seq, id, subscription_id, event_seq, event_action, status, attempts, next_attempt, lease_until, leased_by, error, sent, created FROM email_outbox WHERE subscription_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?',
+        subscriptionId, before, limit + 1,
+      ).toArray();
+    } else if (subscriptionId !== null) {
+      rows = this.sql.exec(
+        'SELECT seq, id, subscription_id, event_seq, event_action, status, attempts, next_attempt, lease_until, leased_by, error, sent, created FROM email_outbox WHERE subscription_id = ? ORDER BY seq DESC LIMIT ?',
+        subscriptionId, limit + 1,
+      ).toArray();
+    } else if (before !== null) {
+      rows = this.sql.exec(
+        'SELECT seq, id, subscription_id, event_seq, event_action, status, attempts, next_attempt, lease_until, leased_by, error, sent, created FROM email_outbox WHERE seq < ? ORDER BY seq DESC LIMIT ?',
+        before, limit + 1,
+      ).toArray();
+    } else {
+      rows = this.sql.exec(
+        'SELECT seq, id, subscription_id, event_seq, event_action, status, attempts, next_attempt, lease_until, leased_by, error, sent, created FROM email_outbox ORDER BY seq DESC LIMIT ?',
+        limit + 1,
+      ).toArray();
+    }
+    const page = rows.slice(0, limit);
+    return {
+      messages: page.map((row) => ({
+        sequence: Number(row['seq']), id: String(row['id']), subscriptionId: String(row['subscription_id']),
+        eventSequence: Number(row['event_seq']), event: String(row['event_action']), status: String(row['status']),
+        attempts: Number(row['attempts']), nextAttempt: String(row['next_attempt']),
+        leaseUntil: typeof row['lease_until'] === 'string' ? row['lease_until'] : null,
+        leasedBy: typeof row['leased_by'] === 'string' ? row['leased_by'] : null,
+        error: typeof row['error'] === 'string' ? row['error'] : null,
+        sent: typeof row['sent'] === 'string' ? row['sent'] : null, created: String(row['created']),
+      })),
+      next: rows.length > limit ? Number(page.at(-1)?.['seq']) : null,
+    };
   }
 
   private runAutomationPass(nowValue: number | Date = Date.now()): ReturnType<typeof opAutomationPass> {
@@ -190,12 +809,25 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
         }
       });
     }
-    this.rescheduleAutomation({ ...board, cards: board.cards.map((card) => result.cards.find((changed) => changed.id === card.id) ?? card) });
+    this.rescheduleAlarm({ ...board, cards: board.cards.map((card) => result.cards.find((changed) => changed.id === card.id) ?? card) });
     return result;
   }
 
   async alarm(): Promise<void> {
-    this.runAutomationPass();
+    let failure: unknown;
+    try {
+      this.runAutomationPass();
+    } catch (error) {
+      failure = error;
+    }
+    try {
+      await this.deliverDueWebhooks();
+    } catch (error) {
+      failure ??= error;
+    } finally {
+      this.rescheduleAlarm();
+    }
+    if (failure !== undefined) throw failure;
   }
 
   /** Resolve project-card children by asking sibling DOs. Cycle-safe, and
@@ -552,19 +1184,28 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
 
   /** Attachment urls with no verdict yet, for the caller to go and fetch. */
   pendingUnfurls(limit: number): string[] {
-    const known = new Set(this.sql.exec('SELECT url FROM unfurls').toArray().map((r) => r['url'] as string));
-    const out: string[] = [];
+    const known = new Set<string>();
+    for (const row of this.sql.exec('SELECT url, status FROM unfurls').toArray()) {
+      const url = row['url'] as string;
+      // Old deployments may have cached a failed/empty YouTube watch page.
+      // Let the deterministic resolver replace that verdict exactly once.
+      if (row['status'] !== 'ok' && youtubeVideoId(url) !== null) continue;
+      known.add(url);
+    }
+    const youtube: string[] = [];
+    const other: string[] = [];
     for (const row of this.sql.exec('SELECT text FROM cards').toArray()) {
       for (const a of parseBody(row['text'] as string).attachments) {
         // Uploads are already ours and self-describing; only foreign urls have
         // anything to unfurl.
         if (a.url.startsWith('/') || known.has(a.url)) continue;
         known.add(a.url);
-        out.push(a.url);
-        if (out.length >= limit) return out;
+        (youtubeVideoId(a.url) === null ? other : youtube).push(a.url);
       }
     }
-    return out;
+    // Imported boards can contain a large link backlog. Resolve deterministic
+    // video art first so it is not starved behind arbitrary pages.
+    return youtube.concat(other).slice(0, limit);
   }
 
   /** Record a verdict, including "nothing there": an absent og:image is an
@@ -839,7 +1480,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       for (const card of moved) this.persistCard(card);
       this.event(actor, 'board-edit', null, `lanes: ${lanes.map((l) => l.id).join(', ')}${moved.length > 0 ? `; migrated ${moved.length} card(s)` : ''}`);
     });
-    this.rescheduleAutomation();
+    this.rescheduleAlarm();
     return { ok: true, migrated: moved.length };
   }
 
@@ -911,7 +1552,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           (reIds.length > 0 ? `; re-id on collision: ${reIds.join(', ')}` : ''),
       );
     });
-    this.rescheduleAutomation();
+    this.rescheduleAlarm();
     return { imported: parsed.cards.length, preserved: preserved.length, reIds, findings: parsed.findings.length };
   }
 
@@ -922,7 +1563,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       const card = opAdd(board, { ...opts, actor });
       this.persistCard(card);
       this.event(actor, 'add', card.id, `created "${card.title}" in ${card.laneId}`);
-      this.rescheduleAutomation();
+      this.rescheduleAlarm();
       return { id: card.id, file: card.file, lane: card.laneId };
     } catch (err) {
       if (err instanceof UsageError) return { error: err.message };
@@ -942,7 +1583,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           this.event(actor, 'quick-add', card.id, `created "${card.title}" in ${card.laneId}`);
         }
       });
-      this.rescheduleAutomation();
+      this.rescheduleAlarm();
       return { cards: cards.map((card) => ({ id: card.id, title: card.title, file: card.file })) };
     } catch (err) {
       if (err instanceof UsageError) return { error: err.message };
@@ -973,7 +1614,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           this.event(actor, `bulk-${kind}`, card.id, kind);
         }
       });
-      this.rescheduleAutomation();
+      this.rescheduleAlarm();
       return { changed: result.cards.map((card) => card.id), warnings: result.warnings };
     } catch (err) {
       if (err instanceof UsageError) return { error: err.message };
@@ -1001,7 +1642,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           this.event(actor, 'button', card.id, id);
         }
       });
-      this.rescheduleAutomation();
+      this.rescheduleAlarm();
       return { button: id, changed: result.cards.map((card) => card.id), warnings: result.warnings };
     } catch (err) {
       if (err instanceof UsageError) return { error: err.message };
@@ -1301,7 +1942,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       if (err instanceof UsageError) return { error: err.message };
       throw err;
     } finally {
-      this.rescheduleAutomation();
+      this.rescheduleAlarm();
     }
   }
 

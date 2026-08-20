@@ -469,6 +469,23 @@ export default {
         return json({ error: 'not found' }, 404);
       }
 
+      // Provider-neutral inbound email. The bridge verifies its provider's
+      // signature, then forwards only normalized text to this narrow route
+      // capability. A bad project id and a bad token are intentionally
+      // indistinguishable.
+      const inboundEmail = /^\/api\/email\/inbound\/(p-[a-z0-9-]+)\/(bfmail_[a-f0-9]{64})$/.exec(url.pathname);
+      if (req.method === 'POST' && inboundEmail) {
+        if ((await registry.projectName(inboundEmail[1]!)) === null) return json({ error: 'email route not found' }, 404);
+        const body = await smallJson(req, 128 * 1024);
+        if (body === null) return json({ error: 'a normalized email JSON object is required' }, 400);
+        const res = await project(inboundEmail[1]!).processInboundEmail(inboundEmail[2]!, body);
+        if ('retryAfter' in res) {
+          return new Response(JSON.stringify(res, null, 2), { status: 429, headers: { 'content-type': 'application/json', 'retry-after': String(res.retryAfter) } });
+        }
+        if ('error' in res) return json(res, res.error === 'email route not found' ? 404 : 400);
+        return json(res, 202);
+      }
+
       const status = await registry.status();
       // Theme is public chrome: the gate and share pages paint with it pre-auth.
       if (req.method === 'GET' && url.pathname === '/api/theme') {
@@ -1097,11 +1114,144 @@ export default {
         const body = (await req.json().catch(() => ({}))) as { config?: string; cards?: BoardDocument[]; actor?: string };
         if (typeof body.config !== 'string' || !Array.isArray(body.cards)) return json({ error: 'config and cards required' }, 400);
         const res = await stub.importDocs(body.config, body.cards, actor);
+        if (!('error' in res)) drainUnfurls();
         return 'error' in res ? json(res, 400) : json(res);
       }
       if (req.method === 'GET' && rest === '/events') {
         const limit = limitParam(url.searchParams.get('limit'));
         return json(await stub.listEvents(limit));
+      }
+      if (rest === '/webhooks') {
+        const denied = requireOwner();
+        if (denied) return denied;
+        if (req.method === 'GET') return json(await stub.listWebhooks());
+        if (req.method === 'POST') {
+          const body = await smallJson(req);
+          if (body === null) return json({ error: 'a small JSON object is required' }, 400);
+          const res = await stub.createWebhook(body);
+          if ('error' in res) return json(res, 400);
+          const created = res['webhook'] as { id?: unknown; name?: unknown } | undefined;
+          await registry.audit(actor, 'create-webhook', `${pid}/${String(created?.id ?? '')} "${String(created?.name ?? '')}"`);
+          return json(res);
+        }
+      }
+      const webhookOne = /^\/webhooks\/([^/]+)$/.exec(rest);
+      if (req.method === 'DELETE' && webhookOne) {
+        const denied = requireOwner();
+        if (denied) return denied;
+        const res = await stub.revokeWebhook(webhookOne[1]!);
+        if ('error' in res) return json(res, 404);
+        await registry.audit(actor, 'revoke-webhook', `${pid}/${webhookOne[1]}`);
+        return json(res);
+      }
+      const webhookRotate = /^\/webhooks\/([^/]+)\/rotate$/.exec(rest);
+      if (req.method === 'POST' && webhookRotate) {
+        const denied = requireOwner();
+        if (denied) return denied;
+        const res = await stub.rotateWebhook(webhookRotate[1]!);
+        if ('error' in res) return json(res, 404);
+        await registry.audit(actor, 'rotate-webhook', `${pid}/${webhookRotate[1]}`);
+        return json(res);
+      }
+      const webhookDeliveries = /^\/webhooks\/([^/]+)\/deliveries$/.exec(rest);
+      if (req.method === 'GET' && webhookDeliveries) {
+        const denied = requireOwner();
+        if (denied) return denied;
+        const rawBefore = url.searchParams.get('before');
+        const before = rawBefore === null ? null : Number(rawBefore);
+        if (before !== null && (!Number.isSafeInteger(before) || before < 1)) return json({ error: 'before must be a positive integer' }, 400);
+        const limit = Math.min(100, limitParam(url.searchParams.get('limit')));
+        const res = await stub.listWebhookDeliveries(webhookDeliveries[1]!, limit, before);
+        return 'error' in res ? json(res, 404) : json(res);
+      }
+      const webhookReplay = /^\/webhooks\/([^/]+)\/deliveries\/([^/]+)\/replay$/.exec(rest);
+      if (req.method === 'POST' && webhookReplay) {
+        const denied = requireOwner();
+        if (denied) return denied;
+        const res = await stub.replayWebhookDelivery(webhookReplay[1]!, webhookReplay[2]!);
+        if ('error' in res) return json(res, 404);
+        await registry.audit(actor, 'replay-webhook', `${pid}/${webhookReplay[1]}/${webhookReplay[2]}`);
+        return json(res);
+      }
+      if (rest === '/email/routes') {
+        const denied = requireOwner();
+        if (denied) return denied;
+        if (req.method === 'GET') return json(await stub.listEmailRoutes());
+        if (req.method === 'POST') {
+          const body = await smallJson(req);
+          if (body === null) return json({ error: 'a small JSON object is required' }, 400);
+          const res = await stub.createEmailRoute(body, actor);
+          if ('error' in res) return json(res, 400);
+          const created = res['route'] as { id?: unknown; kind?: unknown } | undefined;
+          await registry.audit(actor, 'create-email-route', `${pid}/${String(created?.id ?? '')} ${String(created?.kind ?? '')}`);
+          return json(res);
+        }
+      }
+      const emailRouteOne = /^\/email\/routes\/([^/]+)$/.exec(rest);
+      if (req.method === 'DELETE' && emailRouteOne) {
+        const denied = requireOwner();
+        if (denied) return denied;
+        const res = await stub.revokeEmailRoute(emailRouteOne[1]!);
+        if ('error' in res) return json(res, 404);
+        await registry.audit(actor, 'revoke-email-route', `${pid}/${emailRouteOne[1]}`);
+        return json(res);
+      }
+      if (rest === '/email/subscriptions') {
+        const denied = requireOwner();
+        if (denied) return denied;
+        if (req.method === 'GET') return json(await stub.listEmailSubscriptions());
+        if (req.method === 'POST') {
+          const body = await smallJson(req);
+          if (body === null) return json({ error: 'a small JSON object is required' }, 400);
+          const res = await stub.createEmailSubscription(body);
+          if ('error' in res) return json(res, 400);
+          const created = res['subscription'] as { id?: unknown } | undefined;
+          await registry.audit(actor, 'create-email-subscription', `${pid}/${String(created?.id ?? '')}`);
+          return json(res);
+        }
+      }
+      const emailSubscriptionOne = /^\/email\/subscriptions\/([^/]+)$/.exec(rest);
+      if (req.method === 'DELETE' && emailSubscriptionOne) {
+        const denied = requireOwner();
+        if (denied) return denied;
+        const res = await stub.revokeEmailSubscription(emailSubscriptionOne[1]!);
+        if ('error' in res) return json(res, 404);
+        await registry.audit(actor, 'revoke-email-subscription', `${pid}/${emailSubscriptionOne[1]}`);
+        return json(res);
+      }
+      if (req.method === 'GET' && rest === '/email/outbox') {
+        const denied = requireOwner();
+        if (denied) return denied;
+        const rawBefore = url.searchParams.get('before');
+        const before = rawBefore === null ? null : Number(rawBefore);
+        if (before !== null && (!Number.isSafeInteger(before) || before < 1)) return json({ error: 'before must be a positive integer' }, 400);
+        const limit = Math.min(100, limitParam(url.searchParams.get('limit')));
+        const subscription = url.searchParams.get('subscription');
+        return json(await stub.listEmailOutbox(limit, before, subscription === null || subscription === '' ? null : subscription));
+      }
+      const emailBridgeDenied = (): Response | null => {
+        const denied = requireWrite();
+        if (denied) return denied;
+        return identity.kind === 'bot' || roleAllows(identity.role, 'owner')
+          ? null
+          : json({ error: 'email outbox delivery requires a scoped bot credential or an owner' }, 403);
+      };
+      if (req.method === 'POST' && rest === '/email/outbox/claim') {
+        const denied = emailBridgeDenied();
+        if (denied) return denied;
+        const body = (await smallJson(req)) ?? {};
+        const limit = body['limit'] === undefined ? 10 : Number(body['limit']);
+        if (!Number.isInteger(limit) || limit < 1) return json({ error: 'limit must be a positive integer' }, 400);
+        return json(await stub.claimEmailOutbox(limit, actor));
+      }
+      const emailOutboxAck = /^\/email\/outbox\/([^/]+)\/ack$/.exec(rest);
+      if (req.method === 'POST' && emailOutboxAck) {
+        const denied = emailBridgeDenied();
+        if (denied) return denied;
+        const body = await smallJson(req);
+        if (body === null) return json({ error: 'a small JSON object is required' }, 400);
+        const res = await stub.acknowledgeEmailOutbox(emailOutboxAck[1]!, body);
+        return 'error' in res ? json(res, 'conflict' in res ? 409 : 400) : json(res);
       }
       if (req.method === 'GET' && rest === '/search') {
         const saved = url.searchParams.get('saved');

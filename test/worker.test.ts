@@ -5,6 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -96,6 +97,24 @@ function ogFixture(port: number): { close: () => Promise<void> } {
   });
   server.listen(port, '127.0.0.1');
   return { close: () => new Promise<void>((done) => server.close(() => done())) };
+}
+
+function webhookFixture(port: number): {
+  requests: { url: string; headers: Record<string, string | string[] | undefined>; body: string }[];
+  close: () => Promise<void>;
+} {
+  const requests: { url: string; headers: Record<string, string | string[] | undefined>; body: string }[] = [];
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+    req.on('end', () => {
+      requests.push({ url: req.url ?? '/', headers: { ...req.headers }, body: Buffer.concat(chunks).toString('utf8') });
+      res.writeHead((req.url ?? '').startsWith('/fail') ? 503 : 204);
+      res.end();
+    });
+  });
+  server.listen(port, '127.0.0.1');
+  return { requests, close: () => new Promise<void>((done) => server.close(() => done())) };
 }
 
 test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180_000 }, async () => {
@@ -712,8 +731,142 @@ vendor:
       // only at the start, which is the usual way past a naive guard.
       await refuses('Bare page', `http://127.0.0.1:${OG_PORT}/no-og`);
       await refuses('Redirector', `http://127.0.0.1:${OG_PORT}/redirect-private`);
+
+      // YouTube has a deterministic public thumbnail contract, so it does
+      // not need to execute or even fetch the watch page. It still enters the
+      // same cache and privacy-preserving image proxy as every other preview.
+      const youtubeCard = (await call(`/api/projects/${parent}/cards`, { method: 'POST', token: admin, body: JSON.stringify({ title: 'YouTube art' }) })).body['id'] as string;
+      const youtubeUrl = 'https://youtu.be/dQw4w9WgXcQ';
+      await call(`/api/projects/${parent}/cards/${youtubeCard}/attach`, { method: 'POST', token: admin, body: JSON.stringify({ url: youtubeUrl }) });
+      const youtubePreview = await previewOf(youtubeCard);
+      assert.equal(youtubePreview.length, 1);
+      assert.equal(youtubePreview[0]!.url, youtubeUrl);
+      assert.match(youtubePreview[0]!.image, /^\/og\/[a-f0-9]{64}\?p=/, 'YouTube art is proxied, never embedded from YouTube');
     } finally {
       await site.close();
+    }
+
+    // ---- hardened outbound webhook + provider-neutral email seams ----
+    const WEBHOOK_PORT = await freePort();
+    const webhookSite = webhookFixture(WEBHOOK_PORT);
+    try {
+      const createdWebhook = await call(`/api/projects/${parent}/webhooks`, {
+        method: 'POST', token: admin,
+        body: JSON.stringify({ name: 'add events', url: `http://127.0.0.1:${WEBHOOK_PORT}/hook`, allowEvents: ['add'], denyEvents: [] }),
+      });
+      assert.equal(createdWebhook.status, 200, JSON.stringify(createdWebhook.body));
+      const hook = createdWebhook.body['webhook'] as { id: string };
+      const webhookSecret = createdWebhook.body['secret'] as string;
+      assert.match(webhookSecret, /^bfwhsec_[a-f0-9]{64}$/);
+
+      const webhookCard = (await call(`/api/projects/${parent}/cards`, {
+        method: 'POST', token: admin, body: JSON.stringify({ title: 'Webhook delivery' }),
+      })).body['id'] as string;
+      let deliveries: { id: string; status: string; attempts: number }[] = [];
+      for (let i = 0; i < 50; i++) {
+        const history = await call(`/api/projects/${parent}/webhooks/${hook.id}/deliveries?limit=10`, { token: admin });
+        deliveries = history.body['deliveries'] as typeof deliveries;
+        if (deliveries[0]?.status === 'delivered') break;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      assert.equal(deliveries[0]?.status, 'delivered', 'ProjectDO alarm delivered the queued webhook');
+      assert.equal(deliveries[0]?.attempts, 1);
+      assert.equal(webhookSite.requests.length, 1);
+      const sent = webhookSite.requests[0]!;
+      const timestamp = String(sent.headers['x-botflow-timestamp']);
+      const expectedSignature = createHmac('sha256', webhookSecret).update(`${timestamp}.${sent.body}`).digest('hex');
+      assert.equal(sent.headers['x-botflow-signature-256'], `sha256=${expectedSignature}`);
+      assert.equal(sent.headers['x-botflow-event'], 'add');
+      assert.equal((JSON.parse(sent.body) as { event: { card_id: string } }).event.card_id, webhookCard);
+
+      await call(`/api/projects/${parent}/cards/${webhookCard}/edit`, {
+        method: 'POST', token: admin, body: JSON.stringify({ priority: 'p1' }),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.equal(webhookSite.requests.length, 1, 'exact allow-list excludes edit events');
+
+      const replay = await call(`/api/projects/${parent}/webhooks/${hook.id}/deliveries/${deliveries[0]!.id}/replay`, {
+        method: 'POST', token: admin, body: '{}',
+      });
+      assert.equal(replay.status, 200);
+      for (let i = 0; i < 50 && webhookSite.requests.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.equal(webhookSite.requests.length, 2, 'manual replay is delivered');
+      assert.equal(webhookSite.requests[1]!.body, sent.body, 'replay uses the exact frozen event body');
+      assert.notEqual(webhookSite.requests[1]!.headers['x-botflow-delivery'], sent.headers['x-botflow-delivery'], 'replay gets a fresh delivery id');
+      const rotated = await call(`/api/projects/${parent}/webhooks/${hook.id}/rotate`, { method: 'POST', token: admin, body: '{}' });
+      assert.match(String(rotated.body['secret']), /^bfwhsec_[a-f0-9]{64}$/);
+      assert.notEqual(rotated.body['secret'], webhookSecret);
+      assert.equal((await call(`/api/projects/${parent}/webhooks/${hook.id}`, { method: 'DELETE', token: admin })).status, 200);
+
+      const failingWebhook = await call(`/api/projects/${parent}/webhooks`, {
+        method: 'POST', token: admin,
+        body: JSON.stringify({ name: 'circuit proof', url: `http://127.0.0.1:${WEBHOOK_PORT}/fail`, allowEvents: ['quick-add'] }),
+      });
+      const failingHookId = (failingWebhook.body['webhook'] as { id: string }).id;
+      assert.equal((await call(`/api/projects/${parent}/cards/quick`, {
+        method: 'POST', token: admin, body: JSON.stringify({ text: 'Circuit 1\nCircuit 2\nCircuit 3\nCircuit 4\nCircuit 5' }),
+      })).status, 200);
+      let circuit: { failureCount: number; circuitUntil: string | null } | undefined;
+      for (let i = 0; i < 50; i++) {
+        const listed = (await call(`/api/projects/${parent}/webhooks`, { token: admin })).body['webhooks'] as unknown as { id: string; failureCount: number; circuitUntil: string | null }[];
+        circuit = listed.find((item) => item.id === failingHookId);
+        if (circuit?.circuitUntil) break;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      assert.equal(circuit?.failureCount, 5);
+      assert.ok(circuit?.circuitUntil, 'five consecutive failures open the endpoint circuit');
+      assert.equal((await call(`/api/projects/${parent}/webhooks/${failingHookId}`, { method: 'DELETE', token: admin })).status, 200);
+
+      const subscription = await call(`/api/projects/${parent}/email/subscriptions`, {
+        method: 'POST', token: admin,
+        body: JSON.stringify({ name: 'new cards', recipients: ['ops@example.com'], allowEvents: ['add'], denyEvents: [] }),
+      });
+      assert.equal(subscription.status, 200, JSON.stringify(subscription.body));
+      const subscriptionId = (subscription.body['subscription'] as { id: string }).id;
+      const inboundRoute = await call(`/api/projects/${parent}/email/routes`, {
+        method: 'POST', token: admin, body: JSON.stringify({ name: 'mailbox', kind: 'create', lane: 'todo' }),
+      });
+      assert.equal(inboundRoute.status, 200, JSON.stringify(inboundRoute.body));
+      const route = inboundRoute.body['route'] as { id: string };
+      const inboundToken = inboundRoute.body['token'] as string;
+      const normalized = { messageId: 'provider-message-1', from: 'Sender <sender@example.com>', subject: 'Arrived by email', text: 'A plain text description.' };
+      const inbound = await call(`/api/email/inbound/${parent}/${inboundToken}`, { method: 'POST', body: JSON.stringify(normalized) });
+      assert.equal(inbound.status, 202, JSON.stringify(inbound.body));
+      const inboundCardId = inbound.body['cardId'] as string;
+      const duplicate = await call(`/api/email/inbound/${parent}/${inboundToken}`, { method: 'POST', body: JSON.stringify(normalized) });
+      assert.equal(duplicate.status, 202);
+      assert.equal(duplicate.body['cardId'], inboundCardId);
+      assert.equal(duplicate.body['duplicate'], true, 'provider retry does not create a second card');
+      const inboundCard = (await call(`/api/projects/${parent}/cards/${inboundCardId}`, { token: admin })).body as unknown as {
+        title: string; author: string; parsed: { description: string };
+      };
+      assert.equal(inboundCard.title, 'Arrived by email');
+      assert.equal(inboundCard.author, 'email-root');
+      assert.match(inboundCard.parsed.description, /A plain text description/);
+
+      const claimed = await call(`/api/projects/${parent}/email/outbox/claim`, {
+        method: 'POST', token: key, body: JSON.stringify({ limit: 10 }),
+      });
+      assert.equal(claimed.status, 200);
+      const messages = claimed.body['messages'] as unknown as { id: string; leaseToken: string; payload: { schema: string; message: { to: string[] } } }[];
+      assert.equal(messages.length, 1);
+      assert.equal(messages[0]!.payload.schema, 'botflow.email.outbound.v1');
+      assert.deepEqual(messages[0]!.payload.message.to, ['ops@example.com']);
+      const ack = await call(`/api/projects/${parent}/email/outbox/${messages[0]!.id}/ack`, {
+        method: 'POST', token: key, body: JSON.stringify({ leaseToken: messages[0]!.leaseToken, status: 'sent' }),
+      });
+      assert.equal(ack.status, 200);
+      assert.equal((await call(`/api/projects/${parent}/email/outbox/${messages[0]!.id}/ack`, {
+        method: 'POST', token: key, body: JSON.stringify({ leaseToken: messages[0]!.leaseToken, status: 'sent' }),
+      })).status, 409, 'a stale lease cannot acknowledge twice');
+      const outbox = await call(`/api/projects/${parent}/email/outbox?subscription=${subscriptionId}`, { token: admin });
+      assert.equal(((outbox.body['messages'] as unknown as { status: string }[])[0]!).status, 'sent');
+      assert.equal((await call(`/api/projects/${parent}/email/routes/${route.id}`, { method: 'DELETE', token: admin })).status, 200);
+      assert.equal((await call(`/api/email/inbound/${parent}/${inboundToken}`, { method: 'POST', body: JSON.stringify({ ...normalized, messageId: 'provider-message-2' }) })).status, 404,
+        'route revocation is immediate');
+      assert.equal((await call(`/api/projects/${parent}/email/subscriptions/${subscriptionId}`, { method: 'DELETE', token: admin })).status, 200);
+    } finally {
+      await webhookSite.close();
     }
 
     // Card authoring: description + checklist tasks through the API.

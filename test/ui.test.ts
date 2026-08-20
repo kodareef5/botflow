@@ -307,6 +307,22 @@ test('ui: collaboration controls, lane subscriptions, and personal feeds are rea
   assert.match(app, /Revocation is immediate/);
 });
 
+test('ui: owners can administer hardened webhook and email integrations', () => {
+  const app = scripts.join('\n');
+  assert.match(app, /\['sharing','integrations'\]/, 'integrations is owner-only beside public sharing');
+  for (const endpoint of [
+    '/webhooks', '/email/routes', '/email/subscriptions', '/email/outbox?limit=25',
+  ]) assert.ok(app.includes(endpoint), `integration UI reaches ${endpoint}`);
+  for (const control of [
+    'data-whdeliveries', 'data-replaydelivery', 'data-whrotate', 'data-whrevoke',
+    'data-errevoke', 'data-esrevoke', 'data-copyintegration',
+  ]) assert.ok(app.includes(control), `${control} is wired`);
+  assert.match(app, /Webhook signing secret/);
+  assert.match(app, /Inbound bridge endpoint/);
+  assert.match(app, /It is never shown again/);
+  assert.match(app, /SPF\/DKIM/, 'provider responsibility is visible, not hidden in implementation notes');
+});
+
 test('ui: a link preview can become cover art without overriding cover: none', () => {
   const app = scripts.join('\n');
   // cover is null both when art is suppressed and when there simply is none,
@@ -314,6 +330,7 @@ test('ui: a link preview can become cover art without overriding cover: none', (
   assert.match(app, /function coverOf\(c\)\{/);
   assert.match(app, /if\(!c\.coverAuto\)return null/, 'cover: none outranks a preview');
   assert.match(app, /if\(c\.cover\)return c\.cover/, 'an explicit cover still wins');
+  assert.match(app, /ps\.find\(x=>youtubeLink\(x\.url\)\)\|\|ps\[0\]/, 'YouTube art wins over a generic earlier link');
   // Card face and modal both go through it, so they cannot disagree.
   assert.match(app, /coverOf\(c\)\)\)/);
   // A preview tile stands for its link, so it opens the page, not the picture.

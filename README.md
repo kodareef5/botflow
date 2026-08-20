@@ -298,6 +298,22 @@ resolves to a private address passes the check. Cloudflare's edge will not route
 a deployed Worker is covered; a self-hosted `workerd` on a LAN is not, which is why you
 turn this on rather than it being assumed.
 
+### Webhooks and email bridges
+
+Project owners can configure signed outbound webhooks and provider-neutral email from
+the project's **Integrations** tab. Webhooks freeze a versioned event body, sign the
+exact bytes with HMAC-SHA256, revalidate every redirect hop against the SSRF policy,
+retry durably with backoff, open a circuit around dead endpoints, and retain paginated
+delivery history for replay. Production webhook endpoints require HTTPS.
+
+Email deliberately stops at a provider boundary. A constrained inbound capability can
+only create a card or comment on one preselected card, with provider message-id dedupe.
+Outbound notifications enter a leased outbox that a project-scoped bot bridge claims
+and acknowledges using its ordinary `bfk_` credential. The bridge—not botflow—owns the
+mail provider, signature verification, SPF/DKIM, bounces, and deliverability. The exact
+payloads, receiver verification algorithm, retry behavior, bridge API, and threat models
+are documented in [Hosted integration contracts](docs/integrations.md).
+
 ### Members, scopes, and roles
 
 Everyone on a board is a member with a username and password. Humans and bots use the same

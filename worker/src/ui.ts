@@ -470,6 +470,7 @@ let ME=null,CAN_WRITE=false,IS_OWNER=false,DIR=new Map();
 // focused query input is never replaced while someone is typing.
 let SEARCH_PROJECT=null,SEARCH_QUERY='',SEARCH_SAVED='',SEARCH_IDS=null,SEARCH_TIMER=null,SEARCH_SEQ=0;
 let NEW_FEED=null;
+let INTEGRATION_NOTICE=null;
 // Usernames are what boards store; display names are what people read. One
 // lookup here is what makes renaming a member update every card at once.
 function who(u){if(!u)return '';const m=DIR.get(u);return m?m.display:u}
@@ -757,12 +758,12 @@ function renderMain(){
     +'</div></div>';return}
   if(SEARCH_PROJECT!==SEL){
     if(SEARCH_TIMER)clearTimeout(SEARCH_TIMER);
-    SEARCH_PROJECT=SEL;SEARCH_QUERY='';SEARCH_SAVED='';SEARCH_IDS=null;SEARCH_SEQ++;NEW_FEED=null;
+    SEARCH_PROJECT=SEL;SEARCH_QUERY='';SEARCH_SAVED='';SEARCH_IDS=null;SEARCH_SEQ++;NEW_FEED=null;INTEGRATION_NOTICE=null;
   }
   // Feeds are personal member capabilities, while public sharing remains a
   // company-level decision. Every member can therefore reach feeds; only an
   // owner gets the public-sharing tab.
-  const tabs=['board','activity','feeds'].concat(IS_OWNER?['sharing']:[]);
+  const tabs=['board','activity','feeds'].concat(IS_OWNER?['sharing','integrations']:[]);
   if(!tabs.includes(VIEW))VIEW='board';
   const filters=(BOARD&&BOARD.filters)||[];
   const search=VIEW==='board'?'<div class="searchbox" role="search">'
@@ -806,7 +807,8 @@ function renderMain(){
   if(VIEW==='board'){wireSearchControls();refreshBoard()}
   else if(VIEW==='activity')refreshActivity();
   else if(VIEW==='feeds')refreshFeeds();
-  else refreshSharing();
+  else if(VIEW==='sharing')refreshSharing();
+  else refreshIntegrations();
 }
 
 function renderBoardButtons(){
@@ -1006,10 +1008,12 @@ function customPayload(defs,data,clear){
 // null in both cases and cannot tell them apart). No backticks in here: this
 // whole script lives inside a TypeScript template literal.
 function hostOf(u){try{return new URL(u,location.href).hostname.replace(/^www\./,'')}catch{return 'link'}}
+function youtubeLink(u){const h=hostOf(u).replace(/\.$/,'');return h==='youtube.com'||h==='m.youtube.com'||h==='music.youtube.com'||h==='youtu.be'||h==='youtube-nocookie.com'}
 function coverOf(c){
   if(c.cover)return c.cover;
   if(!c.coverAuto)return null;
-  const p=(c.previews||[])[0];
+  const ps=c.previews||[];
+  const p=ps.find(x=>youtubeLink(x.url))||ps[0];
   return p?p.image:null;
 }
 function badge(ic,txt,cls){return '<span class="'+(cls||'')+'">'+ic+(txt!==undefined?' '+txt:'')+'</span>'}
@@ -2571,6 +2575,136 @@ async function refreshFeeds(){
       const del=e.target.closest('[data-dfeed]');
       if(del){confirmModal('Delete feed','Delete this capability record? Its URLs will never work again.','delete',async()=>{
         await api('/api/feeds/'+del.dataset.dfeed,{method:'DELETE'});NEW_FEED=null;refreshFeeds()});return}
+    };
+  }catch(err){if(host.isConnected)host.innerHTML='<div class="err">'+esc(err.message)+'</div>'}
+}
+function integrationNoticeHtml(){
+  if(!INTEGRATION_NOTICE)return '';
+  return '<div class="tokenbox"><b>'+esc(INTEGRATION_NOTICE.title)+'</b><br>'+esc(INTEGRATION_NOTICE.value)
+    +'<div style="margin-top:7px"><button type="button" class="ghost" data-copyintegration="'+esc(INTEGRATION_NOTICE.value)+'">copy</button> '
+    +'<button type="button" class="ghost" data-dismissintegration>dismiss</button></div></div>'
+    +'<p class="warn">'+esc(INTEGRATION_NOTICE.note)+'</p>';
+}
+function eventFilterLabel(item){
+  const allow=(item.allowEvents||[]).length?(item.allowEvents||[]).join(', '):'all events';
+  const deny=(item.denyEvents||[]).length?' except '+(item.denyEvents||[]).join(', '):'';
+  return allow+deny;
+}
+async function webhookDeliveriesModal(hook,before){
+  try{
+    const q='?limit=25'+(before?'&before='+encodeURIComponent(before):'');
+    const page=await api('/api/projects/'+SEL+'/webhooks/'+encodeURIComponent(hook.id)+'/deliveries'+q);
+    const rows=page.deliveries||[];
+    const dlg=overlay('<h3>'+esc(hook.name)+' delivery history</h3>'
+      +'<p class="setting-note">The delivery id is stable across automatic retries; receivers should deduplicate it and reject stale timestamps.</p>'
+      +(rows.length?'<table class="list"><tr><th>event</th><th>status</th><th>attempts</th><th>HTTP</th><th>when</th><th></th></tr>'
+        +rows.map(d=>'<tr><td>'+esc(d.event)+'</td><td>'+esc(d.status)+(d.error?'<br><span class="err">'+esc(d.error)+'</span>':'')+'</td>'
+          +'<td>'+esc(d.attempts)+'</td><td>'+esc(d.responseStatus??'')+'</td><td class="mono">'+esc((d.lastAttempt||d.created||'').replace('T',' ').slice(0,16))+'</td>'
+          +'<td><button type="button" data-replaydelivery="'+esc(d.id)+'">replay</button></td></tr>').join('')+'</table>'
+        :'<div class="empty">no deliveries yet</div>')
+      +'<div class="actions">'+(page.next?'<button type="button" class="ghost" data-moredeliveries="'+esc(page.next)+'">older</button>':'')
+      +'<button type="button" class="primary" data-x>done</button></div>','','Webhook delivery history');
+    $('[data-x]',dlg).onclick=closeOverlay;
+    dlg.onclick=async e=>{
+      const more=e.target.closest('[data-moredeliveries]');
+      if(more){await webhookDeliveriesModal(hook,Number(more.dataset.moredeliveries));return}
+      const replay=e.target.closest('[data-replaydelivery]');
+      if(replay){
+        try{await api('/api/projects/'+SEL+'/webhooks/'+encodeURIComponent(hook.id)+'/deliveries/'+encodeURIComponent(replay.dataset.replaydelivery)+'/replay',{method:'POST',body:'{}'});toast('Webhook replay queued.');await webhookDeliveriesModal(hook,null)}
+        catch(err){toast(err.message)}
+      }
+    };
+  }catch(err){toast(err.message)}
+}
+async function refreshIntegrations(){
+  const host=$('#view');if(!host)return;
+  try{
+    const [whResult,routeResult,subResult,outboxResult]=await Promise.all([
+      api('/api/projects/'+SEL+'/webhooks'),
+      api('/api/projects/'+SEL+'/email/routes'),
+      api('/api/projects/'+SEL+'/email/subscriptions'),
+      api('/api/projects/'+SEL+'/email/outbox?limit=25'),
+    ]);
+    if(!host.isConnected||VIEW!=='integrations')return;
+    const hooks=whResult.webhooks||[],routes=routeResult.routes||[],subs=subResult.subscriptions||[],outbox=outboxResult.messages||[];
+    host.innerHTML=integrationNoticeHtml()
+      +'<h3>Outbound webhooks</h3><p class="setting-note">Signed HTTPS POSTs with redirect-by-redirect SSRF checks, durable retries, a circuit breaker, and replayable history.</p>'
+      +'<p style="margin:10px 0"><button type="button" class="primary" id="mkwebhook">+ webhook</button></p>'
+      +(hooks.length?'<table class="list"><tr><th>name</th><th>endpoint</th><th>events</th><th>health</th><th></th></tr>'
+        +hooks.map(h=>'<tr'+(h.active?'':' style="opacity:.5"')+'><td>'+esc(h.name)+'</td><td class="mono">'+esc(h.url)+'</td><td>'+esc(eventFilterLabel(h))+'</td>'
+          +'<td>'+(h.active?(h.circuitUntil?'circuit open until '+esc(h.circuitUntil.replace('T',' ').slice(0,16)):h.failureCount?esc(h.failureCount)+' consecutive failure(s)':'ready'):'revoked')+'</td>'
+          +'<td><button type="button" data-whdeliveries="'+esc(h.id)+'">deliveries</button> '
+          +(h.active?'<button type="button" data-whrotate="'+esc(h.id)+'">rotate secret</button> <button type="button" data-whrevoke="'+esc(h.id)+'">revoke</button>':'')+'</td></tr>').join('')+'</table>'
+        :'<div class="empty">no webhooks yet</div>')
+      +'<h3 style="margin-top:26px">Inbound email routes</h3><p class="setting-note">A provider bridge verifies the provider and POSTs normalized JSON to a narrow create-card or comment-only capability. Provider message IDs are deduplicated.</p>'
+      +'<p style="margin:10px 0"><button type="button" class="primary" id="mkemailroute">+ inbound route</button></p>'
+      +(routes.length?'<table class="list"><tr><th>name</th><th>operation</th><th>target</th><th>actor</th><th></th></tr>'
+        +routes.map(r=>'<tr'+(r.active?'':' style="opacity:.5"')+'><td>'+esc(r.name)+'</td><td>'+esc(r.kind)+'</td><td class="mono">'+esc(r.kind==='comment'?'card '+r.card:(r.lane?'lane '+r.lane:'default todo lane'))+'</td><td>'+esc(r.actor)+'</td>'
+          +'<td>'+(r.active?'<button type="button" data-errevoke="'+esc(r.id)+'">revoke</button>':'revoked')+'</td></tr>').join('')+'</table>'
+        :'<div class="empty">no inbound routes yet</div>')
+      +'<h3 style="margin-top:26px">Outbound email subscriptions</h3><p class="setting-note">Events enter a durable leased outbox. A project-scoped bot key lets your provider bridge claim messages and acknowledge sent, retry, or permanent failure.</p>'
+      +'<p style="margin:10px 0"><button type="button" class="primary" id="mkemailsub">+ email subscription</button></p>'
+      +(subs.length?'<table class="list"><tr><th>name</th><th>recipients</th><th>events</th><th></th></tr>'
+        +subs.map(s=>'<tr'+(s.active?'':' style="opacity:.5"')+'><td>'+esc(s.name)+'</td><td>'+esc((s.recipients||[]).join(', '))+'</td><td>'+esc(eventFilterLabel(s))+'</td>'
+          +'<td>'+(s.active?'<button type="button" data-esrevoke="'+esc(s.id)+'">revoke</button>':'revoked')+'</td></tr>').join('')+'</table>'
+        :'<div class="empty">no email subscriptions yet</div>')
+      +'<h4 style="margin-top:18px">recent outbox</h4>'
+      +(outbox.length?'<table class="list"><tr><th>event</th><th>status</th><th>attempts</th><th>bridge</th><th>created</th></tr>'
+        +outbox.map(m=>'<tr><td>'+esc(m.event)+'</td><td>'+esc(m.status)+(m.error?'<br><span class="err">'+esc(m.error)+'</span>':'')+'</td><td>'+esc(m.attempts)+'</td><td>'+esc(m.leasedBy||'')+'</td><td class="mono">'+esc((m.created||'').replace('T',' ').slice(0,16))+'</td></tr>').join('')+'</table>'
+        :'<div class="empty">no queued email yet</div>')
+      +'<p class="setting-note" style="margin-top:12px">Botflow stores no SMTP password and performs no provider-specific signature verification. The bridge owns provider authentication, SPF/DKIM, suppression handling, and final delivery; botflow owns constrained ingress, dedupe, event selection, leases, retries, and audit state.</p>';
+
+    $('#mkwebhook').onclick=()=>formModal('New webhook',[
+      {name:'name',label:'name',required:true,value:'Webhook'},
+      {name:'url',label:'HTTPS endpoint',type:'url',required:true},
+      {name:'allow',label:'only these events (comma separated; empty means all)'},
+      {name:'deny',label:'never these events (comma separated)'},
+    ],'create',async d=>{
+      const list=v=>v?v.split(',').map(x=>x.trim()).filter(Boolean):[];
+      const r=await api('/api/projects/'+SEL+'/webhooks',{method:'POST',body:JSON.stringify({name:d.name,url:d.url,allowEvents:list(d.allow),denyEvents:list(d.deny)})});
+      INTEGRATION_NOTICE={title:'Webhook signing secret',value:r.secret,note:'Copy this secret now. It is never shown again; rotating it invalidates the old secret.'};
+      await refreshIntegrations();
+    });
+    $('#mkemailroute').onclick=()=>formModal('New inbound email route',[
+      {name:'name',label:'name',required:true,value:'Email to board'},
+      {name:'kind',label:'operation',type:'select',options:[{value:'create',label:'create a card'},{value:'comment',label:'comment on one card'}]},
+      {name:'lane',label:'lane or substate for new cards (optional)'},
+      {name:'card',label:'card id for comments (required for comment)'},
+    ],'create',async d=>{
+      const r=await api('/api/projects/'+SEL+'/email/routes',{method:'POST',body:JSON.stringify({name:d.name,kind:d.kind,lane:d.lane||undefined,card:d.card||undefined})});
+      const endpoint=location.origin+'/api/email/inbound/'+SEL+'/'+r.token;
+      INTEGRATION_NOTICE={title:'Inbound bridge endpoint',value:endpoint,note:'Copy this endpoint now. The token is stored only as a hash and cannot be shown again.'};
+      await refreshIntegrations();
+    });
+    $('#mkemailsub').onclick=()=>formModal('New email subscription',[
+      {name:'name',label:'name',required:true,value:'Email notifications'},
+      {name:'recipients',label:'recipient addresses (comma separated)',required:true},
+      {name:'allow',label:'only these events (comma separated; empty means all)'},
+      {name:'deny',label:'never these events (comma separated)'},
+    ],'create',async d=>{
+      const list=v=>v?v.split(',').map(x=>x.trim()).filter(Boolean):[];
+      await api('/api/projects/'+SEL+'/email/subscriptions',{method:'POST',body:JSON.stringify({name:d.name,recipients:list(d.recipients),allowEvents:list(d.allow),denyEvents:list(d.deny)})});
+      await refreshIntegrations();
+    });
+    host.onclick=async e=>{
+      const copy=e.target.closest('[data-copyintegration]');
+      if(copy){try{await navigator.clipboard.writeText(copy.dataset.copyintegration);copy.textContent='copied'}catch{copy.textContent='copy failed'}return}
+      if(e.target.closest('[data-dismissintegration]')){INTEGRATION_NOTICE=null;refreshIntegrations();return}
+      const history=e.target.closest('[data-whdeliveries]');
+      if(history){const hook=hooks.find(h=>h.id===history.dataset.whdeliveries);if(hook)webhookDeliveriesModal(hook,null);return}
+      const rotate=e.target.closest('[data-whrotate]');
+      if(rotate){confirmModal('Rotate webhook secret','The old signing secret stops working immediately. Pending deliveries use the new secret.','rotate',async()=>{
+        const r=await api('/api/projects/'+SEL+'/webhooks/'+encodeURIComponent(rotate.dataset.whrotate)+'/rotate',{method:'POST',body:'{}'});
+        INTEGRATION_NOTICE={title:'New webhook signing secret',value:r.secret,note:'Copy this secret now. It is never shown again.'};await refreshIntegrations()});return}
+      const revoke=e.target.closest('[data-whrevoke]');
+      if(revoke){confirmModal('Revoke webhook','Queued deliveries are cancelled and the endpoint stops receiving events. History remains visible.','revoke',async()=>{
+        await api('/api/projects/'+SEL+'/webhooks/'+encodeURIComponent(revoke.dataset.whrevoke),{method:'DELETE'});await refreshIntegrations()});return}
+      const route=e.target.closest('[data-errevoke]');
+      if(route){confirmModal('Revoke inbound route','The secret endpoint stops accepting email immediately.','revoke',async()=>{
+        await api('/api/projects/'+SEL+'/email/routes/'+encodeURIComponent(route.dataset.errevoke),{method:'DELETE'});await refreshIntegrations()});return}
+      const sub=e.target.closest('[data-esrevoke]');
+      if(sub){confirmModal('Revoke email subscription','Queued messages are cancelled. Sent history remains visible.','revoke',async()=>{
+        await api('/api/projects/'+SEL+'/email/subscriptions/'+encodeURIComponent(sub.dataset.esrevoke),{method:'DELETE'});await refreshIntegrations()});return}
     };
   }catch(err){if(host.isConnected)host.innerHTML='<div class="err">'+esc(err.message)+'</div>'}
 }

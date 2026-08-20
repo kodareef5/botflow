@@ -10,6 +10,7 @@ import {
   UNFURL_TIMEOUT_MS,
   unfurlTarget,
 } from './security.ts';
+import { youtubeThumbnailUrl } from './youtube.ts';
 
 export interface OgResult {
   image: string | null;
@@ -75,6 +76,12 @@ async function readCapped(res: Response, max: number): Promise<Uint8Array | null
 export async function fetchOg(raw: string, allowPrivate = false): Promise<OgResult | null> {
   const target = unfurlTarget(raw, allowPrivate);
   if (!target.ok) return null;
+  // YouTube watch pages frequently return consent or bot-challenge markup to
+  // server-side clients. Derive art only for a recognized official video URL;
+  // fetchImage still judges and proxies the actual picture like every other
+  // preview, so this does not create a browser-side third-party request.
+  const youtubeImage = youtubeThumbnailUrl(target.url);
+  if (youtubeImage !== null) return { image: youtubeImage, title: null, site: 'YouTube' };
   let res: Response | null;
   try {
     res = await guardedFetch(target.url, 'text/html,application/xhtml+xml', allowPrivate);
