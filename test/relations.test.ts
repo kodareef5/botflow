@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { parseBody } from '../src/core/body.ts';
-import { analyze, lintBoard } from '../src/core/analyze.ts';
+import { analyze, analyzeSingle, lintBoard } from '../src/core/analyze.ts';
 import { boardFromDocuments, singleBoardTree } from '../src/core/docs.ts';
 import type { BoardDocument } from '../src/core/docs.ts';
 import {
@@ -16,6 +16,7 @@ import {
   opMergeDuplicates,
   opPromote,
   opQuickAdd,
+  opTransferCard,
   opUnlink,
   parseQuickAdd,
   UsageError,
@@ -236,6 +237,23 @@ test('every dependency-cycle member is non-ready and non-claimable regardless of
   }
 });
 
+test('opaque hosted provenance never satisfies a dependency or leaks target state', () => {
+  const source = doc('001', 'Transferred copy');
+  source.text = source.text.replace(
+    'lane: todo\n',
+    'lane: todo\ndeps: ["project:ancestor#secret"]\nrelations:\n  - type: copied-from\n    target: "project:ancestor#secret"\n',
+  );
+  const b = board([source]);
+  const analysis = analyzeSingle(b, undefined, new Map([
+    ['project:ancestor#secret', { state: null }],
+  ]));
+  assert.deepEqual(analysis.ready, []);
+  assert.equal(analysis.dependencyStates.get('001')?.get('project:ancestor#secret'), null);
+  assert.equal(analysis.findings.filter((finding) => finding.rule === 'dangling-dep').length, 1);
+  assert.equal(analysis.findings.filter((finding) => finding.rule === 'dangling-relation').length, 0,
+    'copied-from is retained as opaque provenance without confirming the ancestor card');
+});
+
 test('claimability consumes effective dependency state instead of a board-card local lane', () => {
   const container = doc('001', 'Rolled-up child', 'todo');
   container.text = container.text.replace('lane: todo\n', 'lane: todo\ntype: board\nboard: child\n');
@@ -283,4 +301,30 @@ test('cross-board copy rebases references and replay converges; move retires sou
   mkdirSync(join(sibling, 'cards'), { recursive: true });
   writeFileSync(join(sibling, 'board.yaml'), CONFIG);
   assert.throws(() => transferCard(root, sibling, '001', 'dev'), /nested inside the source project tree/);
+});
+
+test('transfer validates destination blocker registry before touching either half', () => {
+  const sourceDoc = doc('001', 'Blocked transfer');
+  sourceDoc.text = sourceDoc.text.replace(
+    'lane: todo\n',
+    'lane: todo\nblocked: waiting on vendor\nblocker: vendor\n',
+  );
+  const sourceBoard = boardFromDocuments(
+    CONFIG.replace('lanes:\n', 'blockers:\n  - id: vendor\n    name: Vendor\nlanes:\n'),
+    [sourceDoc],
+    'source',
+  );
+  const targetBoard = boardFromDocuments(CONFIG, [], 'target');
+  sourceBoard.rootAbs = 'source';
+  targetBoard.rootAbs = 'target';
+  const source = sourceBoard.cards[0]!;
+  const before = structuredClone(source);
+  assert.throws(() => opTransferCard(sourceBoard, targetBoard, source, 'dev', {
+    sourceRef: 'source#001',
+    targetRef: (id) => `target#${id}`,
+    rewriteReference: (reference) => reference,
+    rewriteBoardPath: (path) => path,
+  }), /target board does not define blocker "vendor"/);
+  assert.deepEqual(source, before, 'destination validation precedes the source copied-to mutation');
+  assert.deepEqual(targetBoard.cards, []);
 });

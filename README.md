@@ -294,8 +294,9 @@ stranger you send a board to would be reported to whoever hosts the image.
 
 It is off by default because it makes the worker fetch urls that members choose.
 `unfurlTarget` refuses anything that is not publicly routable (loopback, RFC1918,
-link-local including the cloud metadata endpoint, unique-local IPv6, and the decimal/octal/
-hex/IPv4-mapped spellings of all of them), re-checks every redirect hop, caps size and
+link-local including the cloud metadata endpoint, multicast, documentation/benchmark/
+discard/site-local/unique-local IPv6, and decimal/octal/hex/compatible/mapped/transition
+spellings of private IPv4), re-checks every redirect hop, caps size and
 time, and only reads `text/html`. What it cannot see is DNS: a public hostname that
 resolves to a private address passes the check. Cloudflare's edge will not route there, so
 a deployed Worker is covered; a self-hosted `workerd` on a LAN is not, which is why you
@@ -311,8 +312,9 @@ delivery history for replay. Production webhook endpoints require HTTPS.
 
 Email deliberately stops at a provider boundary. A constrained inbound capability can
 only create a card or comment on one preselected card, with provider message-id dedupe.
-Outbound notifications enter a leased outbox that a project-scoped bot bridge claims
-and acknowledges using its ordinary `bfk_` credential. The bridge—not botflow—owns the
+Outbound notifications enter a leased outbox that the one bot named by the
+`EMAIL_BRIDGE_USERNAME` Worker variable claims and acknowledges using its ordinary
+project-scoped `bfk_` credential (unset is owner-only/fail-closed). The bridge—not botflow—owns the
 mail provider, signature verification, SPF/DKIM, bounces, and deliverability. The exact
 payloads, receiver verification algorithm, retry behavior, bridge API, and threat models
 are documented in [Hosted integration contracts](docs/integrations.md).

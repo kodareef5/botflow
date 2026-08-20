@@ -144,7 +144,7 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
   const child = spawn(
     process.execPath,
     [WRANGLER, 'dev', '--config', join(state, 'wrangler.json'), '--port', String(port), '--persist-to', state, '--var', `SETUP_KEY:${SETUP_KEY}`,
-      '--var', 'LINK_PREVIEWS:on', '--var', 'UNFURL_ALLOW_PRIVATE:on'],
+      '--var', 'LINK_PREVIEWS:on', '--var', 'UNFURL_ALLOW_PRIVATE:on', '--var', 'EMAIL_BRIDGE_USERNAME:alpha-agent'],
     { cwd: join(import.meta.dirname, '..'), stdio: 'ignore', env: { ...process.env }, detached: true },
   );
   try {
@@ -1014,6 +1014,28 @@ vendor:
       'the target copied-from link resolves to its ancestor without opening sibling visibility');
     assert.equal((await call(`/api/projects/${childP}/cards/${handoff.body['target'] as string}/close`, { method: 'POST', token: admin, body: '{}' })).status, 200);
 
+    const alarmDue = new Date(Date.now() + 2_000).toISOString();
+    const alarmSourceId = (await call(`/api/projects/${parent}/cards`, {
+      method: 'POST', token: admin,
+      body: JSON.stringify({ title: 'Transferred alarm', due: alarmDue, reminders: [0] }),
+    })).body['id'] as string;
+    const alarmTransfer = await call(`/api/projects/${parent}/cards/${alarmSourceId}/transfer`, {
+      method: 'POST', token: admin, body: JSON.stringify({ target: childP, move: false }),
+    });
+    assert.equal(alarmTransfer.status, 200, JSON.stringify(alarmTransfer.body));
+    const alarmTargetId = alarmTransfer.body['target'] as string;
+    let targetReminderEvents: { action: string; card_id: string | null }[] = [];
+    for (let i = 0; i < 60; i++) {
+      targetReminderEvents = (await call(`/api/projects/${childP}/events?limit=100`, { token: admin })).body as unknown as typeof targetReminderEvents;
+      if (targetReminderEvents.some((event) => event.action === 'reminder' && event.card_id === alarmTargetId)) break;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    assert.equal(targetReminderEvents.filter((event) => event.action === 'reminder' && event.card_id === alarmTargetId).length, 1,
+      'receiveTransfer schedules the destination reminder without a later board read');
+    assert.equal((await call(`/api/projects/${childP}/cards/${alarmTargetId}/close`, {
+      method: 'POST', token: admin, body: '{}',
+    })).status, 200, 'the scheduling fixture does not leave child rollup work open');
+
     const crossBase = await call(`/api/projects/${childP}/cards`, {
       method: 'POST', token: admin, body: JSON.stringify({ title: 'Cross-board foundation' }),
     });
@@ -1025,6 +1047,66 @@ vendor:
     const crossWaiterId = crossWaiter.body['id'] as string;
     const crossClaim = await call(`/api/projects/${parent}/cards/${crossWaiterId}/claim`, { method: 'POST', token: admin, body: '{}' });
     assert.equal(crossClaim.status, 200, JSON.stringify(crossClaim.body));
+
+    // A child-scoped writer gets the same refusal for a real and guessed
+    // ancestor card through friendly writes. Snapshot import preserves
+    // hand-authored refs for repair, but both render unresolved: copied-from
+    // transfer provenance remains renderable and is never resolved for state.
+    const CHILD_PW = 'child-writer-password';
+    const childMember = await call('/api/members', { method: 'POST', token: admin, body: JSON.stringify({
+      username: 'child-writer', display: 'Child Writer', kind: 'human', password: CHILD_PW,
+      role: 'write', scopeKind: 'project', scopeId: childP,
+    }) });
+    assert.equal(childMember.status, 200, JSON.stringify(childMember.body));
+    const childLogin = await call('/api/login', { method: 'POST', body: JSON.stringify({ username: 'child-writer', password: CHILD_PW }) });
+    const childToken = childLogin.body['token'] as string;
+    assert.equal((await call(`/api/projects/${parent}/board`, { token: childToken })).status, 403);
+    const realAncestorProbe = await call(`/api/projects/${childP}/cards`, {
+      method: 'POST', token: childToken,
+      body: JSON.stringify({ title: 'real probe', deps: [`project:${parent}#${crossWaiterId}`] }),
+    });
+    const fakeAncestorProbe = await call(`/api/projects/${childP}/cards`, {
+      method: 'POST', token: childToken,
+      body: JSON.stringify({ title: 'fake probe', deps: [`project:${parent}#does-not-exist`] }),
+    });
+    assert.equal(realAncestorProbe.status, 400);
+    assert.equal(fakeAncestorProbe.status, 400);
+    assert.equal(realAncestorProbe.body['error'], fakeAncestorProbe.body['error'], 'ancestor existence is not reflected in the refusal');
+    const childSnapshot = (await call(`/api/projects/${childP}/export`, { token: childToken })).body as {
+      config: string; cards: { path: string; text: string }[];
+    };
+    const smuggledAncestor = {
+      config: childSnapshot.config,
+      cards: [
+        ...childSnapshot.cards,
+        {
+          path: 'cards/ancestor-real-probe.md',
+          text: `---\nid: ancestor-real-probe\ntitle: real ancestor probe\nlane: todo\ndeps: ["project:${parent}#${crossWaiterId}"]\n---\n`,
+        },
+        {
+          path: 'cards/ancestor-fake-probe.md',
+          text: `---\nid: ancestor-fake-probe\ntitle: fake ancestor probe\nlane: todo\ndeps: ["project:${parent}#does-not-exist"]\n---\n`,
+        },
+      ],
+    };
+    const smuggledImport = await call(`/api/projects/${childP}/import`, {
+      method: 'PUT', token: childToken, body: JSON.stringify(smuggledAncestor),
+    });
+    assert.equal(smuggledImport.status, 200, JSON.stringify(smuggledImport.body));
+    const probeBoard = (await call(`/api/projects/${childP}/board`, { token: childToken })).body as {
+      ready: string[];
+      findings: { rule: string; ref: string }[];
+      lanes: { cards: { id: string; relationships: { source: string; state: string | null }[] }[] }[];
+    };
+    for (const id of ['ancestor-real-probe', 'ancestor-fake-probe']) {
+      const card = probeBoard.lanes.flatMap((lane) => lane.cards).find((candidate) => candidate.id === id)!;
+      assert.equal(card.relationships.find((relation) => relation.source === 'dependency')?.state, null);
+      assert.equal(probeBoard.ready.includes(id), false);
+      assert.ok(probeBoard.findings.some((finding) => finding.rule === 'dangling-dep' && finding.ref === id));
+    }
+    assert.equal((await call(`/api/projects/${childP}/import`, {
+      method: 'PUT', token: childToken, body: JSON.stringify(childSnapshot),
+    })).status, 200, 'the repair path can remove the inert hand-authored probes');
 
     // Discovery/collaboration is one contract across hosted APIs and feeds.
     assert.equal((await call(`/api/projects/${parent}/cards/${crossWaiterId}/watch`, { method: 'POST', token: key, body: '{}' })).status, 200);
@@ -1066,6 +1148,15 @@ vendor:
       assert.ok(text.includes(needle), `${format} has its root marker`);
       if (format === 'ics') assert.ok(text.includes(`X-BOTFLOW-CARD-ID:${crossWaiterId}`), 'calendar includes matching due card');
     }
+    const scopedMarker = 'scoped-event-survives-project-window';
+    assert.equal((await call(`/api/projects/${parent}/cards/${crossWaiterId}/comment`, {
+      method: 'POST', token: key, body: JSON.stringify({ message: scopedMarker }),
+    })).status, 200);
+    await Promise.all(Array.from({ length: 105 }, (_, index) => call(`/api/projects/${parent}/cards/001/log`, {
+      method: 'POST', token: admin, body: JSON.stringify({ message: `unrelated feed churn ${index}` }),
+    })));
+    const scopedAtom = await fetch(`${U}/feeds/${feedToken}.atom`).then((response) => response.text());
+    assert.ok(scopedAtom.includes(scopedMarker), 'feed scope is applied before the 100-event bound');
     const feeds = (await call(`/api/projects/${parent}/feeds`, { token: key })).body as unknown as { token: string; filterId: string; memberUsername: string }[];
     assert.equal(feeds.find((feed) => feed.token === feedToken)?.filterId, 'bot-watch');
     assert.equal(feeds.find((feed) => feed.token === feedToken)?.memberUsername, 'alpha-agent');
@@ -1076,7 +1167,18 @@ vendor:
 
     // Share link + export/import round trip as a restore.
     const share = (await call(`/api/projects/${parent}/shares`, { method: 'POST', token: admin, body: JSON.stringify({ label: 'peek' }) })).body['token'] as string;
+    const publicEventBefore = ((await call(`/api/projects/${parent}/events?limit=1`, { token: admin })).body as unknown as { seq: number }[])[0]?.seq;
     assert.equal((await call(`/api/public/${share}/board`)).status, 200, 'direct share url remains usable');
+    const firstShareView = ((await call('/api/org/shares', { token: admin })).body as unknown as { token: string; lastViewed: string | null }[])
+      .find((item) => item.token === share)?.lastViewed;
+    assert.ok(firstShareView, 'first capability read records coarse access metadata');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal((await call(`/api/public/${share}/board`)).status, 200);
+    const secondShareView = ((await call('/api/org/shares', { token: admin })).body as unknown as { token: string; lastViewed: string | null }[])
+      .find((item) => item.token === share)?.lastViewed;
+    assert.equal(secondShareView, firstShareView, 'hot polling does not write last-viewed on every request');
+    const publicEventAfter = ((await call(`/api/projects/${parent}/events?limit=1`, { token: admin })).body as unknown as { seq: number }[])[0]?.seq;
+    assert.equal(publicEventAfter, publicEventBefore, 'public projection polling appends no project event');
     const closedGate = (await call('/api/public/gate')).body as { shares: { token: string }[] };
     assert.equal(closedGate.shares.length, 0, 'share directory is off by default');
     await call('/api/settings', { method: 'POST', token: admin, body: JSON.stringify({ gateShares: true }) });
@@ -1180,7 +1282,7 @@ vendor:
     assert.ok(Array.isArray(exported['keys']) && (exported['keys'] as unknown[]).length === 2, 'both of the bot keys exported');
     const exportedMembers = exported['members'] as { username: string; passHash: string; role: string }[];
     assert.ok(Array.isArray(exportedMembers), 'members exported');
-    assert.deepEqual(exportedMembers.map((m) => m.username).sort(), ['alpha-agent', 'root', 'watcher']);
+    assert.deepEqual(exportedMembers.map((m) => m.username).sort(), ['alpha-agent', 'child-writer', 'root', 'watcher']);
     // Password hashes ride along or a restore locks the owner out of their
     // own company. That is also why the export is a credential.
     assert.match(exportedMembers.find((m) => m.username === 'root')!.passHash, /^pbkdf2\$/);

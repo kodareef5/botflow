@@ -224,14 +224,62 @@ function ipv6Groups(text: string): number[] | null {
 /** Ranges that must never be reachable from an unfurl: loopback, the private
  *  blocks, carrier-grade NAT, and link-local, which carries the cloud instance
  *  metadata endpoint (169.254.169.254) that makes SSRF worth attempting. */
-function privateIpv4(a: number, b: number): boolean {
+function privateIpv4(a: number, b: number, c: number, _d: number): boolean {
   return a === 0 || a === 10 || a === 127
     || (a === 169 && b === 254)
     || (a === 172 && b >= 16 && b <= 31)
     || (a === 192 && b === 168)
+    || (a === 192 && b === 0 && (c === 0 || c === 2))
+    || (a === 198 && b === 51 && c === 100)
+    || (a === 203 && b === 0 && c === 113)
     || (a === 100 && b >= 64 && b <= 127)
     || (a === 198 && (b === 18 || b === 19))
     || a >= 224;
+}
+
+const groupsStartWith = (groups: number[], prefix: number[]): boolean =>
+  prefix.every((group, index) => groups[index] === group);
+
+/** IPv6 literals bypass DNS, so judge the address itself against IANA's
+ * special-purpose/non-forwardable families. Embedded IPv4 is decoded before
+ * deciding: a NAT64 or 6to4 spelling of loopback/private space is still
+ * private. DNS names remain an egress-resolver responsibility because a
+ * hostname can rebind after this pure URL check. */
+function privateIpv6(groups: number[]): boolean {
+  const g0 = groups[0]!;
+  const g1 = groups[1]!;
+  const embeddedV4 = (high: number, low: number): boolean =>
+    privateIpv4(high >> 8, high & 0xff, low >> 8, low & 0xff);
+
+  if (groups.every((group) => group === 0)) return true; // :: unspecified
+  if (groups.slice(0, 7).every((group) => group === 0) && groups[7] === 1) return true; // ::1
+  if ((g0 & 0xfe00) === 0xfc00) return true; // fc00::/7 unique-local
+  if ((g0 & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  if ((g0 & 0xffc0) === 0xfec0) return true; // fec0::/10 deprecated site-local
+  if ((g0 & 0xff00) === 0xff00) return true; // ff00::/8 multicast
+
+  // Deprecated IPv4-compatible (::/96) and translated (::ffff:0:0:0/96)
+  // forms are not ordinary globally-routed IPv6 destinations. Mapped IPv4
+  // (::ffff:0:0/96) is allowed only when the embedded address is public.
+  if (groups.slice(0, 6).every((group) => group === 0)) return true;
+  if (groupsStartWith(groups, [0, 0, 0, 0, 0xffff, 0])) return true;
+  if (groupsStartWith(groups, [0, 0, 0, 0, 0, 0xffff])) return embeddedV4(groups[6]!, groups[7]!);
+
+  if (groupsStartWith(groups, [0x0100, 0, 0, 0])) return true; // 100::/64 discard-only
+  if (g0 === 0x2001 && g1 === 0x0000) return true; // 2001::/32 Teredo
+  if (groupsStartWith(groups, [0x2001, 0x0002, 0])) return true; // 2001:2::/48 benchmarking
+  if (g0 === 0x2001 && (g1 & 0xfff0) === 0x0010) return true; // 2001:10::/28 ORCHIDv1
+  if (groupsStartWith(groups, [0x2001, 0x0db8])) return true; // 2001:db8::/32 documentation
+  if (g0 === 0x3fff && (g1 & 0xf000) === 0) return true; // 3fff::/20 documentation
+  if (g0 === 0x5f00) return true; // 5f00::/16 segment-routing SIDs
+
+  // Well-known NAT64 and 6to4 can encode an IPv4 endpoint directly. Public
+  // embeddings remain usable; special-use embeddings do not become public
+  // merely because an IPv6 transition prefix was prepended.
+  if (groupsStartWith(groups, [0x0064, 0xff9b, 0, 0, 0, 0])) return embeddedV4(groups[6]!, groups[7]!);
+  if (groupsStartWith(groups, [0x0064, 0xff9b, 1])) return true; // local-use NAT64 /48
+  if (g0 === 0x2002) return embeddedV4(g1, groups[2]!);
+  return false;
 }
 
 function blockedHost(hostname: string): boolean {
@@ -244,20 +292,13 @@ function blockedHost(hostname: string): boolean {
   if (v4) {
     const parts = v4.slice(1, 5).map(Number);
     if (parts.some((n) => n > 255)) return true;
-    return privateIpv4(parts[0]!, parts[1]!);
+    return privateIpv4(parts[0]!, parts[1]!, parts[2]!, parts[3]!);
   }
 
   if (host.startsWith('[') && host.endsWith(']')) {
     const groups = ipv6Groups(host.slice(1, -1));
     if (groups === null) return true;
-    const [g0, , , , g4, g5, g6, g7] = groups;
-    if (groups.every((g) => g === 0)) return true;                    // ::
-    if (groups.slice(0, 7).every((g) => g === 0) && g7 === 1) return true; // ::1
-    // ::ffff:a.b.c.d — the parser stores these in hex, so decode and re-judge.
-    if (g4 === 0 && g5 === 0xffff) return privateIpv4(g6! >> 8, g6! & 0xff);
-    if ((g0! & 0xfe00) === 0xfc00) return true;                       // fc00::/7 unique-local
-    if ((g0! & 0xffc0) === 0xfe80) return true;                       // fe80::/10 link-local
-    return false;
+    return privateIpv6(groups);
   }
   return false;
 }

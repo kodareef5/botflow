@@ -304,6 +304,14 @@ dependency happens to be in a done/archive lane. For a board-card dependency,
 readiness and claimability both use the target's effective rollup state; they MUST NOT
 disagree by mixing effective and local lane state.
 
+On a hosted manager, state-bearing `project:` references follow the project grant
+direction: a project may resolve itself and descendants, never an ancestor, sibling, or
+unrelated project. The `copied-from` half written by a descendant transfer MAY retain an
+ancestor ref as opaque provenance, but rendering it MUST NOT confirm whether the named
+ancestor card exists or reveal its state. An ancestor dependency or any other ancestor
+relation is unresolved and cannot satisfy readiness. This keeps a credential scoped to
+a child from using hand-authored refs as an ancestor-card existence/state oracle.
+
 ### 5b. Search, mentions, and audiences
 
 A mention is derived from `@name` in Description or Comment prose, excluding fenced
@@ -435,8 +443,12 @@ It moves to the first archive-canonical lane and logs
 at most 100 reminder, snooze-expiry, or sweep mutations; when work remains it MUST
 schedule or request another pass rather than silently discard it. File-backed tools
 offer an explicit automation command and SHOULD run the same lazy pass before `board`,
-`ready`, `prime`, and `search`. A hosted project runs it before a board read and via a
-Durable Object alarm set to the earliest pending reminder, snooze expiry, or sweep.
+`ready`, `prime`, and `search`. A hosted project runs it before an authenticated board
+read and via a Durable Object alarm set to the earliest pending reminder, snooze expiry,
+or sweep. A public share is an observational capability: its board/card/feed reads MUST
+NOT run automation, append project events, or enqueue integration work. An unexpected
+hosted pass failure MUST leave the board readable and schedule a bounded retry rather
+than repeatedly arming an already-due alarm.
 Alarm/lazy state is a cache: tuple markers and card Logs make it completely rebuildable
 from board documents.
 
@@ -575,7 +587,7 @@ Expected files record, per board: lint findings (rule ids + card ids), per-card 
 - **Same-tree concurrency.** git covers branch races (§8); two processes in one worktree are the tool's job. A mutating tool MUST serialize its load-mutate-write cycle against other processes (e.g. a short-lived `board.lock` file with stale-owner reaping), MUST allocate seq ids inside that critical section, and SHOULD write files crash-safely (temp file + rename). Lock files are derived state: never committed, safe to delete when their owner is gone.
 - Preserve unknown card-frontmatter and `board.yaml` keys and all body content outside the section being edited.
 - Watching and voting are idempotent set mutations. Boosts append and never edit history. A saved-filter or lane-subscription edit is a board mutation and follows the same locking/read-only rules as every other `board.yaml` rewrite.
-- A hosted RSS/Atom or iCalendar URL MUST be an unguessable, revocable capability scoped to one member and project, optionally narrowed to one card, lane, or saved filter. Resolution MUST fail when the capability is revoked, the member is disabled/removed, or that member no longer reaches the project. Retrieval updates only hosted access metadata, never board documents. RSS/Atom contains bounded project activity; iCalendar is read-only and contains only matching cards with due dates. These pull feeds perform no outbound request; Slack may consume the RSS URL without a botflow Slack credential.
+- A hosted RSS/Atom or iCalendar URL MUST be an unguessable, revocable capability scoped to one member and project, optionally narrowed to one card, lane, or saved filter. Resolution MUST fail when the capability is revoked, the member is disabled/removed, or that member no longer reaches the project. Retrieval updates only coarse hosted access metadata, never board documents; repeated polling SHOULD NOT write that metadata more than once per bounded interval. RSS/Atom applies card/lane/filter scope before its bounded newest-first activity limit, so unrelated newer events cannot hide an older matching event. iCalendar is read-only and contains only matching cards with due dates. These pull feeds perform no outbound request; Slack may consume the RSS URL without a botflow Slack credential.
 - Only bump `updated` on meaningful change.
 - `prime`: every conforming CLI SHOULD offer a command that prints the board's shape, rules, ready work, and the tool's own usage, so an agent can be taught with one line in AGENTS.md.
 - Derived stores (indexes, caches) MUST be rebuildable from files alone and MUST NOT be committed.

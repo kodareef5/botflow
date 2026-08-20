@@ -50,7 +50,11 @@ Network errors, 408, 425, 429, and 5xx retry at approximately 1 minute, 5 minute
 30 minutes, 2 hours, and 12 hours, with a maximum of six attempts. A bounded
 `Retry-After` may lengthen the delay. Five consecutive failures open a 15-minute
 circuit. A success resets it; an owner replay is one explicit half-open probe. Delivery
-history is cursor-paginated and an operator can replay its frozen payload.
+history is cursor-paginated and an operator can replay its frozen payload. A due batch
+is leased atomically before the first network await, so interleaved Durable Object turns
+cannot both retain the same batch tail. Delivery is still at-least-once: a crash after
+the receiver accepts but before botflow records success retries the same stable
+`X-Botflow-Delivery`, which receivers must deduplicate.
 
 ### Webhook threat model
 
@@ -106,8 +110,10 @@ it is exposed.
 
 An owner configures recipients and exact event allow/deny lists. Matching events enter a
 durable outbox as versioned `botflow.email.outbound.v1` payloads. Botflow does not send
-them itself. A bot member with write access to the project (or an owner during testing)
-leases due work using its normal API key:
+them itself. Set the Worker variable `EMAIL_BRIDGE_USERNAME` to one dedicated `kind: bot`
+member. That named bot, when it has write access to the project, leases due work using
+its normal API key. Owners retain the recovery/testing path; every other bot and human
+is refused even when it can otherwise write the project:
 
 ```http
 POST /api/projects/<project-id>/email/outbox/claim
@@ -138,8 +144,11 @@ before the bridge crashes without acknowledging it.
 
 The bridge owns provider credentials, callback verification, SPF/DKIM/DMARC alignment,
 bounces, complaints, suppression lists, unsubscribe policy, and final delivery. Give it
-a dedicated `kind: bot`, project-scoped, `role: write` member and mint its key from
-**Settings → Members → + key**; the bridge never needs a human password or owner role.
+a dedicated `kind: bot`, project-scoped, `role: write` member, set
+`EMAIL_BRIDGE_USERNAME` to that member's username, and mint its key from **Settings →
+Members → + key**; the bridge never needs a human password or owner role. Leaving the
+variable unset is fail-closed for bots: only an owner can claim or acknowledge outbox
+work.
 
 ## Company export and restore
 

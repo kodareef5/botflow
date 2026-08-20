@@ -1488,6 +1488,9 @@ export function opTransferCard(
     }
   }
   checkedLabels(target.labels);
+  if (target.blocker !== null && !targetBoard.config.blockers.some((blocker) => blocker.id === target.blocker)) {
+    throw new UsageError(`target board does not define blocker "${target.blocker}"`);
+  }
   addRelation(target, 'copied-from', options.sourceRef);
   logMutation(target, actor, `${options.move ? 'moved' : 'copied'} from ${options.sourceRef}`);
 

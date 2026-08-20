@@ -43,7 +43,9 @@ export interface ExternalChild {
 }
 
 type ChildLookup = (card: Card) => ExternalChild | null;
-export interface ExternalReference { state: Canonical }
+/** `state: null` is an existence-opaque provenance ref: relations may render
+ * it, but it can never satisfy a dependency or reveal target state. */
+export interface ExternalReference { state: Canonical | null }
 type ReferenceLookup = (reference: string) => ExternalReference | null;
 
 /** Analyze one board given a resolver for its board-cards' children.
@@ -143,13 +145,13 @@ export function analyzeBoard(
       const parsed = parseCardReference(dep)!;
       const local = parsed.boardRef === null ? byId.get(parsed.cardId) : undefined;
       const external = parsed.boardRef === null ? null : (referenceLookup?.(dep) ?? null);
-      if (local === undefined && external === null) {
+      if (local === undefined && (external === null || external.state === null)) {
         states.set(dep, null);
         findings.push(finding('dangling-dep', card.id, `dep "${dep}" does not exist`));
         depsSatisfied = false;
         continue;
       }
-      const depState = local === undefined ? external!.state : canonical.get(local.id)!;
+      const depState = local === undefined ? external!.state! : canonical.get(local.id)!;
       states.set(dep, depState);
       if (depState !== 'done' && depState !== 'archive') depsSatisfied = false;
     }

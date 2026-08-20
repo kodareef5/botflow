@@ -145,6 +145,11 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** How long a verified basic-auth credential stays cached in DO memory. A bot
  *  polling a board would otherwise pay a full PBKDF2 derivation every request. */
 const BASIC_CACHE_MS = 5 * 60 * 1000;
+/** Capability reads can be much hotter than administrative writes. Access
+ * metadata is deliberately coarse: one write per capability per interval is
+ * enough to distinguish live links without turning every public poll into a
+ * serialized RegistryDO mutation. */
+const SHARE_VIEW_TOUCH_MS = 15 * 60 * 1000;
 
 // Failed-credential throttle. PBKDF2 is the only other brake on guessing, and
 // it is also what makes a flood expensive to serve.
@@ -639,7 +644,12 @@ export class RegistryDO extends DurableObject {
       if (identity === null || !this.reaches(identity, row['pid'] as string)) return null;
       memberUsername = identity.username;
     }
-    this.sql.exec('UPDATE shares SET last_viewed = ? WHERE id = ?', new Date().toISOString(), row['id']);
+    const viewed = new Date().toISOString();
+    const staleBefore = new Date(Date.now() - SHARE_VIEW_TOUCH_MS).toISOString();
+    this.sql.exec(
+      'UPDATE shares SET last_viewed = ? WHERE id = ? AND (last_viewed IS NULL OR last_viewed < ?)',
+      viewed, row['id'], staleBefore,
+    );
     return {
       projectId: row['pid'] as string,
       name: row['name'] as string,

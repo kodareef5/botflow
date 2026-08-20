@@ -45,6 +45,10 @@ export interface Env {
   /** Test-only: lets the suite point an unfurl at a loopback fixture server.
    *  Never set on a real deployment. */
   UNFURL_ALLOW_PRIVATE?: string;
+  /** Username of the one dedicated bot allowed to lease outbound email.
+   * Owners retain a recovery/test path; other write-scoped bots cannot read
+   * recipient payloads or acknowledge delivery. */
+  EMAIL_BRIDGE_USERNAME?: string;
 }
 
 // Uploaded files the browser may render inline; anything else downloads.
@@ -528,7 +532,7 @@ export default {
         // of the board does not exist through it.
         if (rest === '' || rest === '/board') {
           if (share.cardId !== null) return json({ error: 'this link shares a single card' }, 404);
-          return json(await stub.board());
+          return json(await stub.publicBoard());
         }
         const cardMatch = /^\/cards\/([^/]+)$/.exec(rest);
         if (cardMatch) {
@@ -1319,9 +1323,11 @@ export default {
       const emailBridgeDenied = (): Response | null => {
         const denied = requireWrite();
         if (denied) return denied;
-        return identity.kind === 'bot' || roleAllows(identity.role, 'owner')
+        if (roleAllows(identity.role, 'owner')) return null;
+        const bridge = env.EMAIL_BRIDGE_USERNAME?.trim() ?? '';
+        return identity.kind === 'bot' && bridge !== '' && identity.username === bridge
           ? null
-          : json({ error: 'email outbox delivery requires a scoped bot credential or an owner' }, 403);
+          : json({ error: 'email outbox delivery requires the configured bridge bot or an owner' }, 403);
       };
       if (req.method === 'POST' && rest === '/email/outbox/claim') {
         const denied = emailBridgeDenied();
@@ -1496,6 +1502,10 @@ export default {
           if (ownerOnly) return json({ error: 'force is an owner override' }, 403);
           await registry.audit(actor, 'force-override', `add card on ${pid}`);
         }
+        if (Array.isArray(body['deps'])) {
+          const refs = await stub.validateReferenceChanges({ deps: (body['deps'] as unknown[]).map(String) });
+          if ('error' in refs) return json(refs, 400);
+        }
         // project: refs must point at projects nested beneath this board; the
         // DO enforces this at resolution time too, this is the friendly error.
         if (typeof body['board'] === 'string' && body['board'].startsWith('project:')) {
@@ -1599,6 +1609,10 @@ export default {
         }
         if (req.method === 'POST' && action !== undefined) {
           const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+          if (action === 'edit' && Array.isArray(body['deps'])) {
+            const refs = await stub.validateReferenceChanges({ cardId: cid, deps: (body['deps'] as unknown[]).map(String) });
+            if ('error' in refs) return json(refs, 400);
+          }
           // force is an authorization capability, not an operation flag: it
           // bypasses claim conflicts and strict-lane rules, so only the
           // human operator gets it (SPEC §12). Its use is separately audited.

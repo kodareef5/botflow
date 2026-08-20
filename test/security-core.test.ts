@@ -626,7 +626,13 @@ test('unfurl refuses every address that is not publicly routable', () => {
     'http://[::1]/', 'http://[::]/', 'http://[::ffff:127.0.0.1]/', 'http://[::ffff:7f00:1]/',
     'http://169.254.169.254/latest/meta-data/',   // cloud instance metadata: the prize
     'http://10.0.0.1/', 'http://192.168.1.1/', 'http://172.16.0.1/', 'http://172.31.255.255/',
+    'http://192.0.0.9/', 'http://192.0.2.1/', 'http://198.51.100.2/', 'http://203.0.113.3/',
     'http://100.64.0.1/', 'http://[fc00::1]/', 'http://[fd12:3456::1]/', 'http://[fe80::1]/',
+    'http://[fec0::1]/', 'http://[ff02::1]/', 'http://[ff0e::1]/',
+    'http://[100::1]/', 'http://[2001::1]/', 'http://[2001:2::1]/', 'http://[2001:10::1]/',
+    'http://[2001:db8::1]/', 'http://[3fff::1]/', 'http://[5f00::1]/',
+    'http://[::7f00:1]/', 'http://[0:0:0:0:ffff:0:7f00:1]/',
+    'http://[64:ff9b::7f00:1]/', 'http://[64:ff9b:1::1]/', 'http://[2002:7f00:1::1]/',
     'http://localhost/', 'http://LOCALHOST/', 'http://api.localhost/', 'http://box.local/',
     'http://svc.internal/', 'http://printer.home.arpa/',
     'http://user:pass@example.com/', 'http://:pw@example.com/',
@@ -643,6 +649,8 @@ test('unfurl refuses every address that is not publicly routable', () => {
   for (const target of [
     'https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'http://example.com/',
     'https://172.32.0.1/', 'https://8.8.8.8/', 'https://[2606:4700::1111]/',
+    'https://192.0.3.1/', 'https://198.51.99.1/', 'https://203.0.1.1/',
+    'https://[::ffff:808:808]/', 'https://[64:ff9b::808:808]/', 'https://[2002:0808:0808::1]/',
   ]) {
     assert.equal(unfurlTarget(target).ok, true, `${target} is ordinary and public`);
   }
