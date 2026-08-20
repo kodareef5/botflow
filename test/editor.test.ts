@@ -105,6 +105,18 @@ fields:
     options: [low, high]
     face: true
     width: compact
+templates:
+  - id: bug
+    name: Bug report
+    lane: todo
+    labels: [Type/Bug]
+    priority: p1
+    due: 2026-09-01
+    estimate: 3
+    fields:
+      risk: high
+    body: "## Checklist\\n- [ ] reproduce {{title}}\\n"
+    icon: bug-template
 rollup:
   future_mode: weighted
 vendor:
@@ -112,10 +124,11 @@ vendor:
   nested:
     enabled: true
 `), findings);
-  assert.deepEqual(findings.map((f) => f.rule), ['unknown-key', 'unknown-key', 'unknown-key', 'unknown-key', 'unknown-key']);
+  assert.deepEqual(findings.map((f) => f.rule), ['unknown-key', 'unknown-key', 'unknown-key', 'unknown-key', 'unknown-key', 'unknown-key']);
   assert.deepEqual(config.lanes[0]!.extra, { visual: { color: 'blue' } });
   assert.deepEqual(config.labelDefinitions[0]!.extra, { icon: 'bug' });
   assert.deepEqual(config.customFields[0]!.extra, { width: 'compact' });
+  assert.deepEqual(config.templates[0]!.extra, { icon: 'bug-template' });
   assert.deepEqual(config.rollup.extra, { future_mode: 'weighted' });
   assert.deepEqual(config.extra, { vendor: { flags: ['alpha', 'beta'], nested: { enabled: true } } });
 

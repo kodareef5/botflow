@@ -38,6 +38,7 @@ function bareCard(over: Partial<Card> = {}): Card {
     delegate: null,
     priority: null,
     deps: [],
+    relations: [],
     start: null,
     due: null,
     estimate: null,

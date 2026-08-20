@@ -3,21 +3,24 @@
 // edit board shape, like the hosted board editor.
 
 import type { YamlValue } from './yaml.ts';
-import type { BoardConfig, CustomFieldDefinition, Finding, LabelDefinition, Lane, RollupPolicy, Canonical } from './model.ts';
+import type { BoardConfig, CardTemplate, CustomFieldDefinition, Finding, LabelDefinition, Lane, RollupPolicy, Canonical } from './model.ts';
 import { CUSTOM_FIELD_TYPES, SLUG_RE, defaultLanes, defaultRollup, finding, isCanonical } from './model.ts';
+import { bodyHasSection } from './body.ts';
 import { emitMap, emitScalar } from './emit.ts';
-import { BUILTIN_CARD_KEYS, RESERVED_CARD_KEYS, validColor } from './presentation.ts';
+import { validCardDate, validEstimate } from './fields.ts';
+import { BUILTIN_CARD_KEYS, RESERVED_CARD_KEYS, labelGroupConflict, validColor, validCustomFieldValue } from './presentation.ts';
 
 /** Capability names understood by this reader. Later feature phases add to
  *  this registry as their semantics become real; declarations are optional,
  *  but an unknown declaration deliberately makes a board read-only. */
 export const SUPPORTED_BOARD_FEATURES = new Set([
   'dates', 'estimates', 'delegation', 'aging', 'scoped-labels', 'custom-fields', 'cover-colors',
+  'relations', 'cross-board-deps', 'templates',
 ]);
 
 /** Serialize a BoardConfig back to board.yaml text. Defaults are omitted so
  *  the file stays as small as a hand-written one; parse(emit(c)) === c. */
-export function emitBoardYaml(config: Pick<BoardConfig, 'version' | 'name' | 'ids' | 'features' | 'lanes' | 'labelDefinitions' | 'customFields' | 'rollup' | 'extra'>): string {
+export function emitBoardYaml(config: Pick<BoardConfig, 'version' | 'name' | 'ids' | 'features' | 'lanes' | 'labelDefinitions' | 'customFields' | 'templates' | 'rollup' | 'extra'>): string {
   const lines = [`botflow: ${config.version}`, `name: ${emitScalar(config.name)}`];
   if (config.ids === 'hash') lines.push('ids: hash');
   if (config.features.length > 0) lines.push(`features: [${config.features.map(emitScalar).join(', ')}]`);
@@ -50,6 +53,27 @@ export function emitBoardYaml(config: Pick<BoardConfig, 'version' | 'name' | 'id
       if (definition.options.length > 0) lines.push(`    options: [${definition.options.map(emitScalar).join(', ')}]`);
       if (definition.face) lines.push('    face: true');
       const extra = emitMap(definition.extra, 4);
+      if (extra !== '') lines.push(extra);
+    }
+  }
+  if (config.templates.length > 0) {
+    lines.push('templates:');
+    for (const template of config.templates) {
+      lines.push(`  - id: ${template.id}`);
+      if (template.name !== template.id) lines.push(`    name: ${emitScalar(template.name)}`);
+      if (template.lane !== null) lines.push(`    lane: ${emitScalar(template.lane)}`);
+      if (template.labels.length > 0) lines.push(`    labels: [${template.labels.map(emitScalar).join(', ')}]`);
+      if (template.priority !== null) lines.push(`    priority: ${template.priority}`);
+      if (template.assignee !== null) lines.push(`    assignee: ${emitScalar(template.assignee)}`);
+      if (template.delegate !== null) lines.push(`    delegate: ${emitScalar(template.delegate)}`);
+      if (template.start !== null) lines.push(`    start: ${emitScalar(template.start)}`);
+      if (template.due !== null) lines.push(`    due: ${emitScalar(template.due)}`);
+      if (template.estimate !== null) lines.push(`    estimate: ${template.estimate}`);
+      if (template.evergreen) lines.push('    evergreen: true');
+      if (template.coverColor !== null) lines.push(`    cover_color: ${emitScalar(template.coverColor)}`);
+      if (Object.keys(template.fields).length > 0) lines.push(emitMap({ fields: template.fields }, 4));
+      if (template.body !== '') lines.push(`    body: ${emitScalar(template.body)}`);
+      const extra = emitMap(template.extra, 4);
       if (extra !== '') lines.push(extra);
     }
   }
@@ -137,8 +161,9 @@ export function parseBoardConfig(value: YamlValue, findings: Finding[]): BoardCo
   const rollup = parseRollup(map['rollup'], findings);
   const labelDefinitions = parseLabelDefinitions(map['labels'], findings);
   const customFields = parseCustomFields(map['fields'], findings);
+  const templates = parseTemplates(map['templates'], findings, lanes, customFields);
 
-  const known = new Set(['botflow', 'name', 'ids', 'features', 'lanes', 'labels', 'fields', 'rollup']);
+  const known = new Set(['botflow', 'name', 'ids', 'features', 'lanes', 'labels', 'fields', 'templates', 'rollup']);
   const extra: Record<string, unknown> = {};
   for (const key of Object.keys(map)) {
     if (!known.has(key)) {
@@ -147,7 +172,7 @@ export function parseBoardConfig(value: YamlValue, findings: Finding[]): BoardCo
     }
   }
 
-  return { version, name, ids, features, unsupportedFeatures, mutationBlocked, lanes, lanesDefaulted, labelDefinitions, customFields, rollup, extra };
+  return { version, name, ids, features, unsupportedFeatures, mutationBlocked, lanes, lanesDefaulted, labelDefinitions, customFields, templates, rollup, extra };
 }
 
 export function parseLabelDefinitions(value: YamlValue | undefined, findings: Finding[]): LabelDefinition[] {
@@ -254,6 +279,134 @@ export function parseCustomFields(value: YamlValue | undefined, findings: Findin
       }
     }
     out.push({ id, name, type, options, face, extra });
+  }
+  return out;
+}
+
+export function parseTemplates(
+  value: YamlValue | undefined,
+  findings: Finding[],
+  lanes: Lane[],
+  customFields: CustomFieldDefinition[],
+): CardTemplate[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    findings.push(finding('schema', REF, 'templates must be a list of template maps'));
+    return [];
+  }
+  const out: CardTemplate[] = [];
+  const seen = new Set<string>();
+  const knownKeys = new Set([
+    'id', 'name', 'lane', 'labels', 'priority', 'assignee', 'delegate', 'start', 'due',
+    'estimate', 'evergreen', 'cover_color', 'fields', 'body',
+  ]);
+  for (const raw of value) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      findings.push(finding('schema', REF, 'each template must be a mapping'));
+      continue;
+    }
+    const map = raw as Record<string, YamlValue>;
+    const id = typeof map['id'] === 'string' && SLUG_RE.test(map['id']) ? map['id'] : null;
+    if (id === null) {
+      findings.push(finding('schema', REF, 'template id must be a lowercase slug'));
+      continue;
+    }
+    if (seen.has(id)) {
+      findings.push(finding('schema', REF, `duplicate template id "${id}"`));
+      continue;
+    }
+    seen.add(id);
+    let name = id;
+    if (map['name'] !== undefined) {
+      if (typeof map['name'] === 'string' && map['name'] !== '') name = map['name'];
+      else findings.push(finding('schema', REF, `template "${id}": name must be a non-empty string`));
+    }
+    let lane: string | null = null;
+    if (map['lane'] !== undefined) {
+      if (typeof map['lane'] !== 'string' || map['lane'] === '') {
+        findings.push(finding('schema', REF, `template "${id}": lane must be a position`));
+      } else {
+        lane = map['lane'];
+        const [laneId, substate] = lane.split('.', 2);
+        const definition = lanes.find((candidate) => candidate.id === laneId);
+        if (definition === undefined || (substate !== undefined && !definition.substates.includes(substate))) {
+          findings.push(finding('schema', REF, `template "${id}": unknown position "${lane}"`));
+        }
+      }
+    }
+    const labels: string[] = [];
+    if (map['labels'] !== undefined) {
+      if (!Array.isArray(map['labels']) || !map['labels'].every((label) => typeof label === 'string' && label !== '')) {
+        findings.push(finding('schema', REF, `template "${id}": labels must be a list of strings`));
+      } else labels.push(...map['labels'] as string[]);
+    }
+    const conflict = labelGroupConflict(labels);
+    if (conflict !== null) findings.push(finding('schema', REF, `template "${id}": ${conflict}`));
+    let priority: string | null = null;
+    if (map['priority'] !== undefined) {
+      if (typeof map['priority'] === 'string' && /^p[0-3]$/.test(map['priority'])) priority = map['priority'];
+      else findings.push(finding('schema', REF, `template "${id}": priority must be p0-p3`));
+    }
+    const actor = (key: 'assignee' | 'delegate'): string | null => {
+      if (map[key] === undefined) return null;
+      if (typeof map[key] === 'string' && map[key] !== '') return map[key];
+      findings.push(finding('schema', REF, `template "${id}": ${key} must be a non-empty string`));
+      return null;
+    };
+    const date = (key: 'start' | 'due'): string | null => {
+      if (map[key] === undefined) return null;
+      if (typeof map[key] === 'string' && validCardDate(map[key])) return map[key];
+      findings.push(finding('schema', REF, `template "${id}": ${key} must be a UTC card date`));
+      return null;
+    };
+    let estimate: number | null = null;
+    if (map['estimate'] !== undefined) {
+      if (validEstimate(map['estimate'])) estimate = map['estimate'];
+      else findings.push(finding('schema', REF, `template "${id}": estimate must be a positive integer`));
+    }
+    let evergreen = false;
+    if (map['evergreen'] !== undefined) {
+      if (typeof map['evergreen'] === 'boolean') evergreen = map['evergreen'];
+      else findings.push(finding('schema', REF, `template "${id}": evergreen must be a boolean`));
+    }
+    let coverColor: string | null = null;
+    if (map['cover_color'] !== undefined) {
+      if (typeof map['cover_color'] === 'string' && validColor(map['cover_color'])) coverColor = map['cover_color'].toLowerCase();
+      else findings.push(finding('schema', REF, `template "${id}": cover_color must be #RGB or #RRGGBB`));
+    }
+    const fields: Record<string, unknown> = {};
+    if (map['fields'] !== undefined) {
+      if (map['fields'] === null || typeof map['fields'] !== 'object' || Array.isArray(map['fields'])) {
+        findings.push(finding('schema', REF, `template "${id}": fields must be a mapping`));
+      } else {
+        for (const [fieldId, fieldValue] of Object.entries(map['fields'])) {
+          const definition = customFields.find((candidate) => candidate.id === fieldId);
+          if (definition === undefined || !validCustomFieldValue(definition, fieldValue)) {
+            findings.push(finding('schema', REF, `template "${id}": invalid value for custom field "${fieldId}"`));
+          }
+          fields[fieldId] = fieldValue;
+        }
+      }
+    }
+    let body = '';
+    if (map['body'] !== undefined) {
+      if (typeof map['body'] === 'string') {
+        body = map['body'];
+        if (bodyHasSection(body, 'Log')) findings.push(finding('schema', REF, `template "${id}": body must not contain a Log section`));
+      }
+      else findings.push(finding('schema', REF, `template "${id}": body must be a string`));
+    }
+    const extra: Record<string, unknown> = {};
+    for (const key of Object.keys(map)) {
+      if (!knownKeys.has(key)) {
+        extra[key] = map[key];
+        findings.push(finding('unknown-key', REF, `template "${id}": unknown key "${key}" (preserved)`));
+      }
+    }
+    out.push({
+      id, name, lane, labels, priority, assignee: actor('assignee'), delegate: actor('delegate'),
+      start: date('start'), due: date('due'), estimate, evergreen, coverColor, fields, body, extra,
+    });
   }
   return out;
 }
@@ -378,6 +531,7 @@ function fallback(name: string): BoardConfig {
     lanesDefaulted: true,
     labelDefinitions: [],
     customFields: [],
+    templates: [],
     rollup: defaultRollup(),
     extra: {},
   };

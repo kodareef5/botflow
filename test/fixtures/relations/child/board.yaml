@@ -1,0 +1,5 @@
+botflow: 0
+name: relations child
+lanes:
+  - id: todo
+  - id: done

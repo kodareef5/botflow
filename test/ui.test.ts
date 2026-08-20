@@ -233,6 +233,28 @@ test('ui: a card can be moved, claimed, closed and blocked from the board', () =
   assert.match(app, /order==='strict'/);
 });
 
+test('ui: nested projects become wormhole drop targets during a card drag', () => {
+  const app = scripts.join('\n');
+  assert.match(app, /function handoffTargets\(\)/, 'the dialog and gesture share one descendant scope');
+  assert.match(app, /data-wormhole=/, 'nested projects render as explicit handoff targets');
+  assert.match(app, /const wormhole=el\.closest\('\[data-wormhole\]'\)/, 'hit testing recognizes a wormhole before a lane');
+  assert.match(app, /JSON\.stringify\(\{target:t\.wormhole,move:true\}\)/, 'dropping performs a safe move transfer');
+  assert.match(page, /\.dragmode \.wormrail\{display:flex\}/, 'the rail appears only while a card is lifted');
+  assert.match(page, /wormholes · move card to/, 'the destructive move semantics are visible');
+});
+
+test('ui: structure operations and relationship presentation are reachable', () => {
+  const app = scripts.join('\n');
+  for (const hook of [
+    'id="quickcard"', 'id="bulkcard"', 'data-promote=', 'data-linkcard', 'data-unlinkcard=',
+    'data-mergecard', 'data-transfercard', 'data-template', 'id="addtemplate"',
+  ]) assert.ok(app.includes(hook), `manager structure surface missing ${hook}`);
+  assert.match(app, /function drawRelations\(b\)/);
+  assert.match(app, /marker\.setAttribute\('id','rel-arrow'\)/);
+  assert.match(app, /r\.active===false\?' · resolved'/, 'resolved dependency edges remain visible as history');
+  assert.match(app, /r\.source==='stored'/, 'only stored links offer unlink controls');
+});
+
 test('ui: each writable lane ends with an add-card footer', () => {
   const html = renderCols();
   const headingEnd = html.indexOf('</h3>');

@@ -75,14 +75,17 @@ select:focus-visible,button:focus-visible,[data-card]:focus-visible{outline:2px 
 .lintchips .w{color:#c47317;font-weight:650}
 .themectl{display:flex;gap:6px;align-items:center}
 .themectl .lbl{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
-main{display:flex;gap:12px;padding:16px 20px 40px;overflow-x:auto;align-items:flex-start}
+main{display:flex;gap:12px;padding:16px 20px 40px;overflow-x:auto;align-items:flex-start;position:relative}
+.relsvg{position:absolute;inset:0;overflow:visible;pointer-events:none;z-index:1}
+.relsvg path{fill:none;stroke:var(--st-blocked);stroke-width:2;opacity:.58;vector-effect:non-scaling-stroke}
+.relsvg path.resolved{stroke:var(--muted);stroke-dasharray:4 4;opacity:.4}
 .col{background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);min-width:270px;width:270px;flex:none;padding:10px;box-shadow:var(--shadow)}
 .col h2{font:700 12px/1.25 var(--display);text-transform:uppercase;letter-spacing:.04em;color:var(--ink2);display:flex;gap:6px;align-items:baseline;padding:2px 4px 8px}
 .col h2 .n{color:var(--muted);font-weight:400}
 .col h2 .wipbad{color:var(--st-blocked);font-weight:650}
 .col h2 .canon{color:var(--muted);font-weight:400;text-transform:none}
 .sub-h{font-size:11px;color:var(--muted);padding:6px 4px 2px;border-top:1px dashed var(--grid);margin-top:6px}
-.card{border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);padding:0;margin:6px 0;background:var(--page);cursor:pointer;overflow:hidden;transition:opacity .12s ease,filter .12s ease}
+.card{border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);padding:0;margin:6px 0;background:var(--page);cursor:pointer;overflow:hidden;transition:opacity .12s ease,filter .12s ease;position:relative;z-index:2}
 .card:hover{border-color:var(--baseline)}
 .card.blocked{border-left:3px solid var(--st-blocked)}
 .card.has-color::before{content:"";display:block;height:5px;background:var(--cover-color)}
@@ -122,6 +125,7 @@ footer h3{font-size:13px;margin-bottom:8px;color:var(--ink2)}
 #drawer .body li.done{color:var(--muted);text-decoration:line-through}
 #drawer .body code{font:12px ui-monospace,Menlo,monospace;background:var(--page);border:var(--bw) var(--bs) var(--grid);border-radius:4px;padding:0 4px}
 #drawer .body pre{background:var(--page);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:10px;overflow-x:auto;font:12px ui-monospace,Menlo,monospace;margin:6px 0}
+.relations{display:flex;flex-direction:column;gap:5px;margin:8px 0 14px}.relation{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:5px 7px;font-size:12px}.relation .rtype{font-weight:650}.relation .rsrc{color:var(--muted);font-size:11px}
 .empty{color:var(--muted);font-size:12px;padding:6px 4px}
 
 @media (max-width: 760px){
@@ -285,11 +289,40 @@ function render(){
     const estimate=lane.estimate?'<span class="n">est '+lane.estimate+'</span>':'';
     return '<section class="col"><h2>'+esc(lane.name)+' '+canon+' '+wip+' '+estimate+'</h2>'+body+'</section>'
   }).join('');
+  requestAnimationFrame(()=>drawRelations(b));
   $('#findings').innerHTML=(b.findings||[]).length
     ?'<h3>findings: '+esc(CUR)+'</h3>'+(b.findings||[]).map(f=>'<div class="finding">'+(f.severity==='error'?'<b>error</b>':f.severity==='warning'?'<i>warning</i>':'info')
       +' '+esc(f.rule)+' <b style="color:var(--ink)">'+esc(f.ref)+'</b> · '+esc(f.message)+'</div>').join('')
     :'';
 }
+function drawRelations(b){
+  const cols=$('main');if(!cols)return;
+  const old=$('.relsvg',cols);if(old)old.remove();
+  const nodes=new Map([...cols.querySelectorAll('[data-card]')].map(el=>[el.dataset.card,el]));
+  const edges=[],seen=new Set();
+  for(const lane of b.lanes||[])for(const card of lane.cards||[])for(const rel of card.relationships||[]){
+    if(String(rel.target).includes('#')||!nodes.has(rel.target)||rel.source==='text')continue;
+    const symmetric=rel.type==='relates';
+    const key=symmetric?[card.id,rel.target].sort().join('|'):card.id+'|'+rel.type+'|'+rel.target;
+    if(seen.has(key))continue;seen.add(key);edges.push({from:card.id,to:rel.target,resolved:rel.active===false});
+  }
+  if(!edges.length)return;
+  const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg');svg.classList.add('relsvg');
+  svg.setAttribute('width',String(cols.scrollWidth));svg.setAttribute('height',String(cols.scrollHeight));svg.setAttribute('aria-hidden','true');
+  const defs=document.createElementNS(ns,'defs'),marker=document.createElementNS(ns,'marker');
+  marker.setAttribute('id','viewer-rel-arrow');marker.setAttribute('viewBox','0 0 10 10');marker.setAttribute('refX','9');marker.setAttribute('refY','5');marker.setAttribute('markerWidth','5');marker.setAttribute('markerHeight','5');marker.setAttribute('orient','auto-start-reverse');
+  const arrow=document.createElementNS(ns,'path');arrow.setAttribute('d','M 0 0 L 10 5 L 0 10 z');arrow.setAttribute('fill','var(--st-blocked)');marker.appendChild(arrow);defs.appendChild(marker);svg.appendChild(defs);
+  const base=cols.getBoundingClientRect();
+  for(const edge of edges){
+    const a=nodes.get(edge.from).getBoundingClientRect(),z=nodes.get(edge.to).getBoundingClientRect();
+    const left=a.left<z.left,x1=(left?a.right:a.left)-base.left+cols.scrollLeft,x2=(left?z.left:z.right)-base.left+cols.scrollLeft;
+    const y1=a.top+a.height/2-base.top+cols.scrollTop,y2=z.top+z.height/2-base.top+cols.scrollTop,curve=Math.max(28,Math.abs(x2-x1)*.42);
+    const path=document.createElementNS(ns,'path');path.setAttribute('d','M '+x1+' '+y1+' C '+(x1+(left?curve:-curve))+' '+y1+', '+(x2+(left?-curve:curve))+' '+y2+', '+x2+' '+y2);
+    path.setAttribute('marker-end','url(#viewer-rel-arrow)');if(edge.resolved)path.classList.add('resolved');svg.appendChild(path);
+  }
+  cols.prepend(svg);
+}
+window.addEventListener('resize',()=>{const b=DATA&&DATA.boards&&DATA.boards[CUR];if(b)drawRelations(b)});
 function openDrawer(c){
   const d=$('#drawer');
   const rows=[['position',c.position],['state',c.state],['assignee',c.assignee],['delegate',c.delegate],['priority',c.priority],
@@ -308,6 +341,7 @@ function openDrawer(c){
     +'<div class="cid">'+esc(c.id)+'</div><h2>'+esc(c.title)+'</h2>'
     +'<span class="statechip" style="background:'+stateColor(c.state)+'">'+c.state+'</span>'
     +'<table>'+rows.map(r=>'<tr><td>'+r[0]+'</td><td>'+esc(r[1])+'</td></tr>').join('')+'</table>'
+    +'<h3>relationships</h3>'+((c.relationships||[]).length?'<div class="relations">'+c.relationships.map(r=>'<div class="relation"><span class="rtype">'+esc(r.type)+'</span><span>'+esc(r.target)+'</span><span class="rsrc">'+esc(r.source||'stored')+(r.active===false?' · resolved':'')+'</span></div>').join('')+'</div>':'<div class="empty">no linked cards</div>')
     +'<div class="body">'+(c.body&&c.body.trim()?md(c.body):'<p class="empty">no body</p>')+'</div>';
   d.classList.add('open');
   $('.close',d).onclick=()=>d.classList.remove('open');

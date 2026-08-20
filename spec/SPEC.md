@@ -55,6 +55,7 @@ Written in the strict YAML subset (§9). Top-level keys:
 | `lanes` | list of lane maps | no | Defaults to the six canonical lanes, in canonical order, when omitted. |
 | `labels` | list of label maps | no | Optional colors for card labels. Scoped single-select groups are derived from `Group/Value` names below. |
 | `fields` | list of field maps | no | Typed declarations for board-specific card frontmatter fields. |
+| `templates` | list of template maps | no | Reusable defaults for creating cards; templates never appear as live work. |
 | `rollup` | map | no | Rollup policy (§7); defaults below. |
 
 An implementation that encounters an unsupported `botflow` major MAY inspect and
@@ -108,7 +109,29 @@ error `custom-field-value`. Compact faces render only filled fields whose declar
 has `face: true`, in registry order, and MAY silently omit the lowest-priority tail when
 space is constrained. Detail views MUST retain every filled field.
 
-Unknown keys in the top-level board mapping, lane, label, custom-field, or `rollup`
+Template map keys:
+
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `id` | slug | yes | Stable template identifier, unique within the board. |
+| `name` | string | no | Display name; defaults to `id`. |
+| `lane` | position | no | Default lane or lane.substate. |
+| `labels` | list of strings | no | Default labels; scoped-group rules still apply. |
+| `priority` | `p0`–`p3` | no | Default priority. |
+| `assignee` / `delegate` | string | no | Default accountable/executing identities. |
+| `start` / `due` | date string | no | Concrete UTC defaults. Relative dates belong to quick-add input, not stored templates. |
+| `estimate` | positive int | no | Default effort points. |
+| `evergreen` | bool | no | Default aging behavior. |
+| `cover_color` | color | no | Default compact color band. |
+| `fields` | map | no | Declared custom-field defaults, validated against `fields:`. |
+| `body` | string | no | Initial markdown body. `{{title}}` is replaced with the new card title. |
+
+Explicit card-create arguments override template defaults; a supplied custom-field map
+merges over template fields. Instantiation copies values into an ordinary card and opens
+its normal Log. The resulting card has no live link to the template. Unknown keys inside
+a template map are preserved like other board configuration maps.
+
+Unknown keys in the top-level board mapping, lane, label, custom-field, template, or `rollup`
 mappings are lint `info` (`unknown-key`) and MUST be preserved semantically by any tool that
 rewrites `board.yaml`, under the same normalization allowance as unknown card keys
 (§5). This makes additive board capabilities safe across routine edits.
@@ -140,7 +163,8 @@ Frontmatter keys:
 | `assignee` | string | no | Accountable human/owner. A normal claim (§12) sets it. Existing v0 cards that used this as the executing actor remain valid. |
 | `delegate` | string | no | Agent currently executing the card. A delegate-mode claim (§12) sets it without replacing the accountable assignee. |
 | `priority` | `p0`–`p3` | no | |
-| `deps` | list of card ids | no | Same-board dependencies. A **task** card is **ready** when its effective canonical state (§6) is `todo` and every dep's effective state is `done` or `archive`. Board-cards are containers, not worker tasks: they are never ready and never appear in the work queue, which keeps `ready` and claimability (§12) consistent even when a board-card's lane drifts from its rollup. (Cross-board deps are out of scope for v0.) |
+| `deps` | list of card refs | no | Gating dependencies. A **task** card is **ready** when its effective canonical state (§6) is `todo` and every resolved dep's effective state is `done` or `archive`. Board-cards are containers, not worker tasks: they are never ready and never appear in the work queue, which keeps `ready` and claimability (§12) consistent even when a board-card's lane drifts from its rollup. |
+| `relations` | list of relation maps | no | Non-gating typed links (§5a). |
 | `start` | date string | no | Planned start, `YYYY-MM-DD` or an ISO UTC datetime ending in `Z`. Stored and compared in UTC; no implicit local timezone. |
 | `due` | date string | no | Due date/time in the same form as `start`. A date-only value means the end of that UTC date for overdue checks. |
 | `estimate` | positive int | no | Board-local effort points. It is deliberately unitless; tools may sum it but MUST NOT reinterpret it as elapsed time. |
@@ -176,6 +200,28 @@ Further conventional body sections, all optional and all plain markdown:
 - **Checklists**: every GFM task item (`- [ ]` / `- [x]`) anywhere in the body belongs to the card's checklist aggregate; items group under the `##` section they appear in (`Checklist` when unnamed). Tools address items by their **global 0-based ordinal** in body order, and surface the aggregate (`done/total`) on card faces.
 - **`## Comments`**: discourse between operators and agents, append-only like the Log, same entry shape (`- <date-or-datetime> <actor>: <text>`). Comments are conversation; the Log is audit: tools MUST NOT merge them.
 - **`## Attachments`**: one markdown link per line (`- [label](url)`). Attachments whose urls are images form the card's gallery (and the default cover, §5 `cover`). Attachments are urls; binary upload storage is a hosted-manager concern, not part of the format.
+
+### 5a. Card references and relations
+
+A **card ref** is either a bare card id (same board) or `<board-ref>#<card-id>`.
+Local `board-ref` uses the same board-root resolution as §3, relative to the card's
+board; it MUST remain inside the loaded project tree. Hosted refs use
+`project:<project-id>#<card-id>`. A missing board or card is `dangling-dep` for `deps`
+and `dangling-relation` for `relations`. A dependency cycle may cross boards and is
+still `dep-cycle`; claim MUST refuse every member of it.
+
+Relation maps contain `type` and `target` plus preservable unknown keys. The v0 types
+are `relates`, `duplicates`, `supersedes`, `parent`, `subtask`, `copied-from`, and
+`copied-to`. Relations do not gate readiness. Conforming link tools SHOULD write the
+natural inverse when both cards are writable (`parent` ↔ `subtask`, `duplicates` ↔
+`supersedes`, `copied-from` ↔ `copied-to`; `relates` is symmetric). A self-relation is
+`self-relation`.
+
+Dependency edges are presented as active `blocks` relationships while unresolved.
+Once their target is done/archive, presentation degrades them to an ordinary resolved
+relation; the raw `deps` entry is deliberately retained as history. Text may opt into a
+derived relation with `[[card-ref]]` in Description or Comments. Derived text relations
+are a view and are never written to frontmatter.
 
 ## 6. Projection
 
@@ -288,6 +334,8 @@ Not supported (parse error): anchors/aliases (`&`, `*`), tags (`!`), block scala
 | `blocked-in-done` | warning | Blocked flag on a done/archive card. |
 | `label-group-conflict` | error | Card carries more than one scoped label in the same group. |
 | `custom-field-value` | error | A declared custom-field value violates its type/options. |
+| `dangling-relation` | error | A relation target does not resolve. |
+| `self-relation` | error | A card relates to itself. |
 | `unknown-key` | info | Unrecognized frontmatter key (preserved). |
 | `unsupported-feature` | warning | `board.yaml` declares a feature this reader does not implement; the board is read-only. |
 | `hosted-ref` | info | Board-card uses a `project:` reference; resolvable only on a manager. |
@@ -304,6 +352,7 @@ Each directory under `test/fixtures/` is a board (or, for `invalid/`, a set of b
 - `nested/`: a parent whose cards include two board-cards (one all-done child, one mixed child with a blocked card); exercises rollup, drift, progress. → `expected.json`
 - `card-features/`: scheduling, estimate, Evergreen, and accountable-assignee / executing-delegate fields. → `expected.json`
 - `presentation/`: scoped/colored labels, typed custom fields, face flags, description/checklist previews, and cover color. → `expected.json`
+- `relations/`: templates, typed relations, and a resolved cross-board dependency. → `expected.json`
 - `invalid/`: one board per error class. → `expected.json` (lint findings)
 
 Expected files record, per board: lint findings (rule ids + card ids), per-card canonical states, lane distributions, ready sets, and (where relevant) effective states and progress. A conforming engine must reproduce them exactly.
@@ -312,6 +361,9 @@ Expected files record, per board: lint findings (rule ids + card ids), per-card 
 
 - **Claim is a coordination primitive, not a shortcut.** A claim MUST succeed only when the card is claimable by the actor: its local canonical state (lane canonical, or `blocked` when the flag is set) is `todo`, every dep resolves to a card whose local canonical state is `done` or `archive`, and the selected holder field is empty or already the actor. A normal (human/accountability) claim selects `assignee`; an explicit delegate-mode claim selects `delegate` and leaves `assignee` intact. Success sets the selected field and moves the card to a `doing`-canonical lane (first substate if any), appending a Log entry: one atomic rewrite. A claim by the actor already named in the selected field while the card is `doing` is an idempotent no-op. Two actors racing for the same selected role get exactly one winner; assignee and delegate are different roles and may coexist. Anything else MUST fail with a conflict that names the reason (`assigned`, `blocked`, `not-ready`, `deps`) and MUST NOT modify the card. Tools MAY offer an explicit force override for human operators; hosted APIs MUST restrict that override to admin identities and record its use. A forced normal claim clears an existing delegate because the human is taking execution back; a forced delegate claim replaces only the delegate. Board-cards never appear in `ready` (§5); claiming one explicitly is judged by its own lane, because rollup state is a view, not a lock.
 - Every mutation appends a Log line; never rewrite existing Log lines. Comments append to `## Comments` and bump `updated` without a Log line (discourse isn't audit); checklist toggles and attachment changes DO log.
+- Promoting a checklist item creates a normal card, checks the source item, and writes inverse `parent`/`subtask` relations in the same atomic mutation. The promoted card inherits labels, accountable/delegated actors, due date, and estimate unless the caller overrides them.
+- Duplicate merge never deletes history: it transfers unique attachments to the canonical card, rewires same-board inbound references, writes `duplicates`/`supersedes`, and archives the duplicate. Both cards are logged.
+- Bulk mutations validate the complete batch before writing any card. A failed member leaves every card unchanged. Cross-board transfer likewise creates a valid target before retiring or removing a source; recovery or replay MUST converge rather than lose the only copy. A transfer target MUST be a descendant in the source project's loaded tree, so the source can retain a non-escaping `copied-to` reference; hosted managers enforce the same rule against their project hierarchy.
 - **Single-line fields stay single-line.** Actor names, log messages, comment text, blocked reasons, and attachment labels/urls are interpolated into structured markdown lines; tools MUST collapse whitespace/control characters (newlines included) to a single space in those values, so a crafted value cannot forge extra entries or sections. Actor names additionally drop `:`, because an entry splits on the first `": "` and an actor carrying one reads back truncated. Attachment urls additionally percent-encode `)` so the link syntax cannot be closed early.
 - **Multi-line body text stays inside its section.** Free-text written into a section (a description, say) and any caller-chosen section name MUST NOT be able to introduce a `## ` heading: tools MUST escape heading markers in that text, and MUST reject a section name that is not a single plain line. Otherwise a writer can splice a second `## Log` ahead of the real one, and since section-aware appends target the *first* matching heading, every later entry lands in the forged section: the append-only Log becomes attacker-chosen, and anything derived from it (such as a card's creator) reports whatever the forged entry says. `## Log` is never a valid target for a checklist item.
 - Section-aware body edits (set/append section, checklist toggles, attachment removal) MUST ignore lines inside fenced code blocks: a literal `## ` or `- [ ]` inside a fence is content, not structure.
@@ -329,4 +381,4 @@ The card-frontmatter names `spent`, `watchers`, `relates`, and `weight` are rese
 MUST preserve them as unknown keys today and SHOULD warn before assigning unrelated
 local meanings to them.
 
-Cross-repo/branch board references (`repo#branch` URLs), cross-board deps, sweep policies (auto-archive of aged done cards), quorum `done_when`, per-card `weight:` for leaf-weighted progress (today's progress is structural, §7), CRDT-grade merge for same-card edits, signed Log entries.
+Cross-repo/branch board references (`repo#branch` URLs), sweep policies (auto-archive of aged done cards), quorum `done_when`, per-card `weight:` for leaf-weighted progress (today's progress is structural, §7), CRDT-grade merge for same-card edits, signed Log entries.

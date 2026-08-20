@@ -38,6 +38,8 @@ export const RULE_SEVERITY: Record<string, Severity> = {
   'blocked-in-done': 'warning',
   'label-group-conflict': 'error',
   'custom-field-value': 'error',
+  'dangling-relation': 'error',
+  'self-relation': 'error',
   'unsupported-feature': 'warning',
   'unknown-key': 'info',
   'hosted-ref': 'info',
@@ -91,6 +93,35 @@ export interface CustomFieldDefinition {
   extra: Record<string, unknown>;
 }
 
+export const RELATION_TYPES = ['relates', 'duplicates', 'supersedes', 'parent', 'subtask', 'copied-from', 'copied-to'] as const;
+export type RelationType = (typeof RELATION_TYPES)[number];
+
+export interface CardRelation {
+  type: RelationType;
+  target: string;
+  /** Unknown relation-map keys, preserved across card rewrites. */
+  extra: Record<string, unknown>;
+}
+
+export interface CardTemplate {
+  id: string;
+  name: string;
+  lane: string | null;
+  labels: string[];
+  priority: string | null;
+  assignee: string | null;
+  delegate: string | null;
+  start: string | null;
+  due: string | null;
+  estimate: number | null;
+  evergreen: boolean;
+  coverColor: string | null;
+  fields: Record<string, unknown>;
+  body: string;
+  /** Unknown template-map keys, preserved across board.yaml rewrites. */
+  extra: Record<string, unknown>;
+}
+
 export interface BoardConfig {
   version: number;
   name: string;
@@ -106,6 +137,7 @@ export interface BoardConfig {
   lanesDefaulted: boolean;
   labelDefinitions: LabelDefinition[];
   customFields: CustomFieldDefinition[];
+  templates: CardTemplate[];
   rollup: RollupPolicy;
   /** Unknown top-level board.yaml keys, preserved across rewrites. */
   extra: Record<string, unknown>;
@@ -125,6 +157,7 @@ export interface Card {
   delegate: string | null;
   priority: string | null;
   deps: string[];
+  relations: CardRelation[];
   start: string | null;
   due: string | null;
   /** Unitless board-local effort points. */
@@ -186,6 +219,7 @@ export function fallbackConfig(name: string): BoardConfig {
     lanesDefaulted: true,
     labelDefinitions: [],
     customFields: [],
+    templates: [],
     rollup: defaultRollup(),
     extra: {},
   };

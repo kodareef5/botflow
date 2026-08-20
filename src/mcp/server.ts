@@ -21,6 +21,13 @@ import {
   commentCard,
   describeCard,
   editCard,
+  linkCards,
+  unlinkCards,
+  promoteCard,
+  mergeDuplicateCards,
+  quickAddCards,
+  bulkCards,
+  transferCard,
   moveCard,
   unblockCard,
   type EditPatch,
@@ -31,6 +38,7 @@ import { cardDetailJson } from '../core/json.ts';
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_INFO = { name: 'botflow', version: '0.1.0' };
 const PRIORITIES: readonly string[] = ['p0', 'p1', 'p2', 'p3'];
+const RELATIONS = ['relates', 'duplicates', 'supersedes', 'parent', 'subtask', 'copied-from', 'copied-to'] as const;
 /** Cap on the pending stdin buffer: a client that never sends '\n' would otherwise grow it until the host OOMs. */
 const MAX_BUFFER_BYTES = 8 * 1024 * 1024;
 
@@ -154,7 +162,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       name: 'card_add',
       description: 'Create a card. type "board" with board_path makes a nested-board card.',
       inputSchema: schema(['title'], {
-        title: str, lane: str, type: { type: 'string', enum: ['task', 'board'] }, board_path: str,
+        title: str, template: str, lane: str, type: { type: 'string', enum: ['task', 'board'] }, board_path: str,
         labels: strList, priority: { type: 'string', enum: PRIORITIES }, deps: strList,
         assignee: str, delegate: str, start: str, due: str, estimate: positiveInt, evergreen: bool,
         cover_color: str, fields: fieldMap, actor: str,
@@ -162,6 +170,7 @@ function buildTools(root: string, defaultActor: string): Tool[] {
       run: (args) => {
         const card = addCard(root, {
           title: strOf(args['title'], 'title'),
+          template: opt(args['template']),
           lane: opt(args['lane']),
           type: args['type'] === 'board' ? 'board' : 'task',
           boardPath: opt(args['board_path']),
@@ -173,12 +182,100 @@ function buildTools(root: string, defaultActor: string): Tool[] {
           start: args['start'] === undefined ? undefined : strOf(args['start'], 'start'),
           due: args['due'] === undefined ? undefined : strOf(args['due'], 'due'),
           estimate: positiveIntOf(args['estimate'], 'estimate'),
-          evergreen: args['evergreen'] === true,
+          evergreen: args['evergreen'] === undefined ? undefined : args['evergreen'] === true,
           coverColor: args['cover_color'] === undefined ? undefined : strOf(args['cover_color'], 'cover_color'),
           fields: fieldsOf(args['fields']),
           actor: actorOf(args),
         });
         return { id: card.id, file: card.file, lane: card.laneId };
+      },
+    },
+    {
+      name: 'card_promote',
+      description: 'Promote an unchecked checklist item to a card, inheriting card context and creating inverse parent/subtask relations.',
+      inputSchema: schema(['id', 'index'], {
+        id: str, index: { type: 'integer', minimum: 0 }, title: str, template: str, lane: str,
+        labels: strList, priority: { type: 'string', enum: PRIORITIES }, assignee: str, delegate: str,
+        start: str, due: str, estimate: positiveInt, evergreen: bool, cover_color: str, fields: fieldMap, actor: str,
+      }),
+      run: (args) => {
+        const index = positiveIntOf(Number(args['index']) + 1, 'index')! - 1;
+        const result = promoteCard(root, strOf(args['id'], 'id'), index, actorOf(args), {
+          title: opt(args['title']), template: opt(args['template']), lane: opt(args['lane']),
+          labels: list(args['labels'], 'labels'), priority: priorityOf(args['priority']),
+          assignee: opt(args['assignee']), delegate: opt(args['delegate']), start: opt(args['start']), due: opt(args['due']),
+          estimate: positiveIntOf(args['estimate'], 'estimate'),
+          evergreen: args['evergreen'] === undefined ? undefined : args['evergreen'] === true,
+          coverColor: opt(args['cover_color']), fields: fieldsOf(args['fields']),
+        });
+        return { source: result.source.id, promoted: result.promoted.id, index, file: result.promoted.file };
+      },
+    },
+    {
+      name: 'card_link',
+      description: 'Create a typed same-board relation and its natural inverse.',
+      inputSchema: schema(['id', 'target', 'type'], { id: str, target: str, type: { type: 'string', enum: RELATIONS }, actor: str }),
+      run: (args) => {
+        const type = strOf(args['type'], 'type');
+        if (!(RELATIONS as readonly string[]).includes(type)) throw new UsageError(`invalid relation type "${type}"`);
+        const result = linkCards(root, strOf(args['id'], 'id'), strOf(args['target'], 'target'), type as typeof RELATIONS[number], actorOf(args));
+        return { id: result.source.id, target: result.target.id, type, changed: result.changed };
+      },
+    },
+    {
+      name: 'card_unlink',
+      description: 'Remove a typed same-board relation and its natural inverse.',
+      inputSchema: schema(['id', 'target', 'type'], { id: str, target: str, type: { type: 'string', enum: RELATIONS }, actor: str }),
+      run: (args) => {
+        const type = strOf(args['type'], 'type');
+        if (!(RELATIONS as readonly string[]).includes(type)) throw new UsageError(`invalid relation type "${type}"`);
+        const result = unlinkCards(root, strOf(args['id'], 'id'), strOf(args['target'], 'target'), type as typeof RELATIONS[number], actorOf(args));
+        return { id: result.source.id, target: result.target.id, type, changed: result.changed };
+      },
+    },
+    {
+      name: 'card_merge',
+      description: 'Merge a duplicate into a canonical card: transfer attachments, rewire inbound refs, archive but retain history.',
+      inputSchema: schema(['duplicate', 'canonical'], { duplicate: str, canonical: str, actor: str }),
+      run: (args) => {
+        const result = mergeDuplicateCards(root, strOf(args['duplicate'], 'duplicate'), strOf(args['canonical'], 'canonical'), actorOf(args));
+        return { duplicate: result.duplicate.id, canonical: result.canonical.id, attachmentsMoved: result.attachmentsMoved, referencesRewired: result.referencesRewired };
+      },
+    },
+    {
+      name: 'card_quick_add',
+      description: 'Create cards from newline-separated quick-add text. *label @assignee !p1 today/tomorrow ^estimate ~template; indentation creates subtasks; quotes disable parsing.',
+      inputSchema: schema(['text'], { text: str, actor: str }),
+      run: (args) => quickAddCards(root, strOf(args['text'], 'text'), actorOf(args)).map((card) => ({ id: card.id, title: card.title, file: card.file })),
+    },
+    {
+      name: 'card_transfer',
+      description: 'Copy or safely move a card to a descendant local board, rebasing references. A move archives source history; replay converges on the existing target.',
+      inputSchema: schema(['id', 'target_board'], { id: str, target_board: str, lane: str, move: bool, actor: str }),
+      run: (args) => {
+        const result = transferCard(root, strOf(args['target_board'], 'target_board'), strOf(args['id'], 'id'), actorOf(args), { move: args['move'] === true, lane: opt(args['lane']) });
+        return { source: result.source.id, target: result.target.id, targetBoard: result.targetRoot, moved: result.moved, reused: result.reused };
+      },
+    },
+    {
+      name: 'card_bulk',
+      description: 'Atomically move, close, or label a set of cards; any invalid member rejects the complete batch.',
+      inputSchema: schema(['ids', 'action'], {
+        ids: strList, action: { type: 'string', enum: ['move', 'close', 'label'] }, to: str, force: bool,
+        reason: str, add_labels: strList, remove_labels: strList, actor: str,
+      }),
+      run: (args) => {
+        const ids = list(args['ids'], 'ids') ?? [];
+        const action = strOf(args['action'], 'action');
+        const op = action === 'move'
+          ? { kind: 'move' as const, to: strOf(args['to'], 'to'), force: args['force'] === true }
+          : action === 'close'
+            ? { kind: 'close' as const, reason: opt(args['reason']) }
+            : action === 'label'
+              ? { kind: 'label' as const, add: list(args['add_labels'], 'add_labels'), remove: list(args['remove_labels'], 'remove_labels') }
+              : (() => { throw new UsageError('action must be move, close, or label'); })();
+        const result = bulkCards(root, ids, op, actorOf(args));
+        return { changed: result.cards.map((card) => card.id), warnings: result.warnings };
       },
     },
     {

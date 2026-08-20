@@ -7,6 +7,7 @@ import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { boardFromDocuments, type BoardDocument } from './docs.ts';
 import type { BoardNode, LoadedBoard, Tree } from './model.ts';
 import { finding } from './model.ts';
+import { parseCardReference } from './refs.ts';
 
 export type { BoardNode, LoadedBoard, Tree } from './model.ts';
 
@@ -117,5 +118,34 @@ export function loadTree(rootDir: string): Tree {
   };
 
   visit(rootAbs);
+
+  // Board cards establish the containment tree, but dependency/relation refs
+  // may be the only edge to a sibling board. Discover those boards too so a
+  // local ref has identical meaning in lint, ready/claim, JSON, and the UI.
+  // Newly discovered boards can introduce more refs, hence the growing scan.
+  const scanned = new Set<string>();
+  for (;;) {
+    let added = false;
+    for (const node of [...boards.values()]) {
+      if (scanned.has(node.key)) continue;
+      scanned.add(node.key);
+      for (const card of node.board.cards) {
+        const refs = [...card.deps, ...card.relations.map((relation) => relation.target)];
+        for (const value of refs) {
+          const parsed = parseCardReference(value);
+          if (parsed?.boardRef === null || parsed === null || parsed.boardRef.startsWith('project:')) continue;
+          const targetAbs = resolve(node.board.rootAbs, parsed.boardRef);
+          const relToRoot = relative(rootAbs, targetAbs);
+          if (isAbsolute(parsed.boardRef) || relToRoot === '..' || relToRoot.startsWith(`..${sep}`) || isAbsolute(relToRoot)) continue;
+          const targetRoot = resolveBoardRoot(targetAbs);
+          if (targetRoot !== null && !byAbs.has(targetRoot)) {
+            visit(targetRoot);
+            added = true;
+          }
+        }
+      }
+    }
+    if (!added && [...boards.values()].every((node) => scanned.has(node.key))) break;
+  }
   return { rootAbs, boards };
 }

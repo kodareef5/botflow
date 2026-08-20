@@ -1068,7 +1068,7 @@ export default {
         for (const field of ['labels', 'deps']) {
           if (body[field] !== undefined && !Array.isArray(body[field])) return json({ error: `${field} must be a list` }, 400);
         }
-        for (const field of ['lane', 'priority', 'assignee', 'delegate', 'start', 'due', 'cover_color']) {
+        for (const field of ['template', 'lane', 'priority', 'assignee', 'delegate', 'start', 'due', 'cover_color']) {
           if (body[field] !== undefined && typeof body[field] !== 'string') return json({ error: `${field} must be a string` }, 400);
         }
         if (body['estimate'] !== undefined && typeof body['estimate'] !== 'number') return json({ error: 'estimate must be a number' }, 400);
@@ -1087,6 +1087,7 @@ export default {
         const res = await stub.addCard(
           {
             title: body['title'] as string,
+            template: typeof body['template'] === 'string' ? (body['template'] as string) : undefined,
             lane: typeof body['lane'] === 'string' ? (body['lane'] as string) : undefined,
             type: body['type'] === 'board' ? 'board' : 'task',
             boardPath: typeof body['board'] === 'string' ? (body['board'] as string) : undefined,
@@ -1104,6 +1105,29 @@ export default {
           },
           actor,
         );
+        return 'error' in res ? json(res, 400) : json(res);
+      }
+      if (req.method === 'POST' && rest === '/cards/quick') {
+        const denied = requireWrite();
+        if (denied) return denied;
+        const body = (await req.json().catch(() => null)) as { text?: unknown } | null;
+        if (body === null || typeof body.text !== 'string' || body.text.trim() === '') return json({ error: 'text required' }, 400);
+        const res = await stub.quickAdd(body.text, actor);
+        return 'error' in res ? json(res, 400) : json(res);
+      }
+      if (req.method === 'POST' && rest === '/cards/bulk') {
+        const denied = requireWrite();
+        if (denied) return denied;
+        const body = (await req.json().catch(() => null)) as { ids?: unknown; action?: unknown } | null;
+        if (body === null || !Array.isArray(body.ids) || !body.ids.every((id) => typeof id === 'string')) return json({ error: 'ids must be a list of strings' }, 400);
+        if (body.action === null || typeof body.action !== 'object' || Array.isArray(body.action)) return json({ error: 'action must be an object' }, 400);
+        const action = body.action as Record<string, unknown>;
+        if (action['force'] === true) {
+          const ownerOnly = requireOwner();
+          if (ownerOnly) return json({ error: 'force is an owner override' }, 403);
+          await registry.audit(actor, 'force-override', `bulk action on ${pid}`);
+        }
+        const res = await stub.bulkAction(body.ids as string[], action, actor);
         return 'error' in res ? json(res, 400) : json(res);
       }
       const cardMatch = /^\/cards\/([^/]+)(?:\/([a-z]+))?$/.exec(rest);
@@ -1151,6 +1175,27 @@ export default {
             const denied = requireOwner();
             if (denied) return json({ error: 'force is an owner override: members coordinate, they do not push through' }, 403);
             await registry.audit(actor, 'force-override', `${action} on ${pid}/${cid}`);
+          }
+          if (action === 'transfer') {
+            const target = typeof body['target'] === 'string' ? body['target'] : '';
+            const move = body['move'] === true;
+            const lane = typeof body['lane'] === 'string' && body['lane'] !== '' ? body['lane'] : null;
+            if (target === '' || target === pid || (await registry.projectName(target)) === null) return json({ error: 'a different target project is required' }, 400);
+            if (!(await registry.reaches(identity, target))) return json({ error: 'target project is outside your scope' }, 403);
+            // Persisted cross-project refs must remain safe for every future
+            // reader of this board, including identities scoped below it.
+            if (!(await registry.isWithin(target, pid))) return json({ error: 'handoff target must be this project or one of its descendants' }, 400);
+            const source = await stub.transferSource(cid);
+            if ('error' in source) return json(source, 400);
+            const received = await project(target).receiveTransfer(pid, source, actor, lane, move);
+            if ('error' in received) return json(received, 400);
+            const targetId = received['id'] as string;
+            const completed = await stub.completeTransfer(cid, target, targetId, move, actor);
+            if ('error' in completed) {
+              return json({ error: `${completed.error}; target ${target}/${targetId} exists safely — retry to converge`, target: targetId, recoverable: true }, 409);
+            }
+            await registry.audit(actor, move ? 'move-card' : 'copy-card', `${pid}/${cid} → ${target}/${targetId}`);
+            return json({ source: cid, target: targetId, project: target, moved: move, reused: received['reused'] === true });
           }
           // Detaching an uploaded file also drops the R2 object (best effort).
           // Only objects uploaded to THIS card qualify: an attachment line can

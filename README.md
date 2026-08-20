@@ -77,6 +77,45 @@ MCP server, local viewer, hosted manager, and public shares use the same validat
 and presentation data. Card faces show only filled `face` fields and unfinished
 checklist previews; detail views keep everything.
 
+### Templates, relationships, and batch authoring
+
+Boards may also declare reusable card templates. Instantiation copies the
+defaults into an ordinary card—there is no live template coupling—and
+`{{title}}` is expanded in its initial markdown body:
+
+```yaml
+templates:
+  - id: bug
+    name: Bug report
+    lane: todo
+    labels: [Type/Bug]
+    priority: p1
+    estimate: 3
+    body: "## Checklist\n- [ ] reproduce {{title}}\n- [ ] verify\n"
+```
+
+```sh
+botflow card add "Login crash" --template bug
+botflow card promote 012 2                       # checklist item → related card
+botflow card link 012 019 --type relates         # writes the inverse too
+botflow card merge 021 019                       # transfer attachments, archive duplicate
+botflow card quick $'API *backend !p1\n  contract tests ^3'
+botflow card bulk 012,019 mv doing
+botflow card copy 012 --to-board .botflow/child
+botflow card move-to 019 --to-board .botflow/child
+```
+
+Quick-add recognizes `*label`, `@assignee`, `!p0`–`!p3`, `today`,
+`tomorrow`, `^estimate`, and `~template`; indentation creates parent/subtask
+links, while quotes keep tokens literal. Typed relations are `relates`,
+`duplicates`/`supersedes`, `parent`/`subtask`, and
+`copied-from`/`copied-to`. Dependencies appear as active blocking edges and
+degrade to resolved related edges when their target completes. Local and hosted
+boards draw same-board edges as directional SVG connectors. Filesystem and
+hosted transfers are replay-safe and target descendant boards only, keeping
+every persisted cross-board reference inside the loaded project tree. In the
+manager, nested boards also appear as “wormhole” drop targets while dragging.
+
 ## Quickstart (template workspace)
 
 ```sh
@@ -232,7 +271,7 @@ character, color, type, shape, and rhythm change together.
 | `test/fixtures/` | Golden boards; the spec's conformance vectors |
 | `src/core/` | Engine: parse → model → lint → project → rollup, pure ops |
 | `src/cli/` | The `botflow` CLI (incl. push/pull sync) |
-| `src/mcp/` | MCP server (stdio JSON-RPC, 18 tools) |
+| `src/mcp/` | MCP server (stdio JSON-RPC, 25 tools) |
 | `src/viewer/` | Read-only local board UI (`botflow serve`, `board --html`) |
 | `worker/` | Cloudflare manager: registry DO + project DOs + operator UI |
 | `templates/basic/` | Workspace template ("kanban batteries") |

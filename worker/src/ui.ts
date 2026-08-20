@@ -88,13 +88,19 @@ aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
    and it should not look like an ordinary drop. */
 .dragmode .drop-force{background:color-mix(in srgb,var(--st-blocked) 16%,var(--surface));outline-color:var(--st-blocked)}
 .dragmode .col.drop-force{border-color:var(--st-blocked)}
+.wormrail{display:none;position:sticky;left:0;bottom:8px;z-index:69;align-items:center;gap:8px;margin:14px 0 0;padding:8px;border:1px dashed var(--grid);border-radius:var(--rc);background:color-mix(in srgb,var(--surface) 92%,transparent);box-shadow:var(--shadow)}
+.dragmode .wormrail{display:flex}.wormrail .lbl{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}.wormhole{border:var(--bw) var(--bs) var(--grid);border-radius:999px;padding:5px 10px;background:var(--surface2);color:var(--ink2);font-size:12px}.wormhole.candrop{border-color:var(--acc)}.wormhole.drop-on{background:var(--acc);color:var(--acc-ink);transform:scale(1.04)}
 .draghint{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:71;pointer-events:none;
   background:var(--ink);color:var(--page);font-size:12px;padding:6px 12px;border-radius:999px;box-shadow:var(--shadow);opacity:.92}
 .card{touch-action:pan-y}
 .tabs{display:flex;gap:2px;margin-left:auto}
 .tabs button.on{background:var(--acc);color:var(--acc-ink);border-color:transparent}
 .view{flex:1;overflow:auto;padding:var(--view-pad)}
-.cols{display:flex;gap:var(--col-gap);align-items:flex-start}
+.cols{display:flex;gap:var(--col-gap);align-items:flex-start;position:relative}
+.relsvg{position:absolute;inset:0;overflow:visible;pointer-events:none;z-index:4}
+.relsvg path{fill:none;stroke:var(--st-blocked);stroke-width:2;opacity:.58;vector-effect:non-scaling-stroke}
+.relsvg path.resolved{stroke:var(--muted);stroke-dasharray:4 4;opacity:.4}
+.card{position:relative;z-index:5}
 .col{background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);min-width:var(--col-w);width:var(--col-w);flex:none;padding:var(--col-pad);box-shadow:var(--shadow)}
 .col h3{font:700 11px/1.25 var(--display);text-transform:uppercase;letter-spacing:.04em;color:var(--ink2);padding:2px 4px 7px;display:flex;gap:6px}
 .col h3 .n{color:var(--muted);font-weight:400}
@@ -181,6 +187,18 @@ table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink2)}
 .registryrow .rid{width:145px}.registryrow .rname{width:120px}.registryrow .ropts{flex:1;min-width:130px}.registryrow .rcolor{width:105px}
 .registryrow .rface{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:var(--ink2)}
 .registryrow .rface input{width:auto;margin:0}
+.templaterow{border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:8px;margin:6px 0;background:var(--page)}
+.templaterow summary{cursor:pointer;font-size:12px;color:var(--ink2)}
+.templaterow .templategrid{display:grid;grid-template-columns:repeat(3,minmax(120px,1fr));gap:6px;margin-top:8px}
+.templaterow input,.templaterow select,.templaterow textarea{width:100%;font-size:12px;padding:4px 6px}
+.templaterow textarea{grid-column:1/-1;min-height:62px;font-family:ui-monospace,Menlo,monospace}
+.relations{display:flex;flex-direction:column;gap:5px}
+.relation{display:flex;gap:8px;align-items:center;padding:5px 8px;border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);font-size:12px;background:var(--page)}
+.relation .rtype{font-weight:650;color:var(--ink2)}
+.relation .rsrc{color:var(--muted);margin-left:auto}
+.relation button{font-size:10px;padding:1px 6px}
+.promote{margin-left:auto!important;font-size:10px!important;opacity:.72}
+.cl .item:hover .promote{opacity:1}
 .editor h4{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:14px 0 6px}
 .editor .rollups{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px}
 .editor .rollups label{display:flex;flex-direction:column;gap:3px;color:var(--ink2)}
@@ -693,6 +711,7 @@ function renderMain(){
   if(!tabs.includes(VIEW))VIEW='board';
   main.innerHTML='<div class="phead"><h2>'+esc(p.name)+'</h2><span class="pct" id="pinfo"></span>'
     +(CAN_WRITE?'<button id="newcard" class="ghost" title="add a card to this board">+ card</button>':'')
+    +(CAN_WRITE?'<button id="quickcard" class="ghost" title="create several cards with quick-add syntax">+ quick</button><button id="bulkcard" class="ghost" title="move, close, or label several card ids">bulk</button>':'')
     +(IS_OWNER?'<button id="editboard" class="ghost" title="edit lanes, substates, wip, rollup">✎ edit board</button>':'')
     +'<div class="tabs" role="tablist">'+tabs.map(t=>
       '<button data-tab="'+t+'" role="tab" aria-selected="'+(VIEW===t)+'" class="'+(VIEW===t?'on':'')+'">'+t+'</button>').join('')+'</div></div>'
@@ -700,6 +719,8 @@ function renderMain(){
   main.querySelector('.tabs').onclick=e=>{const b=e.target.closest('[data-tab]');if(b){VIEW=b.dataset.tab;renderMain()}};
   const eb=$('#editboard');if(eb)eb.onclick=boardEditor;
   const nc=$('#newcard');if(nc)nc.onclick=()=>newCard();
+  const qc=$('#quickcard');if(qc)qc.onclick=quickCards;
+  const bc=$('#bulkcard');if(bc)bc.onclick=bulkCardsUi;
   if(VIEW==='board')refreshBoard();else if(VIEW==='activity')refreshActivity();else refreshSharing();
 }
 // Create a card on the selected board. A lane argument pre-selects the column
@@ -709,7 +730,8 @@ function renderMain(){
 function newCard(lane){
   if(!CAN_WRITE)return;
   const defs=(BOARD&&BOARD.fields)||[];
-  const fields=[
+  const templates=(BOARD&&BOARD.templates)||[];
+  const fields=(templates.length?[{name:'template',label:'template (optional)',type:'select',options:[{value:'',label:'none'}].concat(templates.map(t=>({value:t.id,label:t.name})))}]:[]).concat([
     {name:'title',label:'title',required:true},
     {name:'priority',label:'priority (p0-p3, optional)'},
     {name:'labels',label:'labels (comma separated, optional)'},
@@ -720,16 +742,38 @@ function newCard(lane){
     {name:'estimate',label:'estimate (positive points)',type:'number'},
     {name:'evergreen',label:'aging signal',type:'select',options:[{value:'',label:'normal'},{value:'true',label:'evergreen (hide aging)'}]},
     {name:'cover_color',label:'cover color (#RGB or #RRGGBB)'},
-  ].concat(customFormFields(defs,[]));
+  ]).concat(customFormFields(defs,[]));
   formModal('New card',fields,'create',async d=>{
     const labels=d.labels?d.labels.split(',').map(x=>x.trim()).filter(Boolean):undefined;
     const r=await api('/api/projects/'+SEL+'/cards',{method:'POST',body:JSON.stringify({
-      title:d.title,lane:lane||undefined,priority:d.priority||undefined,labels:labels,
+      title:d.title,template:d.template||undefined,lane:lane||undefined,priority:d.priority||undefined,labels:labels,
       assignee:d.assignee||undefined,delegate:d.delegate||undefined,start:d.start||undefined,due:d.due||undefined,
       estimate:d.estimate?Number(d.estimate):undefined,evergreen:d.evergreen===''?undefined:d.evergreen==='true',
       cover_color:d.cover_color||undefined,fields:customPayload(defs,d,false)})});
     await reloadOrg();
     if(r&&r.id)openCard(r.id,'card');
+  });
+}
+function quickCards(){
+  formModal('Quick add',[{name:'text',label:'one card per line · *label @owner !p1 tomorrow ^3 ~template · indent for subtask',type:'textarea',rows:10,required:true}],'create cards',async d=>{
+    const r=await api('/api/projects/'+SEL+'/cards/quick',{method:'POST',body:JSON.stringify({text:d.text})});
+    await reloadOrg();BOARD=null;refreshBoard();
+    if(r&&r.cards&&r.cards.length)toast('Created '+r.cards.length+' card(s).');
+  });
+}
+function bulkCardsUi(){
+  formModal('Bulk action',[
+    {name:'ids',label:'card ids (comma separated)',required:true},
+    {name:'kind',label:'action',type:'select',options:[{value:'move',label:'move'},{value:'close',label:'close'},{value:'label',label:'label'}]},
+    {name:'to',label:'target lane for move'},
+    {name:'reason',label:'close reason (optional)'},
+    {name:'add',label:'labels to add (comma separated)'},
+    {name:'remove',label:'labels to remove (comma separated)'},
+  ],'apply',async d=>{
+    const split=v=>v?v.split(',').map(x=>x.trim()).filter(Boolean):undefined;
+    const action={kind:d.kind,to:d.to||undefined,reason:d.reason||undefined,add:split(d.add),remove:split(d.remove)};
+    const r=await api('/api/projects/'+SEL+'/cards/bulk',{method:'POST',body:JSON.stringify({ids:split(d.ids)||[],action})});
+    await reloadOrg();BOARD=null;refreshBoard();toast('Changed '+((r.changed||[]).length)+' card(s).');
   });
 }
 function customFormFields(defs,values){
@@ -835,6 +879,16 @@ function colsHtml(b){
       +'<div class="deck" data-lane="'+esc(lane.id)+'">'+(body||'<div class="empty">·</div>')+'</div>'+add+'</section>';
   }).join('')+'</div>';
 }
+function handoffTargets(){
+  const here=SEL?findAny(SEL):null,targets=[];
+  const walk=nodes=>{for(const node of nodes||[]){targets.push(node);walk(node.children)}};
+  walk(here&&here.children);return targets;
+}
+function wormholesHtml(){
+  const targets=RO?[]:handoffTargets();
+  return targets.length?'<div class="wormrail" role="list" aria-label="nested project handoff targets"><span class="lbl">wormholes · move card to</span>'
+    +targets.map(p=>'<span class="wormhole" role="listitem" data-wormhole="'+esc(p.id)+'">⇢ '+esc(p.name)+'</span>').join('')+'</div>':'';
+}
 /** A lost claim comes back as a structured conflict. Say what actually
  *  happened: who holds it, what it waits on, why it is parked. The server's
  *  own message carries the detail (which deps, which reason), so it rides
@@ -883,6 +937,8 @@ function dropRules(b,card){
 function dragTargetAt(x,y){
   const el=document.elementFromPoint(x,y);
   if(!el)return null;
+  const wormhole=el.closest('[data-wormhole]');
+  if(wormhole)return {wormhole:wormhole.dataset.wormhole,el:wormhole};
   const group=el.closest('[data-sub]');
   if(group)return {lane:group.dataset.lane,sub:group.dataset.sub,el:group};
   const col=el.closest('.col');
@@ -934,6 +990,7 @@ function dragStart(card,ev){
     if(col.querySelector('[data-sub]'))continue;
     col.classList.add('candrop');
   }
+  for(const wormhole of document.querySelectorAll('[data-wormhole]'))wormhole.classList.add('candrop');
   dragMove(ev);
 }
 function dragMove(ev){
@@ -944,6 +1001,12 @@ function dragMove(ev){
   if(DRAG.over&&DRAG.over.el!==(t&&t.el))DRAG.over.el.classList.remove('drop-on','drop-force');
   DRAG.over=t;DRAG.force=false;
   if(!t)return;
+  if(t.wormhole){
+    t.el.classList.add('drop-on');
+    DRAG.hint.textContent='drop to move this card through the wormhole · esc cancels';
+    return;
+  }
+  DRAG.hint.textContent=IS_OWNER?'drop to move · hold over a red zone to override · esc cancels':'drop to move · esc cancels';
   const key=t.lane+'\u0000'+(t.sub===null?'':t.sub);
   const ok=DRAG.legal.get(key)!==false;
   if(ok)t.el.classList.add('drop-on');
@@ -962,6 +1025,13 @@ async function dragDrop(){
   const id=DRAG.id;
   dragCleanup();
   if(!t)return;
+  if(t.wormhole){
+    try{
+      const r=await api('/api/projects/'+SEL+'/cards/'+id+'/transfer',{method:'POST',body:JSON.stringify({target:t.wormhole,move:true})});
+      await reloadOrg();SEL=r.project;VIEW='board';BOARD=null;renderSide();renderMain();toast(id+' moved through wormhole to '+r.project);
+    }catch(err){toast(err.message)}
+    return;
+  }
   const to=t.sub===null?t.lane:t.lane+'.'+t.sub;
   const from=card.substate?card.lane+'.'+card.substate:card.lane;
   if(to===from)return;
@@ -1102,7 +1172,7 @@ function patchView(v,html){
 function boardHtml(b){
   const errs=(b.findings||[]).filter(f=>f.severity==='error').length;
   return '<div id="bstats">'+chips(b.distribution)+(errs?'<div class="err">'+errs+' lint error(s)</div>':'')+'</div>'
-    +'<div id="bcols">'+colsHtml(b)+'</div>';
+    +'<div id="bcols">'+colsHtml(b)+wormholesHtml()+'</div>';
 }
 async function refreshBoard(quiet){
   let b;try{b=await api('/api/projects/'+SEL+'/board')}catch(err){if(!quiet)$('#view').innerHTML='<div class="err">'+esc(err.message)+'</div>';return}
@@ -1114,7 +1184,37 @@ async function refreshBoard(quiet){
   v.onclick=boardClicks;
   v.onkeydown=boardKeys;
   v.onpointerdown=boardPointerDown;
+  requestAnimationFrame(()=>drawRelations(b));
 }
+function drawRelations(b){
+  const cols=$('.cols');if(!cols)return;
+  const old=$('.relsvg',cols);if(old)old.remove();
+  const nodes=new Map([...cols.querySelectorAll('[data-card]')].map(el=>[el.dataset.card,el]));
+  const edges=[],seen=new Set();
+  for(const lane of b.lanes||[])for(const card of lane.cards||[])for(const rel of card.relationships||[]){
+    if(String(rel.target).includes('#')||!nodes.has(rel.target))continue;
+    if(rel.source==='text')continue;
+    const symmetric=rel.type==='relates';
+    const key=symmetric?[card.id,rel.target].sort().join('|'):card.id+'|'+rel.type+'|'+rel.target;
+    if(seen.has(key))continue;seen.add(key);edges.push({from:card.id,to:rel.target,resolved:rel.active===false});
+  }
+  if(!edges.length)return;
+  const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg');svg.classList.add('relsvg');
+  svg.setAttribute('width',String(cols.scrollWidth));svg.setAttribute('height',String(cols.scrollHeight));svg.setAttribute('aria-hidden','true');
+  const defs=document.createElementNS(ns,'defs'),marker=document.createElementNS(ns,'marker');
+  marker.setAttribute('id','rel-arrow');marker.setAttribute('viewBox','0 0 10 10');marker.setAttribute('refX','9');marker.setAttribute('refY','5');marker.setAttribute('markerWidth','5');marker.setAttribute('markerHeight','5');marker.setAttribute('orient','auto-start-reverse');
+  const arrow=document.createElementNS(ns,'path');arrow.setAttribute('d','M 0 0 L 10 5 L 0 10 z');arrow.setAttribute('fill','var(--st-blocked)');marker.appendChild(arrow);defs.appendChild(marker);svg.appendChild(defs);
+  const base=cols.getBoundingClientRect();
+  for(const edge of edges){
+    const a=nodes.get(edge.from).getBoundingClientRect(),z=nodes.get(edge.to).getBoundingClientRect();
+    const left=a.left<z.left,x1=(left?a.right:a.left)-base.left+cols.scrollLeft,x2=(left?z.left:z.right)-base.left+cols.scrollLeft;
+    const y1=a.top+a.height/2-base.top+cols.scrollTop,y2=z.top+z.height/2-base.top+cols.scrollTop,curve=Math.max(28,Math.abs(x2-x1)*.42);
+    const path=document.createElementNS(ns,'path');path.setAttribute('d','M '+x1+' '+y1+' C '+(x1+(left?curve:-curve))+' '+y1+', '+(x2+(left?-curve:curve))+' '+y2+', '+x2+' '+y2);
+    path.setAttribute('marker-end','url(#rel-arrow)');if(edge.resolved)path.classList.add('resolved');svg.appendChild(path);
+  }
+  cols.prepend(svg);
+}
+window.addEventListener('resize',()=>{if(BOARD&&VIEW==='board')drawRelations(BOARD)});
 // A press on a card is only a drag once it has proved itself: a mouse has to
 // travel past the slop threshold, and a finger has to stay put long enough
 // that it clearly is not a scroll. Until then the press is still a click.
@@ -1189,6 +1289,22 @@ async function boardEditor(){
     +'<input class="ropts" value="'+esc((f.options||[]).join(', '))+'" placeholder="select options, comma separated" aria-label="field options">'
     +'<label class="rface"><input type="checkbox" '+(f.face?'checked':'')+'> face</label>'
     +'<button type="button" class="ghost" data-rmfield aria-label="remove field">✕</button></div>';
+  const templateRow=t=>'<details class="templaterow" data-template open><summary>'+esc(t.name||t.id||'new template')+'</summary><div class="templategrid">'
+    +'<input class="tid" value="'+esc(t.id||'')+'" placeholder="template-id" aria-label="template id">'
+    +'<input class="tname" value="'+esc(t.name||'')+'" placeholder="display name" aria-label="template name">'
+    +'<input class="tlane" value="'+esc(t.lane||'')+'" placeholder="default lane" aria-label="template lane">'
+    +'<input class="tlabels" value="'+esc((t.labels||[]).join(', '))+'" placeholder="labels" aria-label="template labels">'
+    +'<input class="tpriority" value="'+esc(t.priority||'')+'" placeholder="priority" aria-label="template priority">'
+    +'<input class="testimate" type="number" min="1" value="'+(t.estimate==null?'':t.estimate)+'" placeholder="estimate" aria-label="template estimate">'
+    +'<input class="tassignee" value="'+esc(t.assignee||'')+'" placeholder="assignee" aria-label="template assignee">'
+    +'<input class="tdelegate" value="'+esc(t.delegate||'')+'" placeholder="delegate" aria-label="template delegate">'
+    +'<input class="tstart" value="'+esc(t.start||'')+'" placeholder="start" aria-label="template start">'
+    +'<input class="tdue" value="'+esc(t.due||'')+'" placeholder="due" aria-label="template due">'
+    +'<input class="tcolor" value="'+esc(t.cover_color||'')+'" placeholder="cover color" aria-label="template cover color">'
+    +'<label class="rface"><input class="tevergreen" type="checkbox" '+(t.evergreen?'checked':'')+'> evergreen</label>'
+    +'<input class="tfields" value="'+esc(JSON.stringify(t.fields||{}))+'" placeholder="custom fields JSON" aria-label="template custom fields">'
+    +'<button type="button" class="ghost" data-rmtemplate aria-label="remove template">✕ remove</button>'
+    +'<textarea class="tbody" placeholder="initial markdown body" aria-label="template body">'+esc(t.body||'')+'</textarea></div></details>';
   const m=overlay('<h3>Edit board</h3>'
     +'<div class="field"><label>board name<input id="bname" value="'+esc(cfg.name)+'"></label></div>'
     +'<h4>lanes</h4><p class="setting-note">Every lane projects onto one canonical state; lanes named after a canonical state map to themselves. Removing a lane migrates its cards, and each move is logged on the card.</p>'
@@ -1198,6 +1314,8 @@ async function boardEditor(){
     +'<div id="labeldefs">'+(cfg.labels||[]).map(labelRow).join('')+'</div><button type="button" id="addlabel">+ label</button>'
     +'<h4>custom fields</h4><p class="setting-note">Values remain ordinary card frontmatter. Face fields appear on compact cards only when filled.</p>'
     +'<div id="fielddefs">'+(cfg.fields||[]).map(fieldRow).join('')+'</div><button type="button" id="addfield">+ field</button>'
+    +'<h4>card templates</h4><p class="setting-note">Templates copy defaults into a new ordinary card. Use {{title}} in the initial markdown body.</p>'
+    +'<div id="templatedefs">'+(cfg.templates||[]).map(templateRow).join('')+'</div><button type="button" id="addtemplate">+ template</button>'
     +'<h4>rollup policy</h4><div class="rollups">'
     +'<label>blocked when<select id="rbw"><option '+(cfg.rollup.blockedWhen==='any-blocked'?'selected':'')+'>any-blocked</option><option '+(cfg.rollup.blockedWhen==='never'?'selected':'')+'>never</option></select></label>'
     +'<label>doing when<select id="rdw"><option '+(cfg.rollup.doingWhen==='any-started'?'selected':'')+'>any-started</option><option '+(cfg.rollup.doingWhen==='any-doing'?'selected':'')+'>any-doing</option></select></label>'
@@ -1217,8 +1335,10 @@ async function boardEditor(){
   $('#addlane',m).onclick=()=>{$('#lanes',m).insertAdjacentHTML('beforeend',laneRow({id:'',canonical:'todo',substates:[],order:'free',wip:null}));$('#lanes',m).lastElementChild.querySelector('.lid').focus()};
   $('#addlabel',m).onclick=()=>{$('#labeldefs',m).insertAdjacentHTML('beforeend',labelRow({id:'',color:''}));$('#labeldefs',m).lastElementChild.querySelector('.rid').focus()};
   $('#addfield',m).onclick=()=>{$('#fielddefs',m).insertAdjacentHTML('beforeend',fieldRow({id:'',name:'',type:'text',options:[],face:false}));$('#fielddefs',m).lastElementChild.querySelector('.rid').focus()};
+  $('#addtemplate',m).onclick=()=>{$('#templatedefs',m).insertAdjacentHTML('beforeend',templateRow({id:'',name:'',labels:[],fields:{},body:''}));$('#templatedefs',m).lastElementChild.querySelector('.tid').focus()};
   $('#labeldefs',m).onclick=e=>{const x=e.target.closest('[data-rmlabel]');if(x)x.closest('[data-labeldef]').remove()};
   $('#fielddefs',m).onclick=e=>{const x=e.target.closest('[data-rmfield]');if(x)x.closest('[data-fielddef]').remove()};
+  $('#templatedefs',m).onclick=e=>{const x=e.target.closest('[data-rmtemplate]');if(x)x.closest('[data-template]').remove()};
   $('#lanes',m).oninput=refreshMigTargets;
   $('#lanes',m).onclick=e=>{
     const rm=e.target.closest('[data-rm]');if(!rm)return;
@@ -1231,7 +1351,7 @@ async function boardEditor(){
     refreshMigTargets();
   };
   $('#bsave',m).onclick=async()=>{
-    const lanes=[],labels=[],fields=[],migrations={};
+    const lanes=[],labels=[],fields=[],templates=[],migrations={};
     for(const row of m.querySelectorAll('[data-lane]')){
       const id=row.querySelector('.lid').value.trim();
       if(row.classList.contains('dead')){
@@ -1256,9 +1376,22 @@ async function boardEditor(){
       fields.push({id,name:row.querySelector('.rname').value.trim()||id,type,
         options:type==='select'||type==='multi-select'?options:undefined,face:row.querySelector('.rface input').checked});
     }
+    for(const row of m.querySelectorAll('[data-template]')){
+      const id=row.querySelector('.tid').value.trim();if(!id)continue;
+      let templateFields={};
+      try{templateFields=JSON.parse(row.querySelector('.tfields').value||'{}')}
+      catch{$('.err',m).textContent='template '+id+': custom fields must be valid JSON';return}
+      const estimate=row.querySelector('.testimate').value;
+      templates.push({id,name:row.querySelector('.tname').value.trim()||id,lane:row.querySelector('.tlane').value.trim()||undefined,
+        labels:row.querySelector('.tlabels').value.split(',').map(s=>s.trim()).filter(Boolean),priority:row.querySelector('.tpriority').value.trim()||undefined,
+        assignee:row.querySelector('.tassignee').value.trim()||undefined,delegate:row.querySelector('.tdelegate').value.trim()||undefined,
+        start:row.querySelector('.tstart').value.trim()||undefined,due:row.querySelector('.tdue').value.trim()||undefined,
+        estimate:estimate?Number(estimate):undefined,evergreen:row.querySelector('.tevergreen').checked,
+        cover_color:row.querySelector('.tcolor').value.trim()||undefined,fields:templateFields,body:row.querySelector('.tbody').value});
+    }
     try{
       await api('/api/projects/'+SEL+'/config',{method:'PUT',body:JSON.stringify({
-        name:$('#bname',m).value,lanes,labels,fields,
+        name:$('#bname',m).value,lanes,labels,fields,templates,
         rollup:{blockedWhen:$('#rbw',m).value,doingWhen:$('#rdw',m).value,elseState:$('#rel',m).value},migrations})});
       closeOverlay();BOARD=null;refreshBoard();reloadOrg();
     }catch(err){$('.err',m).textContent=err.message}
@@ -1353,6 +1486,8 @@ function cardModalHtml(c,tab){
       :'<button class="ghost" data-block title="park this card with a reason">⛔ block</button>');
     meta.push(acts.join(''));
     meta.push('<button class="ghost" data-editcard title="edit card fields">✎ edit</button>'
+      +'<button class="ghost" data-mergecard title="merge this duplicate into another card">merge duplicate</button>'
+      +'<button class="ghost" data-transfercard title="copy or move this card to a nested board">⇢ handoff</button>'
       +'<button class="ghost" data-sharecard title="public read-only link to just this card">↗ share</button>');
   }
   const tabs=[['card','card'],['chat','chat '+((p.comments||[]).length||'')],['activity','activity']];
@@ -1378,9 +1513,16 @@ function paneCard(c){
   for(const cl of p.checklists||[]){
     const done=cl.items.filter(i=>i.checked).length;
     out+='<div class="cl"><h4>'+esc(cl.section)+(RO?'':' <span class="h-act"><button data-additem="'+esc(cl.section)+'">+ task</button></span>')+'</h4><div class="clhead"><span>'+done+'/'+cl.items.length+'</span><div class="clbar"><i style="width:'+Math.round(done/cl.items.length*100)+'%"></i></div></div>'
-      +cl.items.map(i=>'<div class="item '+(i.checked?'done':'')+'" '+(RO?'':'data-check="'+i.index+'" data-on="'+i.checked+'" role="checkbox" aria-checked="'+i.checked+'" tabindex="0"')+' style="'+(RO?'cursor:default':'')+'"><span class="box">'+(i.checked?IC.tick:'')+'</span><span class="txt">'+esc(i.text)+'</span></div>').join('')
+      +cl.items.map(i=>'<div class="item '+(i.checked?'done':'')+'" '+(RO?'':'data-check="'+i.index+'" data-on="'+i.checked+'" role="checkbox" aria-checked="'+i.checked+'" tabindex="0"')+' style="'+(RO?'cursor:default':'')+'"><span class="box">'+(i.checked?IC.tick:'')+'</span><span class="txt">'+esc(i.text)+'</span>'+(!RO&&!i.checked?'<button class="ghost promote" data-promote="'+i.index+'" title="promote this task into its own card">promote</button>':'')+'</div>').join('')
       +'</div>';
   }
+  const relationships=c.relationships||[];
+  out+='<h4>relationships'+(RO?'':' <span class="h-act"><button data-linkcard>+ link</button></span>')+'</h4>';
+  out+=relationships.length?'<div class="relations">'+relationships.map(r=>'<div class="relation">'
+    +'<span class="rtype">'+esc(r.type)+'</span><button class="ghost" data-opencard="'+esc(r.target)+'">'+esc(r.target)+'</button>'
+    +'<span class="rsrc">'+esc(r.source||'stored')+(r.active===false?' · resolved':'')+'</span>'
+    +(!RO&&r.source==='stored'?'<button class="ghost" data-unlinkcard="'+esc(r.target)+'" data-reltype="'+esc(r.type)+'" title="remove relation">✕</button>':'')
+    +'</div>').join('')+'</div>':'<div class="empty">no linked cards</div>';
   const atts=p.attachments||[];
   out+='<h4>attachments'+(RO?'':' <span class="h-act">'+(UPLOADS?'<button data-upload>+ upload</button>':'')+'<button data-attach>+ add link</button></span>')+'</h4>';
   out+=atts.length?atts.map(a=>{
@@ -1441,6 +1583,18 @@ function wireCardModal(m,c,tab){
     if(RO)return;
     const go=e.target.closest('[data-goto2]');
     if(go&&!go.disabled){closeOverlay();SEL=go.dataset.goto2;VIEW='board';BOARD=null;renderSide();renderMain();return}
+    const open=e.target.closest('[data-opencard]');
+    if(open){const target=open.dataset.opencard;if(!target.includes('#'))openCard(target,'card');return}
+    const promote=e.target.closest('[data-promote]');
+    if(promote){
+      const r=await api('/api/projects/'+SEL+'/cards/'+c.id+'/promote',{method:'POST',body:JSON.stringify({index:Number(promote.dataset.promote)})});
+      await reloadOrg();BOARD=null;openCard(r.promoted,'card');refreshBoard(true);return}
+    const unlink=e.target.closest('[data-unlinkcard]');
+    if(unlink){await api('/api/projects/'+SEL+'/cards/'+c.id+'/unlink',{method:'POST',body:JSON.stringify({target:unlink.dataset.unlinkcard,type:unlink.dataset.reltype})});openCard(c.id,'card');refreshBoard(true);return}
+    if(e.target.closest('[data-linkcard]')){
+      formModal('Link card',[{name:'target',label:'target card id',required:true},{name:'type',label:'relation',type:'select',options:['relates','duplicates','supersedes','parent','subtask','copied-from','copied-to'].map(x=>({value:x,label:x}))}],'link',async d=>{
+        await api('/api/projects/'+SEL+'/cards/'+c.id+'/link',{method:'POST',body:JSON.stringify({target:d.target,type:d.type})});setTimeout(()=>openCard(c.id,'card'),0);refreshBoard(true)});
+      return}
     const chk=e.target.closest('[data-check]');
     if(chk){await api('/api/projects/'+SEL+'/cards/'+c.id+'/check',{method:'POST',body:JSON.stringify({index:Number(chk.dataset.check),checked:chk.dataset.on!=='true'})});openCard(c.id,'card');return}
     const det=e.target.closest('[data-detach]');
@@ -1483,6 +1637,23 @@ function wireCardModal(m,c,tab){
             +'<div class="actions"><button class="primary" data-x2>done</button></div>',null,'Card link');
           m2.querySelector('[data-x2]').onclick=()=>{closeOverlay();openCard(c.id,'card')};
         },0);
+      });
+      return}
+    if(e.target.closest('[data-mergecard]')){
+      formModal('Merge duplicate',[{name:'canonical',label:'canonical card id',required:true}],'merge and archive',async d=>{
+        await api('/api/projects/'+SEL+'/cards/'+c.id+'/merge',{method:'POST',body:JSON.stringify({canonical:d.canonical})});
+        await reloadOrg();setTimeout(()=>openCard(d.canonical,'card'),0);refreshBoard(true)});
+      return}
+    if(e.target.closest('[data-transfercard]')){
+      const targets=handoffTargets();
+      if(!targets.length){toast('This project has no nested handoff targets.');return}
+      formModal('Handoff card',[
+        {name:'target',label:'target project',type:'select',options:targets.map(p=>({value:p.id,label:p.name}))},
+        {name:'mode',label:'operation',type:'select',options:[{value:'copy',label:'copy (keep source active)'},{value:'move',label:'move (archive source after safe copy)'}]},
+        {name:'lane',label:'target lane (optional)'},
+      ],'handoff',async d=>{
+        const r=await api('/api/projects/'+SEL+'/cards/'+c.id+'/transfer',{method:'POST',body:JSON.stringify({target:d.target,move:d.mode==='move',lane:d.lane||undefined})});
+        await reloadOrg();setTimeout(()=>{SEL=r.project;VIEW='board';BOARD=null;renderSide();renderMain();openCard(r.target,'card')},0);
       });
       return}
     // Claim is a coordination primitive: losing is a normal outcome, not an

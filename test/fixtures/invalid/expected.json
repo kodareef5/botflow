@@ -24,6 +24,12 @@
         "ref": "001"
       }
     ],
+    "dangling-relation": [
+      {
+        "rule": "dangling-relation",
+        "ref": "001"
+      }
+    ],
     "dup-id": [
       {
         "rule": "dup-id",
@@ -75,6 +81,18 @@
     "label-group-conflict": [
       {
         "rule": "label-group-conflict",
+        "ref": "001"
+      }
+    ],
+    "relation-schema": [
+      {
+        "rule": "schema",
+        "ref": "001"
+      }
+    ],
+    "self-relation": [
+      {
+        "rule": "self-relation",
         "ref": "001"
       }
     ],

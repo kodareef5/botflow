@@ -15,7 +15,7 @@ import { loadRemote, pull, push, remoteAdd } from './remote.ts';
 
 import { analyze, lintBoard } from '../core/analyze.ts';
 import { discoverBoardRoot, loadTree, resolveBoardRoot } from '../core/load.ts';
-import type { Finding } from '../core/model.ts';
+import type { Finding, RelationType } from '../core/model.ts';
 import {
   UsageError,
   addCard,
@@ -30,6 +30,13 @@ import {
   describeCard,
   detachCard,
   editCard,
+  linkCards,
+  unlinkCards,
+  promoteCard,
+  mergeDuplicateCards,
+  quickAddCards,
+  bulkCards,
+  transferCard,
   initBoard,
   moveCard,
   unblockCard,
@@ -66,7 +73,7 @@ usage: botflow <command> [args]
                                         changes unless --force
   ready [--json]                        unblocked todo cards
   lint [--json]                         check the board; exit 1 on errors
-  card add <title> [--lane l] [--labels a,b] [--priority p0-p3] [--deps 1,2]
+  card add <title> [--template id] [--lane l] [--labels a,b] [--priority p0-p3] [--deps 1,2]
            [--type board --board-path <dir>] [--assignee name] [--delegate agent]
            [--start YYYY-MM-DD] [--due YYYY-MM-DD] [--estimate n] [--evergreen]
            [--cover-color #RRGGBB] [--field id=value ...]
@@ -89,6 +96,14 @@ usage: botflow <command> [args]
   card describe <id> <text…>            set the Description (empty clears)
   card item <id> <text…> [--section s]  add an unchecked checklist task
   card check <id> <n> [--off]           check/uncheck checklist item n (1-based)
+  card promote <id> <n> [--lane l]      turn checklist item n into a related card
+  card link <id> <target> --type <kind> add a typed relation and its inverse
+  card unlink <id> <target> --type <kind>
+  card merge <duplicate> <canonical>    archive a duplicate and rewire references
+  card copy <id> --to-board <path>      copy to a descendant board; rebase references
+  card move-to <id> --to-board <path>   safe descendant copy, then archive source
+  card quick <multiline text>           quick-add; indentation creates subtasks
+  card bulk <ids> mv <lane> | close | label [--add-labels a,b] [--remove-labels a,b]
   card attach <id> <url> [--label l]    add a link/image attachment
   card detach <id> <n>                  remove attachment n (1-based)
   log <id> <message…>                   append a Log entry
@@ -350,6 +365,7 @@ function runCard(argv: string[]): number {
       const { values, positionals } = parse(rest, {
         ...COMMON,
         lane: { type: 'string' },
+        template: { type: 'string' },
         type: { type: 'string' },
         'board-path': { type: 'string' },
         labels: { type: 'string' },
@@ -360,7 +376,7 @@ function runCard(argv: string[]): number {
         start: { type: 'string' },
         due: { type: 'string' },
         estimate: { type: 'string' },
-        evergreen: { type: 'boolean', default: false },
+        evergreen: { type: 'boolean' },
         'cover-color': { type: 'string' },
         field: { type: 'string', multiple: true },
       });
@@ -371,6 +387,7 @@ function runCard(argv: string[]): number {
       const root = getRoot(values);
       const card = addCard(root, {
         title,
+        template: values['template'] as string | undefined,
         lane: values['lane'] as string | undefined,
         type: type as 'task' | 'board' | undefined,
         boardPath: values['board-path'] as string | undefined,
@@ -382,7 +399,7 @@ function runCard(argv: string[]): number {
         start: values['start'] as string | undefined,
         due: values['due'] as string | undefined,
         estimate: values['estimate'] === undefined ? undefined : Number(values['estimate']),
-        evergreen: values['evergreen'] as boolean,
+        evergreen: values['evergreen'] === true ? true : undefined,
         coverColor: values['cover-color'] as string | undefined,
         fields: fieldAssignments(root, values['field'] as string[] | undefined),
         actor: getActor(values),
@@ -546,6 +563,116 @@ function runCard(argv: string[]): number {
       const checked = !(values['off'] as boolean);
       const card = checkCard(getRoot(values), id, getActor(values), index, checked);
       values['json'] ? emitJson({ id: card.id, item: index + 1, checked }) : out(`✓ ${card.id} item ${index + 1} ${checked ? 'checked' : 'unchecked'}`);
+      return 0;
+    }
+    case 'promote': {
+      const { values, positionals } = parse(rest, {
+        ...COMMON,
+        title: { type: 'string' },
+        template: { type: 'string' },
+        lane: { type: 'string' },
+        labels: { type: 'string' },
+        priority: { type: 'string' },
+        assignee: { type: 'string' },
+        delegate: { type: 'string' },
+        start: { type: 'string' },
+        due: { type: 'string' },
+        estimate: { type: 'string' },
+        evergreen: { type: 'boolean' },
+        'cover-color': { type: 'string' },
+        field: { type: 'string', multiple: true },
+      });
+      const [id, n] = positionals;
+      const index = Number(n) - 1;
+      if (!id || !Number.isInteger(index) || index < 0) throw new UsageError('usage: botflow card promote <id> <n> [flags]');
+      const root = getRoot(values);
+      const result = promoteCard(root, id, index, getActor(values), {
+        title: values['title'] as string | undefined,
+        template: values['template'] as string | undefined,
+        lane: values['lane'] as string | undefined,
+        labels: csv(values['labels'] as string | undefined),
+        priority: values['priority'] as string | undefined,
+        assignee: values['assignee'] as string | undefined,
+        delegate: values['delegate'] as string | undefined,
+        start: values['start'] as string | undefined,
+        due: values['due'] as string | undefined,
+        estimate: values['estimate'] === undefined ? undefined : Number(values['estimate']),
+        evergreen: values['evergreen'] === true ? true : undefined,
+        coverColor: values['cover-color'] as string | undefined,
+        fields: fieldAssignments(root, values['field'] as string[] | undefined),
+      });
+      values['json']
+        ? emitJson({ source: result.source.id, promoted: result.promoted.id, item: index + 1, file: result.promoted.file })
+        : out(`✓ ${result.source.id} item ${index + 1} → ${result.promoted.id} · ${result.promoted.file}`);
+      return 0;
+    }
+    case 'link':
+    case 'unlink': {
+      const { values, positionals } = parse(rest, { ...COMMON, type: { type: 'string' } });
+      const [source, target] = positionals;
+      const type = values['type'] as RelationType | undefined;
+      if (!source || !target || !type) throw new UsageError(`usage: botflow card ${sub} <id> <target> --type <kind>`);
+      const result = sub === 'link'
+        ? linkCards(getRoot(values), source, target, type, getActor(values))
+        : unlinkCards(getRoot(values), source, target, type, getActor(values));
+      values['json']
+        ? emitJson({ source, target, type, changed: result.changed })
+        : out(`${result.changed ? '✓' : '='} ${source} ${sub === 'link' ? 'linked' : 'unlinked'} ${type} ${target}${result.changed ? '' : ' (already)'}`);
+      return 0;
+    }
+    case 'merge': {
+      const { values, positionals } = parse(rest, COMMON);
+      const [duplicate, canonical] = positionals;
+      if (!duplicate || !canonical) throw new UsageError('usage: botflow card merge <duplicate> <canonical>');
+      const result = mergeDuplicateCards(getRoot(values), duplicate, canonical, getActor(values));
+      const summary = { duplicate, canonical, attachmentsMoved: result.attachmentsMoved, referencesRewired: result.referencesRewired };
+      values['json'] ? emitJson(summary) : out(`✓ ${duplicate} merged into ${canonical} · ${result.attachmentsMoved} attachment(s), ${result.referencesRewired} reference(s)`);
+      return 0;
+    }
+    case 'quick': {
+      const { values, positionals } = parse(rest, COMMON);
+      const text = positionals.join(' ');
+      if (text.trim() === '') throw new UsageError('usage: botflow card quick <multiline text>');
+      const cards = quickAddCards(getRoot(values), text, getActor(values));
+      values['json']
+        ? emitJson(cards.map((card) => ({ id: card.id, title: card.title, file: card.file })))
+        : out(cards.map((card) => `✓ ${card.id} ${card.title}`).join('\n'));
+      return 0;
+    }
+    case 'copy':
+    case 'move-to': {
+      const { values, positionals } = parse(rest, { ...COMMON, 'to-board': { type: 'string' }, lane: { type: 'string' } });
+      const id = positionals[0];
+      const target = values['to-board'] as string | undefined;
+      if (!id || !target) throw new UsageError(`usage: botflow card ${sub} <id> --to-board <path> [--lane l]`);
+      const result = transferCard(getRoot(values), target, id, getActor(values), { move: sub === 'move-to', lane: values['lane'] as string | undefined });
+      const summary = { source: result.source.id, target: result.target.id, targetBoard: result.targetRoot, moved: result.moved, reused: result.reused };
+      values['json'] ? emitJson(summary) : out(`${result.reused ? '=' : '✓'} ${id} ${sub === 'move-to' ? 'moved' : 'copied'} → ${result.target.id} on ${result.targetRoot}${result.reused ? ' (existing transfer)' : ''}`);
+      return 0;
+    }
+    case 'bulk': {
+      const { values, positionals } = parse(rest, {
+        ...COMMON,
+        force: { type: 'boolean', default: false },
+        reason: { type: 'string' },
+        'add-labels': { type: 'string' },
+        'remove-labels': { type: 'string' },
+      });
+      const [idList, action, arg] = positionals;
+      const ids = csv(idList);
+      if (!ids || !action) throw new UsageError('usage: botflow card bulk <ids> mv <lane> | close | label');
+      const bulkAction = action === 'mv' && arg
+        ? { kind: 'move' as const, to: arg, force: values['force'] === true }
+        : action === 'close'
+          ? { kind: 'close' as const, reason: values['reason'] as string | undefined }
+          : action === 'label'
+            ? { kind: 'label' as const, add: csv(values['add-labels'] as string | undefined), remove: csv(values['remove-labels'] as string | undefined) }
+            : null;
+      if (bulkAction === null) throw new UsageError('usage: botflow card bulk <ids> mv <lane> | close | label');
+      const result = bulkCards(getRoot(values), ids, bulkAction, getActor(values));
+      values['json']
+        ? emitJson({ changed: result.cards.map((card) => card.id), warnings: result.warnings })
+        : out(`✓ ${result.cards.length}/${ids.length} card(s) changed${result.warnings.map((warning) => `\n⚠ ${warning}`).join('')}`);
       return 0;
     }
     case 'attach': {

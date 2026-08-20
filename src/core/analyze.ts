@@ -9,6 +9,7 @@
 
 import type { BoardNode, Canonical, Card, Distribution, Finding, Lane, LoadedBoard, RollupPolicy, Tree } from './model.ts';
 import { distributionTotal, emptyDistribution, finding } from './model.ts';
+import { parseCardReference, resolveTreeCardReference } from './refs.ts';
 
 export interface BoardAnalysis {
   /** Effective canonical state per card id (rollup-aware for board-cards). */
@@ -21,6 +22,8 @@ export interface BoardAnalysis {
   progress: number | null;
   /** Optional estimate-weighted projection; never replaces structural progress. */
   effort: { total: number; completed: number; progress: number | null };
+  /** Resolved effective state for each dependency ref; null is dangling. */
+  dependencyStates: Map<string, Map<string, Canonical | null>>;
   /** Semantic findings; combine with LoadedBoard.findings for the full lint. */
   findings: Finding[];
 }
@@ -36,11 +39,13 @@ export interface ExternalChild {
 }
 
 type ChildLookup = (card: Card) => ExternalChild | null;
+export interface ExternalReference { state: Canonical }
+type ReferenceLookup = (reference: string) => ExternalReference | null;
 
 /** Analyze one board given a resolver for its board-cards' children.
  *  A null resolution = unresolved (missing path, cycle, hosted ref):
  *  the card falls back to its own lane and no drift is reported. */
-export function analyzeBoard(board: LoadedBoard, lookup: ChildLookup): BoardAnalysis {
+export function analyzeBoard(board: LoadedBoard, lookup: ChildLookup, referenceLookup?: ReferenceLookup): BoardAnalysis {
   const findings: Finding[] = [];
   const laneById = new Map<string, Lane>(board.config.lanes.map((l) => [l.id, l]));
   const canonical = new Map<string, Canonical>();
@@ -113,15 +118,23 @@ export function analyzeBoard(board: LoadedBoard, lookup: ChildLookup): BoardAnal
   // Pass 2: deps → dangling-dep findings and the ready set.
   const byId = new Map<string, Card>(board.cards.map((c) => [c.id, c]));
   const ready: string[] = [];
+  const dependencyStates = new Map<string, Map<string, Canonical | null>>();
   for (const card of board.cards) {
     let depsSatisfied = true;
+    const states = new Map<string, Canonical | null>();
+    dependencyStates.set(card.id, states);
     for (const dep of card.deps) {
-      if (!byId.has(dep)) {
+      const parsed = parseCardReference(dep)!;
+      const local = parsed.boardRef === null ? byId.get(parsed.cardId) : undefined;
+      const external = parsed.boardRef === null ? null : (referenceLookup?.(dep) ?? null);
+      if (local === undefined && external === null) {
+        states.set(dep, null);
         findings.push(finding('dangling-dep', card.id, `dep "${dep}" does not exist`));
         depsSatisfied = false;
         continue;
       }
-      const depState = canonical.get(dep)!;
+      const depState = local === undefined ? external!.state : canonical.get(local.id)!;
+      states.set(dep, depState);
       if (depState !== 'done' && depState !== 'archive') depsSatisfied = false;
     }
     // Only task cards are claimable work: a board-card is a container whose
@@ -129,6 +142,17 @@ export function analyzeBoard(board: LoadedBoard, lookup: ChildLookup): BoardAnal
     if (card.type === 'task' && canonical.get(card.id) === 'todo' && depsSatisfied) ready.push(card.id);
   }
   ready.sort();
+
+  for (const card of board.cards) {
+    for (const relation of card.relations) {
+      const parsed = parseCardReference(relation.target)!;
+      if (parsed.boardRef === null) {
+        if (!byId.has(parsed.cardId)) findings.push(finding('dangling-relation', card.id, `relation target "${relation.target}" does not exist`));
+      } else if ((referenceLookup?.(relation.target) ?? null) === null) {
+        findings.push(finding('dangling-relation', card.id, `relation target "${relation.target}" does not exist`));
+      }
+    }
+  }
 
   // Pass 3: dependency cycles (SPEC §10). A dep cycle makes every member
   // permanently non-ready with no visible reason: that is an error, not a
@@ -160,13 +184,14 @@ export function analyzeBoard(board: LoadedBoard, lookup: ChildLookup): BoardAnal
       let descend: string | null = null;
       while (frame.next < frame.deps.length) {
         const dep = frame.deps[frame.next++]!;
-        if (!byId.has(dep)) continue; // dangling-dep already reported
-        const state = color.get(dep);
+        const parsed = parseCardReference(dep)!;
+        if (parsed.boardRef !== null || !byId.has(parsed.cardId)) continue; // external/global or dangling
+        const state = color.get(parsed.cardId);
         if (state === undefined) {
-          descend = dep;
+          descend = parsed.cardId;
           break;
         }
-        if (state === 1) reportCycle(dep);
+        if (state === 1) reportCycle(parsed.cardId);
       }
       if (descend !== null) {
         push(descend);
@@ -208,11 +233,38 @@ export function analyzeBoard(board: LoadedBoard, lookup: ChildLookup): BoardAnal
     progress: estimateTotal === 0 ? null : estimateDone / estimateTotal,
   };
 
-  return { canonical, distribution, ready, progress, effort, findings };
+  return { canonical, distribution, ready, progress, effort, dependencyStates, findings };
 }
 
 export function analyze(tree: Tree): Analysis {
   const memo = new Map<string, BoardAnalysis>();
+  const stateMemo = new Map<string, Canonical>();
+
+  const effectiveState = (key: string, card: Card): Canonical => {
+    const memoKey = `${key}\u0000${card.id}`;
+    const known = stateMemo.get(memoKey);
+    if (known !== undefined) return known;
+    const node = tree.boards.get(key)!;
+    const laneCanonical = node.board.config.lanes.find((lane) => lane.id === card.laneId)?.canonical ?? 'todo';
+    const flagged = card.blocked !== null && laneCanonical !== 'done' && laneCanonical !== 'archive';
+    if (flagged || card.type === 'task') {
+      const state = flagged ? 'blocked' : laneCanonical;
+      stateMemo.set(memoKey, state);
+      return state;
+    }
+    const childKey = node.childKeyByCard.get(card.id) ?? null;
+    if (childKey === null) {
+      stateMemo.set(memoKey, laneCanonical);
+      return laneCanonical;
+    }
+    const child = tree.boards.get(childKey)!;
+    const distribution = emptyDistribution();
+    for (const childCard of child.board.cards) distribution[effectiveState(childKey, childCard)]++;
+    const countable = distributionTotal(distribution) - distribution.archive;
+    const state = countable === 0 ? laneCanonical : rollupState(distribution, countable, node.board.config.rollup);
+    stateMemo.set(memoKey, state);
+    return state;
+  };
 
   const analyzeNode = (key: string): BoardAnalysis => {
     const done = memo.get(key);
@@ -224,19 +276,77 @@ export function analyze(tree: Tree): Analysis {
       if (childKey === null) return null;
       const child = analyzeNode(childKey);
       return { distribution: child.distribution, progress: child.progress };
+    }, (reference) => {
+      const target = resolveTreeCardReference(tree, key, reference);
+      return target === null ? null : { state: effectiveState(target.key, target.card) };
     });
     memo.set(key, analysis);
     return analysis;
   };
 
   for (const key of tree.boards.keys()) analyzeNode(key);
+  reportCrossBoardDependencyCycles(tree, memo);
   return { boards: memo };
 }
 
 /** Analyze a lone board, optionally injecting resolved children by card id
  *  (how hosted project boards roll up sibling projects). */
-export function analyzeSingle(board: LoadedBoard, children?: Map<string, ExternalChild | null>): BoardAnalysis {
-  return analyzeBoard(board, (card) => children?.get(card.id) ?? null);
+export function analyzeSingle(
+  board: LoadedBoard,
+  children?: Map<string, ExternalChild | null>,
+  references?: Map<string, ExternalReference | null>,
+): BoardAnalysis {
+  return analyzeBoard(board, (card) => children?.get(card.id) ?? null, (reference) => references?.get(reference) ?? null);
+}
+
+function reportCrossBoardDependencyCycles(tree: Tree, analyses: Map<string, BoardAnalysis>): void {
+  const graph = new Map<string, string[]>();
+  const nodeKey = (board: string, card: string): string => `${board}\u0000${card}`;
+  for (const [key, node] of tree.boards) {
+    for (const card of node.board.cards) {
+      const edges: string[] = [];
+      for (const dep of card.deps) {
+        const target = resolveTreeCardReference(tree, key, dep);
+        if (target !== null) edges.push(nodeKey(target.key, target.card.id));
+      }
+      graph.set(nodeKey(key, card.id), edges);
+    }
+  }
+  const color = new Map<string, 1 | 2>();
+  const path: string[] = [];
+  const reported = new Set<string>();
+  const stack: { id: string; edges: string[]; next: number }[] = [];
+  const display = (id: string): string => {
+    const [board, card] = id.split('\u0000');
+    return board === '.' ? card! : `${board}#${card}`;
+  };
+  const push = (id: string): void => {
+    color.set(id, 1); path.push(id); stack.push({ id, edges: graph.get(id) ?? [], next: 0 });
+  };
+  for (const id of graph.keys()) {
+    if (color.has(id)) continue;
+    push(id);
+    while (stack.length > 0) {
+      const frame = stack.at(-1)!;
+      let descend: string | null = null;
+      while (frame.next < frame.edges.length) {
+        const edge = frame.edges[frame.next++]!;
+        const state = color.get(edge);
+        if (state === undefined) { descend = edge; break; }
+        if (state !== 1) continue;
+        const cycle = path.slice(path.indexOf(edge));
+        const boards = new Set(cycle.map((member) => member.split('\u0000')[0]));
+        if (boards.size < 2) continue; // analyzeBoard already reported local cycles
+        const key = [...cycle].sort().join('>');
+        if (reported.has(key)) continue;
+        reported.add(key);
+        const [sourceBoard, sourceCard] = cycle[0]!.split('\u0000');
+        analyses.get(sourceBoard!)!.findings.push(finding('dep-cycle', sourceCard!, `dependency cycle: ${[...cycle, edge].map(display).join(' → ')}`));
+      }
+      if (descend !== null) push(descend);
+      else { stack.pop(); path.pop(); color.set(frame.id, 2); }
+    }
+  }
 }
 
 /** Derive a board-card's effective state from a child distribution (SPEC §7).

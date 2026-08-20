@@ -2,12 +2,14 @@
 // The CLI's mutate.ts and the hosted ProjectDO both apply moves, claims,
 // closes, blocks, and edits through these, so the rules exist exactly once.
 
-import type { BoardConfig, Card, Lane, LoadedBoard } from './model.ts';
-import { addAttachmentLine, appendToSection, parseBody, removeAttachmentLine, setChecklistItem, setSection } from './body.ts';
+import type { BoardConfig, Card, CardRelation, Lane, LoadedBoard } from './model.ts';
+import { RELATION_TYPES } from './model.ts';
+import { addAttachmentLine, appendToSection, bodyHasSection, parseBody, removeAttachmentLine, setChecklistItem, setSection } from './body.ts';
 import { emitScalar } from './emit.ts';
 import { validCardDate, validEstimate } from './fields.ts';
 import { newHashId, nextSeqId, slugify } from './ids.ts';
 import { labelGroupConflict, validColor, validCustomFieldValue } from './presentation.ts';
+import { parseCardReference, relationInverse } from './refs.ts';
 import { logMutation, nowDate, nowDateTime, sanitizeActor, sanitizeBlock, sanitizeInline, sanitizeSectionName, sanitizeUrl } from './write.ts';
 
 /** An error caused by how a tool was invoked: message for the caller, no stack. */
@@ -129,12 +131,14 @@ function wipWarnings(board: LoadedBoard, moved: Card): string[] {
 
 export interface AddOptions {
   title: string;
+  template?: string | undefined;
   lane?: string | undefined;
   type?: 'task' | 'board' | undefined;
   boardPath?: string | undefined;
   labels?: string[] | undefined;
   priority?: string | undefined;
   deps?: string[] | undefined;
+  relations?: CardRelation[] | undefined;
   assignee?: string | undefined;
   delegate?: string | undefined;
   start?: string | undefined;
@@ -143,6 +147,8 @@ export interface AddOptions {
   evergreen?: boolean | undefined;
   coverColor?: string | undefined;
   fields?: Record<string, unknown> | undefined;
+  /** Initial markdown before the tool-created Log. */
+  body?: string | undefined;
   actor: string;
 }
 
@@ -214,25 +220,61 @@ function sameValue(left: unknown, right: unknown): boolean {
   if (Array.isArray(left) && Array.isArray(right)) {
     return left.length === right.length && left.every((value, index) => sameValue(value, right[index]));
   }
+  if (left !== null && right !== null && typeof left === 'object' && typeof right === 'object') {
+    const leftEntries = Object.entries(left as Record<string, unknown>);
+    const rightRecord = right as Record<string, unknown>;
+    return leftEntries.length === Object.keys(rightRecord).length && leftEntries.every(([key, value]) => sameValue(value, rightRecord[key]));
+  }
   return Object.is(left, right);
+}
+
+function checkedCardReferences(values: string[], field: string): string[] {
+  const out: string[] = [];
+  for (const value of values) {
+    if (parseCardReference(value) === null) throw new UsageError(`${field} contains invalid card reference "${value}"`);
+    if (!out.includes(value)) out.push(value);
+  }
+  return out;
+}
+
+function checkedRelations(values: CardRelation[], ownId?: string): CardRelation[] {
+  const out: CardRelation[] = [];
+  const seen = new Set<string>();
+  for (const relation of values) {
+    if (!(RELATION_TYPES as readonly string[]).includes(relation.type)) throw new UsageError(`unknown relation type "${relation.type}"`);
+    const parsed = parseCardReference(relation.target);
+    if (parsed === null) throw new UsageError(`invalid relation target "${relation.target}"`);
+    if (ownId !== undefined && parsed.boardRef === null && parsed.cardId === ownId) throw new UsageError('a card cannot relate to itself');
+    const key = `${relation.type}\u0000${relation.target}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ type: relation.type, target: relation.target, extra: { ...relation.extra } });
+  }
+  return out;
 }
 
 export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
   const config = board.config;
   if (opts.title.trim() === '') throw new UsageError('title required');
+  const template = opts.template === undefined ? null : config.templates.find((candidate) => candidate.id === opts.template);
+  if (opts.template !== undefined && template === undefined) {
+    throw new UsageError(`no template "${opts.template}": templates: ${config.templates.map((candidate) => candidate.id).join(', ') || 'none'}`);
+  }
   const type = opts.type ?? 'task';
   if (type === 'board') {
     if (!opts.boardPath) throw new UsageError('a board-card needs a board path');
     validateBoardPath(opts.boardPath);
   }
 
-  const spec = opts.lane ?? (config.lanes.find((l) => l.canonical === 'todo') ?? config.lanes[0])?.id;
+  const spec = opts.lane ?? template?.lane ?? (config.lanes.find((l) => l.canonical === 'todo') ?? config.lanes[0])?.id;
   if (!spec) throw new UsageError('board has no lanes');
   const pos = resolvePosition(config, spec);
 
   const existing = board.cards.map((c) => c.id);
   const id = config.ids === 'seq' ? nextSeqId(existing) : newHashId(existing);
-  const fields = checkedCustomFields(board, opts.fields, false);
+  const fields = checkedCustomFields(board, { ...(template?.fields ?? {}), ...(opts.fields ?? {}) }, false);
+  const body = opts.body ?? template?.body ?? '';
+  if (bodyHasSection(body, 'Log')) throw new UsageError('initial card body must not contain a Log section');
   const card: Card = {
     id,
     title: opts.title,
@@ -240,23 +282,24 @@ export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
     substate: pos.substate,
     type,
     boardPath: type === 'board' ? opts.boardPath! : null,
-    labels: checkedLabels(opts.labels ?? []),
-    assignee: cleanActorField(opts.assignee) ?? null,
-    delegate: cleanActorField(opts.delegate) ?? null,
-    priority: checkedPriority(opts.priority) ?? null,
-    deps: opts.deps ?? [],
-    start: checkedDate(opts.start, 'start') ?? null,
-    due: checkedDate(opts.due, 'due') ?? null,
-    estimate: checkedEstimate(opts.estimate) ?? null,
-    evergreen: opts.evergreen === true,
+    labels: checkedLabels(opts.labels ?? template?.labels ?? []),
+    assignee: cleanActorField(opts.assignee ?? template?.assignee) ?? null,
+    delegate: cleanActorField(opts.delegate ?? template?.delegate) ?? null,
+    priority: checkedPriority(opts.priority ?? template?.priority) ?? null,
+    deps: checkedCardReferences(opts.deps ?? [], 'deps'),
+    relations: checkedRelations(opts.relations ?? [], id),
+    start: checkedDate(opts.start ?? template?.start, 'start') ?? null,
+    due: checkedDate(opts.due ?? template?.due, 'due') ?? null,
+    estimate: checkedEstimate(opts.estimate ?? template?.estimate) ?? null,
+    evergreen: opts.evergreen ?? template?.evergreen ?? false,
     cover: null,
-    coverColor: checkedCoverColor(opts.coverColor) ?? null,
+    coverColor: checkedCoverColor(opts.coverColor ?? template?.coverColor) ?? null,
     blocked: null,
     created: nowDate(),
     updated: null,
     extra: fields,
     file: `cards/${id}-${slugify(opts.title)}.md`,
-    body: '',
+    body: body.replaceAll('{{title}}', opts.title),
   };
   logMutation(card, opts.actor, `created in ${positionLabel(pos)}`);
   return card;
@@ -322,7 +365,13 @@ export type Claimability = { ok: true; alreadyYours: boolean } | { ok: false; co
 /** Claim is a coordination primitive (SPEC §12): it succeeds only for a card
  *  that is ready (todo, unblocked, deps done) and unassigned, or already
  *  assigned to the claiming actor. Everything else is a conflict. */
-export function claimability(board: LoadedBoard, card: Card, actor: string, mode: ClaimMode = 'assign'): Claimability {
+export function claimability(
+  board: LoadedBoard,
+  card: Card,
+  actor: string,
+  mode: ClaimMode = 'assign',
+  externalDependencies?: Map<string, string | null>,
+): Claimability {
   const position = positionLabel({ laneId: card.laneId, substate: card.substate });
   const fail = (message: string, reason: ClaimConflict['reason'], holder: string | null = null): Claimability => ({
     ok: false,
@@ -339,7 +388,12 @@ export function claimability(board: LoadedBoard, card: Card, actor: string, mode
   if (state === 'blocked') return fail(`blocked: ${card.blocked}`, 'blocked');
   if (state !== 'todo') return fail(`not ready, it sits in ${position}`, 'not-ready');
   const unmet = card.deps.filter((dep) => {
-    const depCard = board.cards.find((c) => c.id === dep);
+    const parsed = parseCardReference(dep)!;
+    if (parsed.boardRef !== null) {
+      const depState = externalDependencies?.get(dep) ?? null;
+      return depState !== 'done' && depState !== 'archive';
+    }
+    const depCard = board.cards.find((c) => c.id === parsed.cardId);
     if (!depCard) return true;
     const depState = localCanonical(board, depCard);
     return depState !== 'done' && depState !== 'archive';
@@ -348,8 +402,15 @@ export function claimability(board: LoadedBoard, card: Card, actor: string, mode
   return { ok: true, alreadyYours: false };
 }
 
-export function opClaim(board: LoadedBoard, card: Card, actor: string, force = false, mode: ClaimMode = 'assign'): MoveResult {
-  const check = claimability(board, card, actor, mode);
+export function opClaim(
+  board: LoadedBoard,
+  card: Card,
+  actor: string,
+  force = false,
+  mode: ClaimMode = 'assign',
+  externalDependencies?: Map<string, string | null>,
+): MoveResult {
+  const check = claimability(board, card, actor, mode, externalDependencies);
   const reclaimExecution = force && mode === 'assign' && card.delegate !== null;
   if (check.ok && check.alreadyYours && !reclaimExecution) {
     const at = positionLabel({ laneId: card.laneId, substate: card.substate });
@@ -405,6 +466,7 @@ export interface EditPatch {
   assignee?: string | null | undefined;
   delegate?: string | null | undefined;
   deps?: string[] | undefined;
+  relations?: CardRelation[] | undefined;
   start?: string | null | undefined;
   due?: string | null | undefined;
   estimate?: number | null | undefined;
@@ -428,6 +490,8 @@ export function opEdit(card: Card, patch: EditPatch, actor: string, board?: Load
   const estimate = patch.estimate === undefined ? undefined : (checkedEstimate(patch.estimate) ?? null);
   const coverColor = patch.coverColor === undefined ? undefined : (checkedCoverColor(patch.coverColor) ?? null);
   const fields = checkedCustomFields(board, patch.fields, true);
+  const deps = patch.deps === undefined ? undefined : checkedCardReferences(patch.deps, 'deps');
+  const relations = patch.relations === undefined ? undefined : checkedRelations(patch.relations, card.id);
   if (patch.boardPath !== undefined) {
     if (card.type !== 'board') throw new UsageError('board path only applies to board-cards');
     validateBoardPath(patch.boardPath);
@@ -454,9 +518,13 @@ export function opEdit(card: Card, patch: EditPatch, actor: string, board?: Load
     card.delegate = delegate!;
     changed.push('delegate');
   }
-  if (patch.deps !== undefined && !sameValue(patch.deps, card.deps)) {
-    card.deps = patch.deps;
+  if (deps !== undefined && !sameValue(deps, card.deps)) {
+    card.deps = deps;
     changed.push('deps');
+  }
+  if (relations !== undefined && !sameValue(relations, card.relations)) {
+    card.relations = relations;
+    changed.push('relations');
   }
   if (patch.start !== undefined && start !== card.start) {
     card.start = start!;
@@ -553,6 +621,393 @@ export function opChecklistAdd(card: Card, actor: string, text: string, section 
   }
   logMutation(card, actor, `added task "${clean}"`);
   return card;
+}
+
+function hasRelation(card: Card, type: CardRelation['type'], target: string): boolean {
+  return card.relations.some((relation) => relation.type === type && relation.target === target);
+}
+
+function addRelation(card: Card, type: CardRelation['type'], target: string): boolean {
+  if (hasRelation(card, type, target)) return false;
+  card.relations.push({ type, target, extra: {} });
+  return true;
+}
+
+/** Add a same-board relation and its natural inverse. Idempotent. */
+export function opLink(
+  board: LoadedBoard,
+  sourceId: string,
+  targetId: string,
+  type: CardRelation['type'],
+  actor: string,
+): { source: Card; target: Card; changed: boolean } {
+  if (!(RELATION_TYPES as readonly string[]).includes(type)) throw new UsageError(`unknown relation type "${type}"`);
+  if (sourceId === targetId) throw new UsageError('a card cannot relate to itself');
+  const source = getCard(board, sourceId);
+  const target = getCard(board, targetId);
+  const inverse = relationInverse(type);
+  const sourceChanged = addRelation(source, type, target.id);
+  const targetChanged = addRelation(target, inverse, source.id);
+  if (sourceChanged) logMutation(source, actor, `linked ${type} ${target.id}`);
+  if (targetChanged) logMutation(target, actor, `linked ${inverse} ${source.id}`);
+  return { source, target, changed: sourceChanged || targetChanged };
+}
+
+/** Remove a same-board relation and its inverse. Idempotent. */
+export function opUnlink(
+  board: LoadedBoard,
+  sourceId: string,
+  targetId: string,
+  type: CardRelation['type'],
+  actor: string,
+): { source: Card; target: Card; changed: boolean } {
+  if (!(RELATION_TYPES as readonly string[]).includes(type)) throw new UsageError(`unknown relation type "${type}"`);
+  if (sourceId === targetId) throw new UsageError('a card cannot relate to itself');
+  const source = getCard(board, sourceId);
+  const target = getCard(board, targetId);
+  const inverse = relationInverse(type);
+  const sourceLength = source.relations.length;
+  const targetLength = target.relations.length;
+  source.relations = source.relations.filter((relation) => relation.type !== type || relation.target !== target.id);
+  target.relations = target.relations.filter((relation) => relation.type !== inverse || relation.target !== source.id);
+  const sourceChanged = source.relations.length !== sourceLength;
+  const targetChanged = target.relations.length !== targetLength;
+  if (sourceChanged) logMutation(source, actor, `unlinked ${type} ${target.id}`);
+  if (targetChanged) logMutation(target, actor, `unlinked ${inverse} ${source.id}`);
+  return { source, target, changed: sourceChanged || targetChanged };
+}
+
+export interface PromoteOptions {
+  title?: string | undefined;
+  template?: string | undefined;
+  lane?: string | undefined;
+  labels?: string[] | undefined;
+  priority?: string | undefined;
+  assignee?: string | undefined;
+  delegate?: string | undefined;
+  start?: string | undefined;
+  due?: string | undefined;
+  estimate?: number | undefined;
+  evergreen?: boolean | undefined;
+  coverColor?: string | undefined;
+  fields?: Record<string, unknown> | undefined;
+}
+
+/** Promote an unchecked checklist item into a related card. The caller
+ * persists both returned cards in one transaction/lock. */
+export function opPromote(
+  board: LoadedBoard,
+  source: Card,
+  index: number,
+  actor: string,
+  overrides: PromoteOptions = {},
+): { source: Card; promoted: Card; item: string } {
+  const item = parseBody(source.body).checklists.flatMap((checklist) => checklist.items).find((candidate) => candidate.index === index);
+  if (item === undefined) throw new UsageError(`no checklist item ${index}`);
+  if (item.checked) throw new UsageError(`checklist item ${index} is already complete`);
+  const promoted = opAdd(board, {
+    title: overrides.title ?? item.text,
+    template: overrides.template,
+    lane: overrides.lane,
+    labels: overrides.labels ?? source.labels,
+    priority: overrides.priority ?? source.priority ?? undefined,
+    assignee: overrides.assignee ?? source.assignee ?? undefined,
+    delegate: overrides.delegate ?? source.delegate ?? undefined,
+    start: overrides.start,
+    due: overrides.due ?? source.due ?? undefined,
+    estimate: overrides.estimate ?? source.estimate ?? undefined,
+    evergreen: overrides.evergreen,
+    coverColor: overrides.coverColor,
+    fields: overrides.fields,
+    actor,
+  });
+  const nextBody = setChecklistItem(source.body, index, true);
+  if (nextBody === null) throw new UsageError(`no checklist item ${index}`);
+  source.body = nextBody;
+  addRelation(source, 'subtask', promoted.id);
+  addRelation(promoted, 'parent', source.id);
+  logMutation(source, actor, `promoted task "${item.text}" → ${promoted.id}`);
+  logMutation(promoted, actor, `promoted from ${source.id}`);
+  return { source, promoted, item: item.text };
+}
+
+function dedupeRelations(relations: CardRelation[]): CardRelation[] {
+  const seen = new Set<string>();
+  return relations.filter((relation) => {
+    const key = `${relation.type}\u0000${relation.target}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/** Merge a duplicate into its canonical card without deleting either audit
+ * trail. All validation precedes mutation; wrappers persist returned cards
+ * transactionally. */
+export function opMergeDuplicates(
+  board: LoadedBoard,
+  duplicateId: string,
+  canonicalId: string,
+  actor: string,
+): { duplicate: Card; canonical: Card; changed: Card[]; attachmentsMoved: number; referencesRewired: number } {
+  if (duplicateId === canonicalId) throw new UsageError('duplicate and canonical card must differ');
+  const duplicate = getCard(board, duplicateId);
+  const canonical = getCard(board, canonicalId);
+  const archive = laneByCanonical(board.config, 'archive', 'archive duplicate into');
+  const duplicateAttachments = parseBody(duplicate.body).attachments;
+  const canonicalUrls = new Set(parseBody(canonical.body).attachments.map((attachment) => attachment.url));
+
+  let attachmentsMoved = 0;
+  for (const attachment of duplicateAttachments) {
+    if (canonicalUrls.has(attachment.url)) continue;
+    canonical.body = addAttachmentLine(canonical.body, attachment.label, attachment.url);
+    canonicalUrls.add(attachment.url);
+    attachmentsMoved++;
+  }
+
+  let referencesRewired = 0;
+  const changed = new Set<Card>([duplicate, canonical]);
+  for (const card of board.cards) {
+    if (card === duplicate) continue;
+    const deps = [...new Set(card.deps.map((dep) => dep === duplicate.id ? canonical.id : dep))]
+      .filter((dep) => !(card === canonical && dep === canonical.id));
+    let cardChanged = !sameValue(deps, card.deps);
+    card.deps = deps;
+    const relations = dedupeRelations(card.relations
+      .map((relation) => relation.target === duplicate.id ? { ...relation, target: canonical.id } : relation)
+      .filter((relation) => !(card === canonical && relation.target === canonical.id)));
+    if (!sameValue(relations, card.relations)) cardChanged = true;
+    card.relations = relations;
+    if (cardChanged && card !== canonical) {
+      referencesRewired++;
+      changed.add(card);
+      logMutation(card, actor, `rewired duplicate ${duplicate.id} → ${canonical.id}`);
+    }
+  }
+  addRelation(duplicate, 'duplicates', canonical.id);
+  addRelation(canonical, 'supersedes', duplicate.id);
+  canonical.updated = nowDate();
+  logMutation(canonical, actor, `merged duplicate ${duplicate.id}${attachmentsMoved > 0 ? `; transferred ${attachmentsMoved} attachment(s)` : ''}`);
+  const from = positionLabel({ laneId: duplicate.laneId, substate: duplicate.substate });
+  duplicate.laneId = archive.id;
+  duplicate.substate = archive.substates.length > 0 ? archive.substates.at(-1)! : null;
+  duplicate.blocked = null;
+  logMutation(duplicate, actor, `marked duplicate of ${canonical.id}, moved ${from} → ${positionLabel(duplicate)}`);
+  return { duplicate, canonical, changed: [...changed], attachmentsMoved, referencesRewired };
+}
+
+export interface QuickAddCard {
+  title: string;
+  indent: number;
+  parent: number | null;
+  options: Omit<AddOptions, 'title' | 'actor'>;
+}
+
+interface QuickToken { value: string; quoted: boolean }
+
+function quickTokens(line: string): QuickToken[] {
+  const out: QuickToken[] = [];
+  let value = '';
+  let quote: '"' | "'" | null = null;
+  let quoted = false;
+  const flush = (): void => {
+    if (value !== '') out.push({ value, quoted });
+    value = ''; quoted = false;
+  };
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]!;
+    if (quote !== null) {
+      if (ch === '\\' && i + 1 < line.length) value += line[++i]!;
+      else if (ch === quote) { quote = null; quoted = true; }
+      else value += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      quoted = true;
+    } else if (/\s/.test(ch)) flush();
+    else value += ch;
+  }
+  if (quote !== null) throw new UsageError('quick add contains an unterminated quote');
+  flush();
+  return out;
+}
+
+/** Parse quick-add magic without touching a board. Quoted tokens are always
+ * title text; unquoted metadata tokens are consumed. */
+export function parseQuickAdd(text: string, nowValue: number | Date = Date.now()): QuickAddCard[] {
+  const today = new Date(nowValue);
+  if (Number.isNaN(today.getTime())) throw new UsageError('invalid quick-add clock');
+  const date = (days: number): string => {
+    const shifted = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + days));
+    return shifted.toISOString().slice(0, 10);
+  };
+  const out: QuickAddCard[] = [];
+  const stack: { indent: number; index: number }[] = [];
+  for (const raw of text.replace(/\r\n?/g, '\n').split('\n')) {
+    if (raw.trim() === '') continue;
+    const lead = raw.match(/^[ \t]*/)?.[0] ?? '';
+    const indent = [...lead].reduce((sum, char) => sum + (char === '\t' ? 2 : 1), 0);
+    const labels: string[] = [];
+    const title: string[] = [];
+    const options: Omit<AddOptions, 'title' | 'actor'> = {};
+    for (const token of quickTokens(raw.slice(lead.length))) {
+      if (!token.quoted && token.value.startsWith('*') && token.value.length > 1) labels.push(token.value.slice(1));
+      else if (!token.quoted && token.value.startsWith('@') && token.value.length > 1) options.assignee = token.value.slice(1);
+      else if (!token.quoted && /^!p[0-3]$/.test(token.value)) options.priority = token.value.slice(1);
+      else if (!token.quoted && /^\^[1-9]\d*$/.test(token.value)) options.estimate = Number(token.value.slice(1));
+      else if (!token.quoted && token.value.startsWith('~') && token.value.length > 1) options.template = token.value.slice(1);
+      else if (!token.quoted && token.value.toLowerCase() === 'today') options.due = date(0);
+      else if (!token.quoted && token.value.toLowerCase() === 'tomorrow') options.due = date(1);
+      else title.push(token.value);
+    }
+    if (labels.length > 0) options.labels = labels;
+    if (title.length === 0) throw new UsageError(`quick add line ${out.length + 1} has no title`);
+    while (stack.length > 0 && stack.at(-1)!.indent >= indent) stack.pop();
+    const parent = stack.length > 0 ? stack.at(-1)!.index : null;
+    out.push({ title: title.join(' '), indent, parent, options });
+    stack.push({ indent, index: out.length - 1 });
+  }
+  if (out.length === 0) throw new UsageError('quick add requires at least one card');
+  return out;
+}
+
+/** Validate and instantiate a complete quick-add batch. Existing board cards
+ * are never mutated; new parent/child relations are formed within the batch. */
+export function opQuickAdd(board: LoadedBoard, text: string, actor: string, nowValue: number | Date = Date.now()): Card[] {
+  const parsed = parseQuickAdd(text, nowValue);
+  const shadow: LoadedBoard = { ...board, cards: [...board.cards] };
+  const cards: Card[] = [];
+  for (const [index, item] of parsed.entries()) {
+    const card = opAdd(shadow, { ...item.options, title: item.title, actor });
+    cards.push(card);
+    shadow.cards.push(card);
+    if (item.parent !== null) {
+      const parent = cards[item.parent]!;
+      addRelation(parent, 'subtask', card.id);
+      addRelation(card, 'parent', parent.id);
+      logMutation(parent, actor, `added subtask ${card.id}`);
+      logMutation(card, actor, `linked parent ${parent.id}`);
+    }
+  }
+  return cards;
+}
+
+export type BulkAction =
+  | { kind: 'move'; to: string; force?: boolean | undefined }
+  | { kind: 'close'; reason?: string | undefined }
+  | { kind: 'label'; add?: string[] | undefined; remove?: string[] | undefined };
+
+function cloneCard(card: Card): Card {
+  return {
+    ...card,
+    labels: [...card.labels],
+    deps: [...card.deps],
+    relations: card.relations.map((relation) => ({ ...relation, extra: { ...relation.extra } })),
+    extra: { ...card.extra },
+  };
+}
+
+/** Apply one action to many cards after cloning the board. A validation error
+ * therefore cannot leave the caller's in-memory board half changed. */
+export function opBulk(board: LoadedBoard, ids: string[], action: BulkAction, actor: string): { cards: Card[]; warnings: string[] } {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) throw new UsageError('bulk action requires at least one card');
+  for (const id of unique) getCard(board, id); // validate the complete selection first
+  const clone: LoadedBoard = { ...board, cards: board.cards.map(cloneCard) };
+  const changed: Card[] = [];
+  const warnings: string[] = [];
+  for (const id of unique) {
+    const card = getCard(clone, id);
+    if (action.kind === 'move') {
+      const result = opMove(clone, card, action.to, actor, action.force === true);
+      warnings.push(...result.warnings.map((warning) => `${id}: ${warning}`));
+      if (result.from !== result.to) changed.push(card);
+    } else if (action.kind === 'close') {
+      opClose(clone, card, actor, action.reason);
+      changed.push(card);
+    } else {
+      const remove = new Set(action.remove ?? []);
+      const labels = [...new Set([...card.labels.filter((label) => !remove.has(label)), ...(action.add ?? [])])];
+      if (!sameValue(labels, card.labels)) {
+        opEdit(card, { labels }, actor, clone);
+        changed.push(card);
+      }
+    }
+  }
+  return { cards: changed, warnings };
+}
+
+export interface TransferOptions {
+  /** Reference to the source card as seen from the target board. */
+  sourceRef: string;
+  /** Build a reference to the newly allocated target card as seen from source. */
+  targetRef: (targetId: string) => string;
+  /** Rebase a dependency/relation target from source-board context to target. */
+  rewriteReference: (reference: string) => string;
+  /** Rebase a board-card path; hosted project refs may be returned unchanged. */
+  rewriteBoardPath: (boardPath: string) => string;
+  lane?: string | undefined;
+  move?: boolean | undefined;
+}
+
+/** Copy/move one card between already loaded boards. A move retires the
+ * source into archive rather than deleting its history. The wrapper writes
+ * target first, then source, so a crash can duplicate but never lose work. */
+export function opTransferCard(
+  sourceBoard: LoadedBoard,
+  targetBoard: LoadedBoard,
+  source: Card,
+  actor: string,
+  options: TransferOptions,
+): { source: Card; target: Card; moved: boolean } {
+  if (sourceBoard === targetBoard || sourceBoard.rootAbs === targetBoard.rootAbs) throw new UsageError('source and target boards must differ');
+  const sourceLane = sourceBoard.config.lanes.find((lane) => lane.id === source.laneId);
+  const desired = options.lane
+    ?? (targetBoard.config.lanes.some((lane) => lane.id === source.laneId && (source.substate === null || lane.substates.includes(source.substate)))
+      ? positionLabel(source)
+      : targetBoard.config.lanes.find((lane) => lane.canonical === (sourceLane?.canonical ?? 'todo'))?.id
+        ?? targetBoard.config.lanes.find((lane) => lane.canonical === 'todo')?.id
+        ?? targetBoard.config.lanes[0]?.id);
+  if (desired === undefined) throw new UsageError('target board has no lanes');
+  const position = resolvePosition(targetBoard.config, desired);
+  const id = targetBoard.config.ids === 'seq'
+    ? nextSeqId(targetBoard.cards.map((card) => card.id))
+    : newHashId(targetBoard.cards.map((card) => card.id));
+  const target = cloneCard(source);
+  target.id = id;
+  target.laneId = position.laneId;
+  target.substate = position.substate;
+  target.file = `cards/${id}-${slugify(source.title)}.md`;
+  target.boardPath = source.boardPath === null ? null : options.rewriteBoardPath(source.boardPath);
+  if (target.boardPath !== null) validateBoardPath(target.boardPath);
+  target.deps = checkedCardReferences(source.deps.map(options.rewriteReference), 'deps');
+  target.relations = checkedRelations(source.relations.map((relation) => ({
+    ...relation,
+    target: options.rewriteReference(relation.target),
+    extra: { ...relation.extra },
+  })), id);
+  for (const definition of targetBoard.config.customFields) {
+    const value = target.extra[definition.id];
+    if (value !== undefined && !validCustomFieldValue(definition, value)) {
+      throw new UsageError(`target board custom field "${definition.id}" is incompatible with the source value`);
+    }
+  }
+  checkedLabels(target.labels);
+  addRelation(target, 'copied-from', options.sourceRef);
+  logMutation(target, actor, `${options.move ? 'moved' : 'copied'} from ${options.sourceRef}`);
+
+  // Only after the target is fully valid do we touch source state.
+  addRelation(source, 'copied-to', options.targetRef(target.id));
+  if (options.move) {
+    const archive = laneByCanonical(sourceBoard.config, 'archive', 'retire transferred source into');
+    const from = positionLabel(source);
+    source.laneId = archive.id;
+    source.substate = archive.substates.length > 0 ? archive.substates.at(-1)! : null;
+    source.blocked = null;
+    logMutation(source, actor, `moved to ${options.targetRef(target.id)}, ${from} → ${positionLabel(source)}`);
+  } else {
+    logMutation(source, actor, `copied to ${options.targetRef(target.id)}`);
+  }
+  return { source, target, moved: options.move === true };
 }
 
 export function opAttach(card: Card, actor: string, url: string, label?: string): Card {

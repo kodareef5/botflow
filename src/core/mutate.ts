@@ -5,12 +5,14 @@
 // load-mutate-write or mint the same seq id.
 
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, join, relative, resolve, sep } from 'node:path';
 import process from 'node:process';
 
 import type { Card, LoadedBoard } from './model.ts';
-import { loadBoard, resolveBoardRoot } from './load.ts';
-import { serializeCard } from './write.ts';
+import { analyze } from './analyze.ts';
+import { loadBoard, loadTree, resolveBoardRoot } from './load.ts';
+import { logMutation, serializeCard } from './write.ts';
+import { parseCardReference } from './refs.ts';
 import {
   UsageError,
   defaultBoardYaml,
@@ -27,15 +29,25 @@ import {
   opDetach,
   opEdit,
   opLog,
+  opLink,
+  opUnlink,
+  opPromote,
+  opMergeDuplicates,
+  opQuickAdd,
+  opBulk,
+  opTransferCard,
   opMove,
   opUnblock,
   type AddOptions,
   type EditPatch,
   type ClaimMode,
+  type PromoteOptions,
+  type BulkAction,
+  type TransferOptions,
   type MoveResult,
 } from './ops.ts';
 
-export { UsageError, type AddOptions, type EditPatch, type MoveResult };
+export { UsageError, type AddOptions, type EditPatch, type MoveResult, type PromoteOptions, type BulkAction, type TransferOptions };
 
 // ── Same-tree concurrency ────────────────────────────────────────────────────
 // git handles cross-branch races (SPEC §8); these two guards handle two
@@ -154,6 +166,158 @@ export function addCard(root: string, opts: AddOptions): Card {
   });
 }
 
+export function linkCards(root: string, sourceId: string, targetId: string, type: Card['relations'][number]['type'], actor: string): { source: Card; target: Card; changed: boolean } {
+  return mutateCard(root, (board) => {
+    const result = opLink(board, sourceId, targetId, type, actor);
+    if (result.changed) {
+      writeCard(root, result.source);
+      writeCard(root, result.target);
+    }
+    return result;
+  });
+}
+
+export function unlinkCards(root: string, sourceId: string, targetId: string, type: Card['relations'][number]['type'], actor: string): { source: Card; target: Card; changed: boolean } {
+  return mutateCard(root, (board) => {
+    const result = opUnlink(board, sourceId, targetId, type, actor);
+    if (result.changed) {
+      writeCard(root, result.source);
+      writeCard(root, result.target);
+    }
+    return result;
+  });
+}
+
+export function promoteCard(root: string, id: string, index: number, actor: string, overrides: PromoteOptions = {}): { source: Card; promoted: Card; item: string } {
+  return mutateCard(root, (board) => {
+    const result = opPromote(board, getCard(board, id), index, actor, overrides);
+    const targetPath = join(root, result.promoted.file);
+    if (existsSync(targetPath)) throw new UsageError(`file collision: ${result.promoted.file}`);
+    // The new copy lands first. A crash before the source update can only
+    // leave an extra recoverable card; it cannot erase the checklist history.
+    writeCard(root, result.promoted);
+    writeCard(root, result.source);
+    return result;
+  });
+}
+
+export function mergeDuplicateCards(root: string, duplicateId: string, canonicalId: string, actor: string): ReturnType<typeof opMergeDuplicates> {
+  return mutateCard(root, (board) => {
+    const result = opMergeDuplicates(board, duplicateId, canonicalId, actor);
+    for (const card of result.changed) writeCard(root, card);
+    return result;
+  });
+}
+
+export function quickAddCards(root: string, text: string, actor: string): Card[] {
+  return mutateCard(root, (board) => {
+    const cards = opQuickAdd(board, text, actor);
+    for (const card of cards) {
+      if (existsSync(join(root, card.file))) throw new UsageError(`file collision: ${card.file}`);
+    }
+    for (const card of cards) writeCard(root, card);
+    return cards;
+  });
+}
+
+export function bulkCards(root: string, ids: string[], action: BulkAction, actor: string): ReturnType<typeof opBulk> {
+  return mutateCard(root, (board) => {
+    const result = opBulk(board, ids, action, actor);
+    for (const card of result.cards) writeCard(root, card);
+    return result;
+  });
+}
+
+export interface TransferResult extends ReturnType<typeof opTransferCard> {
+  reused: boolean;
+  sourceRoot: string;
+  targetRoot: string;
+}
+
+function portableRelative(from: string, to: string): string {
+  return relative(from, to).split(sep).join('/');
+}
+
+function cardReference(fromRoot: string, toRoot: string, id: string): string {
+  const boardRef = portableRelative(fromRoot, toRoot);
+  return boardRef === '' ? id : `${boardRef}#${id}`;
+}
+
+/** Acquire several board locks in stable path order to avoid AB/BA deadlock. */
+function withBoardLocks<T>(roots: string[], fn: () => T): T {
+  const ordered = [...new Set(roots.map((root) => resolve(root)))].sort();
+  const enter = (index: number): T => index === ordered.length ? fn() : withBoardLock(ordered[index]!, () => enter(index + 1));
+  return enter(0);
+}
+
+export function transferCard(
+  sourceRootValue: string,
+  targetDir: string,
+  id: string,
+  actor: string,
+  options: { move?: boolean | undefined; lane?: string | undefined } = {},
+): TransferResult {
+  const sourceRoot = resolveBoardRoot(sourceRootValue) ?? resolve(sourceRootValue);
+  const targetRoot = resolveBoardRoot(targetDir);
+  if (targetRoot === null) throw new UsageError(`no target board at ${targetDir}`);
+  if (resolve(sourceRoot) === resolve(targetRoot)) throw new UsageError('source and target boards must differ');
+  const targetPath = relative(sourceRoot, targetRoot);
+  if (targetPath === '..' || targetPath.startsWith(`..${sep}`)) {
+    throw new UsageError('target board must be nested inside the source project tree');
+  }
+  return withBoardLocks([sourceRoot, targetRoot], () => {
+    const sourceBoard = loadBoard(sourceRoot);
+    const targetBoard = loadBoard(targetRoot);
+    if (sourceBoard.config.mutationBlocked !== null) throw new UsageError(`source board is read-only: ${sourceBoard.config.mutationBlocked}`);
+    if (targetBoard.config.mutationBlocked !== null) throw new UsageError(`target board is read-only: ${targetBoard.config.mutationBlocked}`);
+    const source = getCard(sourceBoard, id);
+    const sourceRef = cardReference(targetRoot, sourceRoot, source.id);
+    const existing = targetBoard.cards.find((card) => hasCopiedFrom(card, sourceRef));
+    if (existing !== undefined) {
+      const targetRef = cardReference(sourceRoot, targetRoot, existing.id);
+      let changed = false;
+      if (!source.relations.some((relation) => relation.type === 'copied-to' && relation.target === targetRef)) {
+        source.relations.push({ type: 'copied-to', target: targetRef, extra: {} });
+        logMutation(source, actor, `recovered transfer link to ${targetRef}`);
+        changed = true;
+      }
+      if (options.move) {
+        const archive = sourceBoard.config.lanes.find((lane) => lane.canonical === 'archive');
+        if (archive === undefined) throw new UsageError('source board has no archive-canonical lane to retire transfer into');
+        const moved = opMove(sourceBoard, source, archive.id, actor, true);
+        changed ||= moved.from !== moved.to;
+      }
+      if (changed) writeCard(sourceRoot, source);
+      return { source, target: existing, moved: options.move === true, reused: true, sourceRoot, targetRoot };
+    }
+    const rebaseReference = (value: string): string => {
+      const parsed = parseCardReference(value);
+      if (parsed === null) throw new UsageError(`invalid card reference "${value}"`);
+      if (parsed.boardRef?.startsWith('project:')) return value;
+      const referencedRoot = parsed.boardRef === null ? sourceRoot : resolve(sourceRoot, parsed.boardRef);
+      return cardReference(targetRoot, referencedRoot, parsed.cardId);
+    };
+    const result = opTransferCard(sourceBoard, targetBoard, source, actor, {
+      sourceRef,
+      targetRef: (targetId) => cardReference(sourceRoot, targetRoot, targetId),
+      rewriteReference: rebaseReference,
+      rewriteBoardPath: (boardPath) => boardPath.startsWith('project:') ? boardPath : (portableRelative(targetRoot, resolve(sourceRoot, boardPath)) || '.'),
+      lane: options.lane,
+      move: options.move,
+    });
+    if (existsSync(join(targetRoot, result.target.file))) throw new UsageError(`file collision: ${result.target.file}`);
+    // Target first is the failure-safe ordering: source remains authoritative
+    // until a complete destination exists. Replays detect copied-from above.
+    writeCard(targetRoot, result.target);
+    writeCard(sourceRoot, result.source);
+    return { ...result, reused: false, sourceRoot, targetRoot };
+  });
+}
+
+function hasCopiedFrom(card: Card, sourceRef: string): boolean {
+  return card.relations.some((relation) => relation.type === 'copied-from' && relation.target === sourceRef);
+}
+
 export function moveCard(root: string, id: string, spec: string, actor: string, force = false): MoveResult {
   return mutateCard(root, (board) => {
     const res = opMove(board, getCard(board, id), spec, actor, force);
@@ -164,7 +328,14 @@ export function moveCard(root: string, id: string, spec: string, actor: string, 
 
 export function claimCard(root: string, id: string, actor: string, force = false, mode: ClaimMode = 'assign'): MoveResult {
   return mutateCard(root, (board) => {
-    const res = opClaim(board, getCard(board, id), actor, force, mode);
+    let externalDependencies: Map<string, string | null> | undefined;
+    const card = getCard(board, id);
+    if (card.deps.some((dep) => dep.includes('#'))) {
+      const tree = loadTree(root);
+      const ba = analyze(tree).boards.get('.');
+      externalDependencies = ba?.dependencyStates.get(id) as Map<string, string | null> | undefined;
+    }
+    const res = opClaim(board, card, actor, force, mode, externalDependencies);
     if (!res.alreadyYours) writeCard(root, res.card);
     return res;
   });

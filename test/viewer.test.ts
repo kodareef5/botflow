@@ -11,6 +11,7 @@ import { analyze, loadTree } from '../src/core/index.ts';
 
 const NESTED = join(import.meta.dirname, 'fixtures', 'nested');
 const PRESENTATION = join(import.meta.dirname, 'fixtures', 'presentation');
+const RELATIONS = join(import.meta.dirname, 'fixtures', 'relations');
 
 test('viewer: serve exposes page and live data', async () => {
   const { server, url } = await serveBoard(NESTED, 0);
@@ -78,6 +79,18 @@ test('viewer: structured card faces carry parity data without body heuristics', 
   const html = viewerHtml(data, { live: false });
   for (const needle of ['checklistPreview.slice(0,2)', 'c.faceFields||[]', 'c.labelDetails||[]', 'metrics.agingLevel', 'lane.estimate']) {
     assert.ok(html.includes(needle), `local viewer missing ${needle}`);
+  }
+});
+
+test('viewer: relationships are inspectable and same-board edges draw as SVG connectors', () => {
+  const tree = loadTree(RELATIONS);
+  const data = viewerData(tree, analyze(tree));
+  const board = data.boards['.'] as { lanes: { cards: Record<string, unknown>[] }[] };
+  const linked = board.lanes.flatMap((lane) => lane.cards).find((card) => card['id'] === '003')!;
+  assert.deepEqual(linked['relationships'], [{ type: 'relates', target: '001', source: 'stored', active: true }]);
+  const html = viewerHtml(data, { live: false });
+  for (const needle of ['function drawRelations(b)', "marker.setAttribute('id','viewer-rel-arrow')", "rel.source==='text'", '<h3>relationships</h3>']) {
+    assert.ok(html.includes(needle), `viewer relationship surface missing: ${needle}`);
   }
 });
 

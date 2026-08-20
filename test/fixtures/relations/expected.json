@@ -1,0 +1,36 @@
+{
+  "boards": {
+    ".": {
+      "lint": [],
+      "cards": { "001": "done", "002": "todo", "003": "todo", "004": "done" },
+      "distribution": { "wishlist": 0, "todo": 2, "doing": 0, "blocked": 0, "done": 2, "archive": 0 },
+      "ready": ["002", "003"],
+      "progress": 0.5,
+      "structure": {
+        "templates": [
+          {
+            "id": "bug",
+            "name": "Bug report",
+            "lane": "todo",
+            "labels": ["Type/Bug"],
+            "priority": "p1",
+            "estimate": 3,
+            "fields": { "risk": "high" },
+            "body": "## Checklist\n- [ ] reproduce {{title}}\n- [ ] verify\n"
+          }
+        ],
+        "relations": {
+          "002": { "deps": ["001", "child#001"], "relations": [] },
+          "003": { "deps": [], "relations": [{ "type": "relates", "target": "001" }] }
+        }
+      }
+    },
+    "child": {
+      "lint": [],
+      "cards": { "001": "done" },
+      "distribution": { "wishlist": 0, "todo": 0, "doing": 0, "blocked": 0, "done": 1, "archive": 0 },
+      "ready": [],
+      "progress": 1
+    }
+  }
+}

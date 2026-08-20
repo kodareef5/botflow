@@ -9,16 +9,17 @@
 
 import { DurableObject } from 'cloudflare:workers';
 
-import { analyzeSingle, type ExternalChild } from '../../src/core/analyze.ts';
+import { analyzeSingle, type ExternalChild, type ExternalReference } from '../../src/core/analyze.ts';
 import { boardFromDocuments, validateBoardDocuments, type BoardDocument } from '../../src/core/docs.ts';
 import { boardJson, cardDetailJson, cardJson } from '../../src/core/json.ts';
 import { parseBody } from '../../src/core/body.ts';
 import type { BoardAnalysis } from '../../src/core/analyze.ts';
 import type { BoardNode, Canonical, Card, Finding, Lane, LoadedBoard } from '../../src/core/model.ts';
 import { SLUG_RE, defaultRollup, isCanonical } from '../../src/core/model.ts';
-import { emitBoardYaml, parseCustomFields, parseLabelDefinitions } from '../../src/core/config.ts';
+import { emitBoardYaml, parseCustomFields, parseLabelDefinitions, parseTemplates } from '../../src/core/config.ts';
 import type { YamlValue } from '../../src/core/yaml.ts';
 import { validCustomFieldValue } from '../../src/core/presentation.ts';
+import { parseCardReference } from '../../src/core/refs.ts';
 import {
   ClaimConflict,
   UsageError,
@@ -36,6 +37,13 @@ import {
   opDetach,
   opEdit,
   opLog,
+  opLink,
+  opUnlink,
+  opPromote,
+  opMergeDuplicates,
+  opQuickAdd,
+  opBulk,
+  opTransferCard,
   opMove,
   opUnblock,
   type AddOptions,
@@ -162,6 +170,40 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     return children;
   }
 
+  /** Resolve hosted dependency/relation refs without exposing arbitrary
+   * projects through a board visible to a narrower identity. A project may
+   * reference itself (bare ids) or descendants, matching project-card scope. */
+  private async resolveReferences(board: LoadedBoard, visited: string[]): Promise<Map<string, ExternalReference | null>> {
+    const references = new Map<string, ExternalReference | null>();
+    const chain = [...visited, this.selfId()];
+    const wanted = new Set(board.cards.flatMap((card) => [
+      ...card.deps,
+      ...card.relations.map((relation) => relation.target),
+    ]).filter((value) => value.startsWith(PROJECT_REF)));
+    const registry = this.env.REGISTRY.get(this.env.REGISTRY.idFromName('main'));
+    await Promise.all([...wanted].map(async (value) => {
+      const parsed = parseCardReference(value);
+      const boardRef = parsed?.boardRef ?? '';
+      const pid = boardRef.startsWith(PROJECT_REF) ? boardRef.slice(PROJECT_REF.length) : '';
+      if (parsed === null || pid === '' || pid === this.selfId()) {
+        references.set(value, null);
+        return;
+      }
+      // Descendant references drive dependency handoffs; ancestor references
+      // are the natural copied-from half written on the target. Siblings and
+      // unrelated projects stay opaque, so a guessed id cannot become a
+      // cross-scope state oracle.
+      const related = (await registry.isWithin(pid, this.selfId())) || (await registry.isWithin(this.selfId(), pid));
+      if (!related) {
+        references.set(value, null);
+        return;
+      }
+      const stub = this.env.PROJECT.get(this.env.PROJECT.idFromName(pid));
+      references.set(value, await stub.referenceState(parsed.cardId, chain));
+    }));
+    return references;
+  }
+
   private async analyzed(visited: string[] = []): Promise<{
     board: LoadedBoard;
     ba: BoardAnalysis;
@@ -169,8 +211,8 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     children: Map<string, ExternalChild | null>;
   }> {
     const board = this.loadBoardDocs();
-    const children = await this.resolveChildren(board, visited);
-    const ba = analyzeSingle(board, children);
+    const [children, references] = await Promise.all([this.resolveChildren(board, visited), this.resolveReferences(board, visited)]);
+    const ba = analyzeSingle(board, children, references);
     const childKeyByCard = new Map<string, string | null>();
     for (const card of board.cards) {
       if (card.type === 'board') {
@@ -198,6 +240,104 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     if (visited.includes(this.selfId())) return null;
     const { ba } = await this.analyzed(visited);
     return { distribution: ba.distribution, progress: ba.progress };
+  }
+
+  /** Canonical state only: cross-board dependency resolution does not need
+   * card content, and omitting refs here prevents dependency cycles from
+   * recursively calling one another just to learn lane state. */
+  async referenceState(id: string, visited: string[] = []): Promise<ExternalReference | null> {
+    const board = this.loadBoardDocs();
+    const children = await this.resolveChildren(board, visited);
+    const ba = analyzeSingle(board, children);
+    return ba.canonical.has(id) ? { state: ba.canonical.get(id)! } : null;
+  }
+
+  transferSource(id: string): { card: Card; canonical: Canonical } | { error: string } {
+    const board = this.loadBoardDocs();
+    if (board.config.mutationBlocked !== null) return { error: `board is read-only: ${board.config.mutationBlocked}` };
+    const card = board.cards.find((candidate) => candidate.id === id);
+    if (card === undefined) return { error: `no card "${id}"` };
+    const lane = board.config.lanes.find((candidate) => candidate.id === card.laneId);
+    return { card, canonical: lane?.canonical ?? 'todo' };
+  }
+
+  /** Idempotent target half of a cross-DO transfer. */
+  receiveTransfer(
+    sourceProject: string,
+    payload: { card: Card; canonical: Canonical },
+    actor: string,
+    lane: string | null,
+    move: boolean,
+  ): ActionResult {
+    try {
+      const board = this.loadBoardDocs();
+      if (board.config.mutationBlocked !== null) throw new UsageError(`board is read-only: ${board.config.mutationBlocked}`);
+      const sourceRef = `project:${sourceProject}#${payload.card.id}`;
+      const existing = board.cards.find((card) => card.relations.some((relation) => relation.type === 'copied-from' && relation.target === sourceRef));
+      if (existing !== undefined) return { id: existing.id, reused: true };
+      const sourceLane: Lane = {
+        id: payload.card.laneId,
+        name: payload.card.laneId,
+        canonical: payload.canonical,
+        substates: payload.card.substate === null ? [] : [payload.card.substate],
+        order: 'free',
+        wip: null,
+        extra: {},
+      };
+      const synthetic: LoadedBoard = {
+        ...board,
+        rootAbs: `project:${sourceProject}`,
+        cards: [payload.card],
+        config: { ...board.config, lanes: [sourceLane, ...(sourceLane.canonical === 'archive' ? [] : [{ ...sourceLane, id: 'transfer-archive', name: 'archive', canonical: 'archive' as const, substates: [] }])] },
+      };
+      const result = opTransferCard(synthetic, board, payload.card, actor, {
+        sourceRef,
+        targetRef: (targetId) => `project:${this.selfId()}#${targetId}`,
+        rewriteReference: (reference) => reference.includes('#') ? reference : `project:${sourceProject}#${reference}`,
+        rewriteBoardPath: (boardPath) => boardPath,
+        lane: lane ?? undefined,
+        move,
+      });
+      this.persistCard(result.target);
+      this.event(actor, move ? 'receive-move' : 'receive-copy', result.target.id, `from ${sourceRef}`);
+      return { id: result.target.id, reused: false };
+    } catch (err) {
+      if (err instanceof UsageError) return { error: err.message };
+      throw err;
+    }
+  }
+
+  /** Idempotent source half. Called only after receiveTransfer succeeded. */
+  completeTransfer(id: string, targetProject: string, targetId: string, move: boolean, actor: string): ActionResult {
+    try {
+      const board = this.loadBoardDocs();
+      if (board.config.mutationBlocked !== null) throw new UsageError(`board is read-only: ${board.config.mutationBlocked}`);
+      const card = getCard(board, id);
+      const targetRef = `project:${targetProject}#${targetId}`;
+      let changed = false;
+      let relationAdded = false;
+      if (!card.relations.some((relation) => relation.type === 'copied-to' && relation.target === targetRef)) {
+        card.relations.push({ type: 'copied-to', target: targetRef, extra: {} });
+        changed = true;
+        relationAdded = true;
+      }
+      if (move) {
+        const archive = board.config.lanes.find((lane) => lane.canonical === 'archive');
+        if (archive === undefined) throw new UsageError('source board has no archive-canonical lane');
+        const moved = opMove(board, card, archive.id, actor, true);
+        changed ||= moved.from !== moved.to;
+        if (relationAdded && moved.from === moved.to) logMutation(card, actor, `moved to ${targetRef}`);
+      }
+      if (changed) {
+        if (!move) logMutation(card, actor, `copied to ${targetRef}`);
+        this.persistCard(card);
+        this.event(actor, move ? 'complete-move' : 'complete-copy', id, `to ${targetRef}`);
+      }
+      return { id, target: targetId, changed };
+    } catch (err) {
+      if (err instanceof UsageError) return { error: err.message };
+      throw err;
+    }
   }
 
   /** Compact state for org-tree aggregation. The task* fields exclude
@@ -346,6 +486,9 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       lanes: c.lanes.map((l) => ({ id: l.id, name: l.name, canonical: l.canonical, substates: l.substates, order: l.order, wip: l.wip })),
       labels: c.labelDefinitions.map(({ id, color }) => ({ id, color })),
       fields: c.customFields.map(({ id, name, type, options, face }) => ({ id, name, type, options, face })),
+      templates: c.templates.map(({ id, name, lane, labels, priority, assignee, delegate, start, due, estimate, evergreen, coverColor, fields, body }) => ({
+        id, name, lane, labels, priority, assignee, delegate, start, due, estimate, evergreen, cover_color: coverColor, fields, body,
+      })),
       rollup: { blockedWhen: c.rollup.blockedWhen, doneWhen: c.rollup.doneWhen, doingWhen: c.rollup.doingWhen, elseState: c.rollup.elseState },
     };
   }
@@ -358,7 +501,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     const board = this.loadBoardDocs();
     if (board.config.mutationBlocked !== null) return { error: `board is read-only: ${board.config.mutationBlocked}` };
     if (payload === null || typeof payload !== 'object') return { error: 'malformed config' };
-    const p = payload as { name?: unknown; lanes?: unknown; labels?: unknown; fields?: unknown; rollup?: unknown; migrations?: unknown };
+    const p = payload as { name?: unknown; lanes?: unknown; labels?: unknown; fields?: unknown; templates?: unknown; rollup?: unknown; migrations?: unknown };
     const name = typeof p.name === 'string' && p.name.trim() !== '' ? p.name.trim().replace(/[\r\n]+/g, ' ') : null;
     if (name === null) return { error: 'board name required' };
     if (!Array.isArray(p.lanes) || p.lanes.length === 0) return { error: 'at least one lane required' };
@@ -438,6 +581,15 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       ...definition,
       extra: { ...(board.config.customFields.find((old) => old.id === definition.id)?.extra ?? {}), ...definition.extra },
     }));
+    const parsedTemplates = p.templates === undefined
+      ? board.config.templates
+      : parseTemplates(p.templates as YamlValue, presentationFindings, lanes, customFields);
+    const templateError = presentationFindings.find((finding) => finding.severity === 'error');
+    if (templateError !== undefined) return { error: templateError.message };
+    const templates = parsedTemplates.map((template) => ({
+      ...template,
+      extra: { ...(board.config.templates.find((old) => old.id === template.id)?.extra ?? {}), ...template.extra },
+    }));
     for (const card of board.cards) {
       for (const definition of customFields) {
         const value = card.extra[definition.id];
@@ -477,7 +629,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       moved.push(card);
     }
 
-    const configYaml = emitBoardYaml({ ...board.config, name, lanes, labelDefinitions, customFields, rollup });
+    const configYaml = emitBoardYaml({ ...board.config, name, lanes, labelDefinitions, customFields, templates, rollup });
     this.ctx.storage.transactionSync(() => {
       this.sql.exec("INSERT INTO meta(key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", configYaml);
       for (const card of moved) this.persistCard(card);
@@ -571,9 +723,59 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     }
   }
 
-  action(kind: string, id: string, args: Record<string, unknown>, actor: string): ActionResult {
+  quickAdd(text: string, actor: string): ActionResult {
+    try {
+      if (text.length > MAX_BODY_TEXT) throw new UsageError(`quick-add text exceeds ${MAX_BODY_TEXT} characters`);
+      const board = this.loadBoardDocs();
+      if (board.config.mutationBlocked !== null) throw new UsageError(`board is read-only: ${board.config.mutationBlocked}`);
+      const cards = opQuickAdd(board, text, actor);
+      this.ctx.storage.transactionSync(() => {
+        for (const card of cards) {
+          this.persistCard(card);
+          this.event(actor, 'quick-add', card.id, `created "${card.title}" in ${card.laneId}`);
+        }
+      });
+      return { cards: cards.map((card) => ({ id: card.id, title: card.title, file: card.file })) };
+    } catch (err) {
+      if (err instanceof UsageError) return { error: err.message };
+      throw err;
+    }
+  }
+
+  bulkAction(ids: string[], action: Record<string, unknown>, actor: string): ActionResult {
     try {
       const board = this.loadBoardDocs();
+      if (board.config.mutationBlocked !== null) throw new UsageError(`board is read-only: ${board.config.mutationBlocked}`);
+      const kind = String(action['kind'] ?? '');
+      const operation = kind === 'move'
+        ? { kind: 'move' as const, to: String(action['to'] ?? ''), force: action['force'] === true }
+        : kind === 'close'
+          ? { kind: 'close' as const, reason: typeof action['reason'] === 'string' ? action['reason'] : undefined }
+          : kind === 'label'
+            ? {
+                kind: 'label' as const,
+                add: Array.isArray(action['add']) ? action['add'].map(String) : undefined,
+                remove: Array.isArray(action['remove']) ? action['remove'].map(String) : undefined,
+              }
+            : (() => { throw new UsageError('bulk kind must be move, close, or label'); })();
+      const result = opBulk(board, ids, operation, actor);
+      this.ctx.storage.transactionSync(() => {
+        for (const card of result.cards) {
+          this.persistCard(card);
+          this.event(actor, `bulk-${kind}`, card.id, kind);
+        }
+      });
+      return { changed: result.cards.map((card) => card.id), warnings: result.warnings };
+    } catch (err) {
+      if (err instanceof UsageError) return { error: err.message };
+      throw err;
+    }
+  }
+
+  async action(kind: string, id: string, args: Record<string, unknown>, actor: string): Promise<ActionResult> {
+    try {
+      const analyzed = kind === 'claim' ? await this.analyzed() : null;
+      const board = analyzed?.board ?? this.loadBoardDocs();
       if (board.config.mutationBlocked !== null) throw new UsageError(`board is read-only: ${board.config.mutationBlocked}`);
       const card = getCard(board, id);
       switch (kind) {
@@ -585,7 +787,8 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
         }
         case 'claim': {
           const mode = args['delegate'] === true ? 'delegate' : 'assign';
-          const res = opClaim(board, card, actor, args['force'] === true, mode);
+          const external = analyzed?.ba.dependencyStates.get(id) as Map<string, string | null> | undefined;
+          const res = opClaim(board, card, actor, args['force'] === true, mode, external);
           if (res.alreadyYours) return { id, at: res.to, assignee: card.assignee, delegate: card.delegate, alreadyYours: true };
           this.persistCard(card);
           this.event(actor, 'claim', id, `${res.from} → ${res.to}${args['force'] === true ? ' (forced)' : ''}`);
@@ -679,6 +882,46 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           this.persistCard(card);
           this.event(actor, 'edit', id, Object.keys(patch).join(', '));
           return { id, edited: Object.keys(patch) };
+        }
+        case 'link':
+        case 'unlink': {
+          const targetId = String(args['target'] ?? '');
+          const type = String(args['type'] ?? '') as Card['relations'][number]['type'];
+          const result = kind === 'link'
+            ? opLink(board, id, targetId, type, actor)
+            : opUnlink(board, id, targetId, type, actor);
+          if (result.changed) {
+            this.ctx.storage.transactionSync(() => {
+              this.persistCard(result.source);
+              this.persistCard(result.target);
+              this.event(actor, kind, id, `${type} ${targetId}`);
+            });
+          }
+          return { id, target: targetId, type, changed: result.changed };
+        }
+        case 'promote': {
+          const index = Number(args['index']);
+          if (!Number.isInteger(index) || index < 0) throw new UsageError('index must be a non-negative integer');
+          const result = opPromote(board, card, index, actor, {
+            title: typeof args['title'] === 'string' ? args['title'] : undefined,
+            template: typeof args['template'] === 'string' ? args['template'] : undefined,
+            lane: typeof args['lane'] === 'string' ? args['lane'] : undefined,
+          });
+          this.ctx.storage.transactionSync(() => {
+            this.persistCard(result.promoted);
+            this.persistCard(result.source);
+            this.event(actor, 'promote', id, `item ${index} → ${result.promoted.id}`);
+          });
+          return { id, promoted: result.promoted.id, index };
+        }
+        case 'merge': {
+          const canonical = String(args['canonical'] ?? '');
+          const result = opMergeDuplicates(board, id, canonical, actor);
+          this.ctx.storage.transactionSync(() => {
+            for (const changed of result.changed) this.persistCard(changed);
+            this.event(actor, 'merge', id, `merged into ${canonical}`);
+          });
+          return { duplicate: id, canonical, attachmentsMoved: result.attachmentsMoved, referencesRewired: result.referencesRewired };
         }
         case 'log': {
           const message = clampLine(args['message'], '');

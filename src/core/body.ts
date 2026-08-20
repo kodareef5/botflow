@@ -90,6 +90,11 @@ function bodyHeadings(body: string): HeadingLine[] {
   return out;
 }
 
+/** Whether a real (fence-aware) level-two section exists. */
+export function bodyHasSection(body: string, name: string): boolean {
+  return bodyHeadings(body).some((heading) => heading.name.toLowerCase() === name.toLowerCase());
+}
+
 export function parseBody(body: string): ParsedBody {
   const lines = body.replace(/\r\n/g, '\n').split('\n');
   let section: string | null = null;

@@ -7,6 +7,7 @@ import { parseBody } from './body.ts';
 import type { BoardNode, Card, Tree } from './model.ts';
 import { boardFlowMetrics, cardFlowMetrics } from './metrics.ts';
 import { cardCustomFields, labelColor, scopedLabel } from './presentation.ts';
+import { textCardReferences } from './refs.ts';
 
 export function cardJson(card: Card, node: BoardNode, ba: BoardAnalysis, nowValue: number | Date = Date.now()): Record<string, unknown> {
   const parsed = parseBody(card.body);
@@ -14,6 +15,21 @@ export function cardJson(card: Card, node: BoardNode, ba: BoardAnalysis, nowValu
   const checklistPreview = parsed.checklists.flatMap((checklist) => checklist.items
     .filter((item) => !item.checked)
     .map((item) => ({ ...item, section: checklist.section })));
+  const storedRelations = card.relations.map((relation) => ({ type: relation.type, target: relation.target, ...relation.extra }));
+  const relationshipKeys = new Set(storedRelations.map((relation) => `${relation.type}\u0000${relation.target}`));
+  const relationships: Record<string, unknown>[] = storedRelations.map((relation) => ({ ...relation, source: 'stored', active: true }));
+  for (const dep of card.deps) {
+    const state = ba.dependencyStates.get(card.id)?.get(dep) ?? null;
+    const resolved = state === 'done' || state === 'archive';
+    relationships.push({ type: resolved ? 'relates' : 'blocks', target: dep, source: resolved ? 'resolved-dependency' : 'dependency', active: !resolved, state });
+  }
+  const text = [parsed.description ?? '', ...parsed.comments.map((entry) => entry.text)].join('\n');
+  for (const target of textCardReferences(text)) {
+    const key = `relates\u0000${target}`;
+    if (relationshipKeys.has(key)) continue;
+    relationshipKeys.add(key);
+    relationships.push({ type: 'relates', target, source: 'text', active: true });
+  }
   return {
     id: card.id,
     title: card.title,
@@ -33,6 +49,8 @@ export function cardJson(card: Card, node: BoardNode, ba: BoardAnalysis, nowValu
     delegate: card.delegate,
     priority: card.priority,
     deps: card.deps,
+    relations: storedRelations,
+    relationships,
     start: card.start,
     due: card.due,
     estimate: card.estimate,
@@ -81,6 +99,9 @@ export function boardJson(tree: Tree, analysis: Analysis, key = '.', nowValue: n
     features: node.board.config.features,
     labels: node.board.config.labelDefinitions.map(({ id, color }) => ({ id, color })),
     fields: node.board.config.customFields.map(({ id, name, type, options, face }) => ({ id, name, type, options, face })),
+    templates: node.board.config.templates.map(({ id, name, lane, labels, priority, assignee, delegate, start, due, estimate, evergreen, coverColor, fields, body }) => ({
+      id, name, lane, labels, priority, assignee, delegate, start, due, estimate, evergreen, coverColor, fields, body,
+    })),
     cards: node.board.cards.length,
     progress: ba.progress,
     effort: ba.effort,

@@ -1,0 +1,27 @@
+botflow: 0
+name: relations
+features: [relations, cross-board-deps, templates]
+labels:
+  - id: Type/Bug
+    color: "#d03b3b"
+fields:
+  - id: risk
+    name: Risk
+    type: select
+    options: [low, high]
+    face: true
+templates:
+  - id: bug
+    name: Bug report
+    lane: todo
+    labels: [Type/Bug]
+    priority: p1
+    estimate: 3
+    fields:
+      risk: high
+    body: "## Checklist\n- [ ] reproduce {{title}}\n- [ ] verify\n"
+lanes:
+  - id: todo
+  - id: doing
+  - id: done
+  - id: archive

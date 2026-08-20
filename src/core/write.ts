@@ -21,6 +21,7 @@ export function serializeCard(card: Card): string {
   if (card.delegate !== null) fm['delegate'] = card.delegate;
   if (card.priority !== null) fm['priority'] = card.priority;
   if (card.deps.length > 0) fm['deps'] = card.deps;
+  if (card.relations.length > 0) fm['relations'] = card.relations.map((relation) => ({ type: relation.type, target: relation.target, ...relation.extra }));
   if (card.start !== null) fm['start'] = card.start;
   if (card.due !== null) fm['due'] = card.due;
   if (card.estimate !== null) fm['estimate'] = card.estimate;

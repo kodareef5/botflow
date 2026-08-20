@@ -1,10 +1,11 @@
 // Card frontmatter → Card (SPEC §5), collecting findings instead of throwing.
 
 import type { YamlValue } from './yaml.ts';
-import type { Card, Finding } from './model.ts';
-import { finding } from './model.ts';
+import type { Card, CardRelation, Finding } from './model.ts';
+import { RELATION_TYPES, finding } from './model.ts';
 import { validCardDate, validEstimate } from './fields.ts';
 import { BUILTIN_CARD_KEYS, validColor } from './presentation.ts';
+import { parseCardReference } from './refs.ts';
 
 const PRIORITY_RE = /^p[0-3]$/;
 
@@ -79,11 +80,50 @@ export function parseCard(
     if (Array.isArray(m['deps'])) {
       for (const d of m['deps']) {
         const s = asIdString(d);
-        if (s !== null) deps.push(s);
+        if (s !== null && parseCardReference(s) !== null) deps.push(s);
         else findings.push(finding('schema', id, `bad dep ${JSON.stringify(d)}`));
       }
     } else {
       findings.push(finding('schema', id, 'deps must be a list'));
+    }
+  }
+
+  const relations: CardRelation[] = [];
+  if (m['relations'] !== undefined) {
+    if (!Array.isArray(m['relations'])) {
+      findings.push(finding('schema', id, 'relations must be a list of maps'));
+    } else {
+      const seen = new Set<string>();
+      for (const raw of m['relations']) {
+        if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+          findings.push(finding('schema', id, 'each relation must be a mapping'));
+          continue;
+        }
+        const map = raw as Record<string, YamlValue>;
+        if (typeof map['type'] !== 'string' || !(RELATION_TYPES as readonly string[]).includes(map['type'])) {
+          findings.push(finding('schema', id, `relation type must be one of ${RELATION_TYPES.join(', ')}`));
+          continue;
+        }
+        const target = asIdString(map['target']);
+        if (target === null || parseCardReference(target) === null) {
+          findings.push(finding('schema', id, 'relation target must be a card reference'));
+          continue;
+        }
+        const key = `${map['type']}\u0000${target}`;
+        if (seen.has(key)) {
+          findings.push(finding('schema', id, `duplicate ${map['type']} relation to "${target}"`));
+          continue;
+        }
+        seen.add(key);
+        const extra: Record<string, unknown> = {};
+        for (const name of Object.keys(map)) {
+          if (name !== 'type' && name !== 'target') {
+            extra[name] = map[name];
+            findings.push(finding('unknown-key', id, `relation to "${target}": unknown key "${name}" (preserved)`));
+          }
+        }
+        relations.push({ type: map['type'] as CardRelation['type'], target, extra });
+      }
     }
   }
 
@@ -147,6 +187,7 @@ export function parseCard(
     delegate: actorField('delegate'),
     priority,
     deps,
+    relations,
     start: dateField('start'),
     due: dateField('due'),
     estimate,

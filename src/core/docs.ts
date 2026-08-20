@@ -11,6 +11,7 @@ import { parseCard } from './card.ts';
 import type { BoardConfig, Card, Finding, LoadedBoard, Tree } from './model.ts';
 import { HASH_ID_RE, SEQ_ID_RE, fallbackConfig, finding } from './model.ts';
 import { labelGroupConflict, validCustomFieldValue } from './presentation.ts';
+import { parseCardReference } from './refs.ts';
 
 export interface BoardDocument {
   /** Path relative to the board root, e.g. "cards/042-fix-auth.md". */
@@ -53,6 +54,12 @@ export function parseCardDocument(doc: BoardDocument, config: BoardConfig, findi
     const value = card.extra[definition.id];
     if (value !== undefined && !validCustomFieldValue(definition, value)) {
       findings.push(finding('custom-field-value', card.id, `custom field "${definition.id}" has an invalid ${definition.type} value`));
+    }
+  }
+  for (const relation of card.relations) {
+    const target = parseCardReference(relation.target)!;
+    if (target.boardRef === null && target.cardId === card.id) {
+      findings.push(finding('self-relation', card.id, `card relates to itself as ${relation.type}`));
     }
   }
 

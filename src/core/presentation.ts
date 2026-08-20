@@ -6,7 +6,7 @@ import type { BoardConfig, Card, CustomFieldDefinition } from './model.ts';
 import { validCardDate } from './fields.ts';
 
 export const BUILTIN_CARD_KEYS = new Set([
-  'id', 'title', 'lane', 'type', 'board', 'labels', 'assignee', 'delegate', 'priority', 'deps',
+  'id', 'title', 'lane', 'type', 'board', 'labels', 'assignee', 'delegate', 'priority', 'deps', 'relations',
   'start', 'due', 'estimate', 'evergreen', 'cover', 'cover_color', 'blocked', 'created', 'updated',
 ]);
 

@@ -16,9 +16,12 @@ test('mcp: handshake, tools/list, lifecycle via tools/call', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'botflow-mcp-'));
   const init = spawnSync(process.execPath, [ENTRY, 'init', '--name', 'mcp-board', '--dir', dir], { encoding: 'utf8' });
   assert.equal(init.status, 0, init.stderr);
+  const targetDir = join(dir, '.botflow', 'child');
+  const initTarget = spawnSync(process.execPath, [ENTRY, 'init', '--name', 'mcp-child', '--dir', targetDir], { encoding: 'utf8' });
+  assert.equal(initTarget.status, 0, initTarget.stderr);
   writeFileSync(join(dir, '.botflow', 'board.yaml'), `botflow: 0
 name: mcp-board
-features: [scoped-labels, custom-fields, cover-colors]
+features: [scoped-labels, custom-fields, cover-colors, relations, templates]
 fields:
   - id: sprint
     type: number
@@ -26,6 +29,14 @@ fields:
   - id: risk
     type: select
     options: [low, high]
+templates:
+  - id: bug
+    name: Bug report
+    priority: p1
+    estimate: 3
+    fields:
+      risk: high
+    body: "## Checklist\\n- [ ] reproduce {{title}}\\n"
 lanes:
   - id: wishlist
   - id: todo
@@ -75,7 +86,10 @@ lanes:
 
     const toolsRes = (await request('tools/list')) as { result: { tools: { name: string }[] } };
     const names = toolsRes.result.tools.map((t) => t.name);
-    for (const expected of ['prime', 'board', 'ready', 'card_add', 'card_claim', 'card_close', 'card_block']) {
+    for (const expected of [
+      'prime', 'board', 'ready', 'card_add', 'card_claim', 'card_close', 'card_block',
+      'card_promote', 'card_link', 'card_unlink', 'card_merge', 'card_quick_add', 'card_bulk', 'card_transfer',
+    ]) {
       assert.ok(names.includes(expected), `tool ${expected}`);
     }
 
@@ -125,6 +139,42 @@ lanes:
     const delegateResult = JSON.parse(delegateClaim.text) as { assignee: string | null; delegate: string | null };
     assert.equal(delegateResult.assignee, null);
     assert.equal(delegateResult.delegate, 'mcp-agent');
+
+    const templated = await callTool('card_add', { title: 'Templated MCP', template: 'bug' });
+    assert.equal(templated.isError, false);
+    const templatedId = (JSON.parse(templated.text) as { id: string }).id;
+    const templatedDetail = JSON.parse((await callTool('card_show', { id: templatedId })).text) as Record<string, unknown>;
+    assert.equal(templatedDetail['priority'], 'p1');
+    assert.equal(templatedDetail['estimate'], 3);
+    const promoted = await callTool('card_promote', { id: templatedId, index: 0 });
+    assert.equal(promoted.isError, false);
+    const promotedId = (JSON.parse(promoted.text) as { promoted: string }).promoted;
+
+    const canonical = await callTool('card_add', { title: 'Canonical MCP' });
+    const canonicalId = (JSON.parse(canonical.text) as { id: string }).id;
+    assert.equal((await callTool('card_link', { id: templatedId, target: canonicalId, type: 'relates' })).isError, false);
+    assert.equal((await callTool('card_unlink', { id: templatedId, target: canonicalId, type: 'relates' })).isError, false);
+
+    const quick = await callTool('card_quick_add', { text: 'Quick MCP *batch\n  Quick child !p2' });
+    assert.equal(quick.isError, false);
+    const quickIds = (JSON.parse(quick.text) as { id: string }[]).map((card) => card.id);
+    assert.equal(quickIds.length, 2);
+    const bulk = await callTool('card_bulk', { ids: quickIds, action: 'label', add_labels: ['mcp-bulk'] });
+    assert.equal(bulk.isError, false);
+    assert.deepEqual((JSON.parse(bulk.text) as { changed: string[] }).changed, quickIds);
+
+    const duplicate = await callTool('card_add', { title: 'Duplicate MCP' });
+    const duplicateId = (JSON.parse(duplicate.text) as { id: string }).id;
+    const merged = await callTool('card_merge', { duplicate: duplicateId, canonical: canonicalId });
+    assert.equal(merged.isError, false);
+    assert.equal((JSON.parse((await callTool('card_show', { id: duplicateId })).text) as Record<string, unknown>)['state'], 'archive');
+
+    const transferred = await callTool('card_transfer', { id: templatedId, target_board: targetDir });
+    assert.equal(transferred.isError, false);
+    assert.equal((JSON.parse(transferred.text) as { target: string }).target, '001');
+    const linted = JSON.parse((await callTool('lint', {})).text) as { severity: string }[];
+    assert.equal(linted.some((finding) => finding.severity === 'error'), false);
+    assert.ok(promotedId, 'promoted relation target remains part of the source tree');
 
     const unknown = (await request('nope/nothing')) as { error: { code: number } };
     assert.equal(unknown.error.code, -32601);

@@ -1,7 +1,7 @@
 export * from './model.ts';
 export { parseYaml, YamlError, type YamlValue } from './yaml.ts';
 export { splitFrontmatter, joinFrontmatter, type FrontmatterSplit } from './frontmatter.ts';
-export { emitBoardYaml, parseBoardConfig, parseCustomFields, parseLabelDefinitions } from './config.ts';
+export { emitBoardYaml, parseBoardConfig, parseCustomFields, parseLabelDefinitions, parseTemplates } from './config.ts';
 export { parseCard } from './card.ts';
 export {
   loadBoard,
@@ -21,10 +21,20 @@ export {
   type Analysis,
   type BoardAnalysis,
   type ExternalChild,
+  type ExternalReference,
 } from './analyze.ts';
+export {
+  parseCardReference,
+  relationInverse,
+  resolveTreeCardReference,
+  textCardReferences,
+  type ParsedCardReference,
+  type ResolvedTreeCardReference,
+} from './refs.ts';
 export {
   addAttachmentLine,
   appendToSection,
+  bodyHasSection,
   parseBody,
   removeAttachmentLine,
   setChecklistItem,
@@ -72,6 +82,14 @@ export {
   opClaim,
   opClose,
   opEdit,
+  opLink,
+  opUnlink,
+  opPromote,
+  opMergeDuplicates,
+  parseQuickAdd,
+  opQuickAdd,
+  opBulk,
+  opTransferCard,
   opLog,
   opMove,
   opUnblock,
@@ -79,6 +97,10 @@ export {
   positionLabel,
   validateBoardPath,
   type AddOptions,
+  type PromoteOptions,
+  type QuickAddCard,
+  type BulkAction,
+  type TransferOptions,
   type EditPatch,
   type MoveResult,
   type ClaimMode,
@@ -91,6 +113,14 @@ export {
   claimCard,
   closeCard,
   editCard,
+  linkCards,
+  unlinkCards,
+  promoteCard,
+  mergeDuplicateCards,
+  quickAddCards,
+  bulkCards,
+  transferCard,
+  type TransferResult,
   initBoard,
   moveCard,
   unblockCard,

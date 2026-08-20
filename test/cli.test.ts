@@ -234,6 +234,84 @@ lanes:
   assert.match(readFileSync(join(dir, '.botflow', 'cards', '001-visible-card.md'), 'utf8'), /sprint: 15/);
 });
 
+test('cli: templates, relations, promotion, quick add, bulk actions, merge, and transfer compose', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'botflow-relations-cli-'));
+  const child = join(dir, '.botflow', 'child');
+  ok(dir, 'init', '--name', 'relations');
+  ok(dir, 'init', '--name', 'child', '--dir', child);
+  writeFileSync(join(dir, '.botflow', 'board.yaml'), `botflow: 0
+name: relations
+features: [relations, templates]
+templates:
+  - id: bug
+    name: Bug report
+    lane: todo
+    labels: [Type/Bug]
+    priority: p1
+    estimate: 3
+    body: "## Checklist\\n- [ ] verify {{title}}\\n"
+lanes:
+  - id: wishlist
+  - id: todo
+  - id: doing
+  - id: blocked
+  - id: done
+  - id: archive
+`);
+
+  ok(dir, 'card', 'add', 'Login crash', '--template', 'bug'); // 001
+  let shown = JSON.parse(ok(dir, 'card', 'show', '001', '--json')) as Record<string, unknown>;
+  assert.equal(shown['priority'], 'p1');
+  assert.equal(shown['estimate'], 3);
+  assert.deepEqual(shown['labels'], ['Type/Bug']);
+  assert.match(String(shown['body']), /verify Login crash/);
+
+  ok(dir, 'card', 'add', 'Parent'); // 002
+  ok(dir, 'card', 'item', '002', 'Investigate logs');
+  const promoted = JSON.parse(ok(dir, 'card', 'promote', '002', '1', '--json')) as { promoted: string };
+  assert.equal(promoted.promoted, '003');
+  shown = JSON.parse(ok(dir, 'card', 'show', '003', '--json')) as Record<string, unknown>;
+  assert.deepEqual(shown['relations'], [{ type: 'parent', target: '002' }]);
+
+  ok(dir, 'card', 'link', '001', '003', '--type', 'relates');
+  shown = JSON.parse(ok(dir, 'card', 'show', '003', '--json')) as Record<string, unknown>;
+  assert.ok((shown['relations'] as { type: string; target: string }[]).some((r) => r.type === 'relates' && r.target === '001'));
+  ok(dir, 'card', 'unlink', '001', '003', '--type', 'relates');
+
+  const quick = JSON.parse(ok(dir, 'card', 'quick', 'Batch one *ops\n  Batch child !p2', '--json')) as { id: string }[];
+  assert.deepEqual(quick.map((card) => card.id), ['004', '005']);
+  ok(dir, 'card', 'bulk', '004,005', 'label', '--add-labels', 'batched');
+  for (const id of ['004', '005']) {
+    shown = JSON.parse(ok(dir, 'card', 'show', id, '--json')) as Record<string, unknown>;
+    assert.ok((shown['labels'] as string[]).includes('batched'));
+  }
+
+  ok(dir, 'card', 'add', 'Canonical'); // 006
+  ok(dir, 'card', 'add', 'Duplicate'); // 007
+  ok(dir, 'card', 'attach', '007', 'https://example.com/evidence.png');
+  const merged = JSON.parse(ok(dir, 'card', 'merge', '007', '006', '--json')) as { attachmentsMoved: number };
+  assert.equal(merged.attachmentsMoved, 1);
+  shown = JSON.parse(ok(dir, 'card', 'show', '007', '--json')) as Record<string, unknown>;
+  assert.equal(shown['state'], 'archive');
+
+  const copied = JSON.parse(ok(dir, 'card', 'copy', '001', '--to-board', '.botflow/child', '--json')) as { target: string; reused: boolean };
+  assert.equal(copied.target, '001');
+  assert.equal(copied.reused, false);
+  const replay = JSON.parse(ok(dir, 'card', 'copy', '001', '--to-board', '.botflow/child', '--json')) as { source: string; target: string; targetBoard: string; moved: boolean; reused: boolean };
+  assert.equal(replay.source, '001');
+  assert.equal(replay.target, '001');
+  assert.ok(replay.targetBoard.endsWith('/child/.botflow'));
+  assert.equal(replay.moved, false);
+  assert.equal(replay.reused, true);
+  const moved = JSON.parse(ok(dir, 'card', 'move-to', '002', '--to-board', '.botflow/child', '--json')) as { target: string; moved: boolean };
+  assert.equal(moved.target, '002');
+  assert.equal(moved.moved, true);
+  shown = JSON.parse(ok(dir, 'card', 'show', '002', '--json')) as Record<string, unknown>;
+  assert.equal(shown['state'], 'archive', 'move-to retires the source only after the target write succeeds');
+  const rootLint = bf(dir, 'lint');
+  assert.equal(rootLint.code, 0, rootLint.stderr || rootLint.stdout);
+});
+
 test('cli: bin shim runs (js importing native ts)', () => {
   const res = spawnSync(process.execPath, [BIN, '--version'], { encoding: 'utf8' });
   assert.equal(res.status, 0, res.stderr);

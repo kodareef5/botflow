@@ -355,6 +355,10 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
         { id: 'sprint', name: 'Sprint', type: 'number', face: true },
         { id: 'risk', name: 'Risk', type: 'select', options: ['low', 'high'], face: true },
       ],
+      templates: [{
+        id: 'bug', name: 'Bug report', lane: 'todo', labels: ['Type/Bug'], priority: 'p1', estimate: 3,
+        fields: { risk: 'high' }, body: '## Checklist\n- [ ] reproduce {{title}}\n',
+      }],
       rollup: { blockedWhen: 'never', doingWhen: 'any-doing', elseState: 'todo' },
       migrations: { wishlist: 'todo' },
     };
@@ -371,6 +375,9 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
       { id: 'risk', name: 'Risk', type: 'select', options: ['low', 'high'], face: true },
     ];
     assert.deepEqual(cfg1.body['fields'], normalizedFields);
+    assert.deepEqual((cfg1.body['templates'] as { id: string; body: string }[]).map((template) => ({ id: template.id, body: template.body })), [
+      { id: 'bug', body: '## Checklist\n- [ ] reproduce {{title}}\n' },
+    ]);
     const richAdd = await call(`/api/projects/${parent}/cards`, {
       method: 'POST', token: admin,
       body: JSON.stringify({
@@ -394,7 +401,7 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.deepEqual(Object.fromEntries((rich.body['fields'] as { id: string; value: unknown }[]).map((field) => [field.id, field.value])), { sprint: 15 });
     const incompatibleFields = await call(`/api/projects/${parent}/config`, {
       method: 'PUT', token: admin,
-      body: JSON.stringify({ ...reshape, fields: [{ id: 'sprint', name: 'Sprint', type: 'select', options: ['small', 'large'], face: true }] }),
+      body: JSON.stringify({ ...reshape, templates: [], fields: [{ id: 'sprint', name: 'Sprint', type: 'select', options: ['small', 'large'], face: true }] }),
     });
     assert.equal(incompatibleFields.status, 400, 'a registry edit cannot invalidate existing card values');
     assert.match(String(incompatibleFields.body['error']), new RegExp(`card ${richId}`));
@@ -407,6 +414,35 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.deepEqual(boardShape.lanes.map((l) => l.id), ['todo', 'doing', 'needs-qa', 'done']);
     assert.equal(boardShape.findings.filter((f) => (f as { severity: string }).severity === 'error').length, 0, 'reshaped board lints clean');
 
+    // Relations/templates/quick-add/bulk and cross-project dependencies all
+    // use the same pure operations as CLI/MCP, with DO transactions around
+    // every multi-card write.
+    const templatedAdd = await call(`/api/projects/${parent}/cards`, {
+      method: 'POST', token: admin, body: JSON.stringify({ title: 'Hosted template', template: 'bug' }),
+    });
+    assert.equal(templatedAdd.status, 200, JSON.stringify(templatedAdd.body));
+    const templatedId = templatedAdd.body['id'] as string;
+    let templated = (await call(`/api/projects/${parent}/cards/${templatedId}`, { token: admin })).body;
+    assert.equal(templated['priority'], 'p1');
+    assert.equal((templated['parsed'] as { checklist: { total: number } }).checklist.total, 1);
+    const promoted = await call(`/api/projects/${parent}/cards/${templatedId}/promote`, {
+      method: 'POST', token: admin, body: JSON.stringify({ index: 0 }),
+    });
+    assert.equal(promoted.status, 200, JSON.stringify(promoted.body));
+    const promotedId = promoted.body['promoted'] as string;
+    templated = (await call(`/api/projects/${parent}/cards/${templatedId}`, { token: admin })).body;
+    assert.equal((templated['relations'] as { type: string; target: string }[]).some((relation) => relation.type === 'subtask' && relation.target === promotedId), true);
+    const quick = await call(`/api/projects/${parent}/cards/quick`, {
+      method: 'POST', token: admin, body: JSON.stringify({ text: 'Quick parent !p1\n  Quick child ~bug' }),
+    });
+    assert.equal(quick.status, 200, JSON.stringify(quick.body));
+    const quickCards = quick.body['cards'] as { id: string }[];
+    assert.equal(quickCards.length, 2);
+    const bulk = await call(`/api/projects/${parent}/cards/bulk`, {
+      method: 'POST', token: admin, body: JSON.stringify({ ids: quickCards.map((card) => card.id), action: { kind: 'label', add: ['batch'] } }),
+    });
+    assert.equal(bulk.status, 200, JSON.stringify(bulk.body));
+    assert.equal((bulk.body['changed'] as string[]).length, 2);
     // Hosted board edits preserve additive board.yaml data they do not own,
     // while a declared capability this manager cannot honor is refused before
     // it can replace the live snapshot.
@@ -653,6 +689,37 @@ vendor:
     };
     const parentNode = org1.spaces[0]!.projects.find((p) => p.name === 'parent')!;
     assert.equal(parentNode.aggregate.distribution['done'], 2, 'no double counting');
+
+    const handoffSource = await call(`/api/projects/${parent}/cards`, {
+      method: 'POST', token: admin, body: JSON.stringify({ title: 'Hosted handoff' }),
+    });
+    const handoffSourceId = handoffSource.body['id'] as string;
+    const handoff = await call(`/api/projects/${parent}/cards/${handoffSourceId}/transfer`, {
+      method: 'POST', token: admin, body: JSON.stringify({ target: childP, move: false }),
+    });
+    assert.equal(handoff.status, 200, JSON.stringify(handoff.body));
+    const handoffReplay = await call(`/api/projects/${parent}/cards/${handoffSourceId}/transfer`, {
+      method: 'POST', token: admin, body: JSON.stringify({ target: childP, move: false }),
+    });
+    assert.equal(handoffReplay.status, 200);
+    assert.equal(handoffReplay.body['target'], handoff.body['target'], 'handoff replay converges on one target card');
+    assert.equal(handoffReplay.body['reused'], true);
+    const handoffBoard = (await call(`/api/projects/${childP}/board`, { token: admin })).body as { findings: { rule: string; ref: string }[] };
+    assert.equal(handoffBoard.findings.some((finding) => finding.rule === 'dangling-relation' && finding.ref === handoff.body['target']), false,
+      'the target copied-from link resolves to its ancestor without opening sibling visibility');
+    assert.equal((await call(`/api/projects/${childP}/cards/${handoff.body['target'] as string}/close`, { method: 'POST', token: admin, body: '{}' })).status, 200);
+
+    const crossBase = await call(`/api/projects/${childP}/cards`, {
+      method: 'POST', token: admin, body: JSON.stringify({ title: 'Cross-board foundation' }),
+    });
+    const crossBaseId = crossBase.body['id'] as string;
+    assert.equal((await call(`/api/projects/${childP}/cards/${crossBaseId}/close`, { method: 'POST', token: admin, body: '{}' })).status, 200);
+    const crossWaiter = await call(`/api/projects/${parent}/cards`, {
+      method: 'POST', token: admin, body: JSON.stringify({ title: 'Cross-board waiter', deps: [`project:${childP}#${crossBaseId}`] }),
+    });
+    const crossWaiterId = crossWaiter.body['id'] as string;
+    const crossClaim = await call(`/api/projects/${parent}/cards/${crossWaiterId}/claim`, { method: 'POST', token: admin, body: '{}' });
+    assert.equal(crossClaim.status, 200, JSON.stringify(crossClaim.body));
 
     // Share link + export/import round trip as a restore.
     const share = (await call(`/api/projects/${parent}/shares`, { method: 'POST', token: admin, body: JSON.stringify({ label: 'peek' }) })).body['token'] as string;
