@@ -208,6 +208,10 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     const metricsBoard = (await call(`/api/projects/${parent}/board?flow=1`, { token: admin })).body;
     assert.equal(Object.hasOwn(compactBoard, 'flow'), false, 'ordinary board polling can omit board-series metrics');
     assert.equal(Object.hasOwn(metricsBoard, 'flow'), true, 'metrics clients retain the compatible full projection');
+    const polledCard = (compactBoard['lanes'] as { cards: Record<string, unknown>[] }[]).flatMap((lane) => lane.cards)[0]!;
+    assert.ok(polledCard, 'new projects expose their nested project card');
+    assert.equal(Object.hasOwn(polledCard, 'body'), false, 'board polling omits raw card bodies');
+    assert.equal(Object.hasOwn(polledCard, 'parsed'), false, 'board polling omits embedded card histories');
 
     // Structured card fields keep their JSON types across the hosted API and
     // invalid types fail instead of being silently coerced.
@@ -1065,6 +1069,46 @@ vendor:
     assert.deepEqual(authoredParsed.checklists.map((cl) => cl.section), ['Checklist', 'Launch']);
     assert.deepEqual(authored.body['checklist'], { done: 0, total: 2 });
 
+    // Card Log and Comments are append-only file-format truth, but the hosted
+    // UI reads them through bounded newest-first pages. Their ordinal cursor
+    // points into the stable old prefix, so a newer append between requests
+    // cannot shift or duplicate the next older page.
+    const compactCard = (await call(`/api/projects/${parent}/cards/002?compact=1`, { token: admin })).body as {
+      body?: unknown; parsed: { log?: unknown; comments?: unknown; description: string | null };
+    };
+    assert.equal(compactCard.body, undefined);
+    assert.equal(compactCard.parsed.log, undefined);
+    assert.equal(compactCard.parsed.comments, undefined);
+    assert.equal(compactCard.parsed.description, 'Written by an agent.');
+
+    type CardHistoryPage = {
+      items: { sequence: number; when: string; actor: string; text: string }[];
+      next: number | null;
+      total: number;
+    };
+    const activityOne = (await call(`/api/projects/${parent}/cards/002/activity?limit=2`, { token: admin })).body as CardHistoryPage;
+    assert.equal(activityOne.items.length, 2);
+    assert.ok(activityOne.items[0]!.sequence > activityOne.items[1]!.sequence, 'card activity is newest first');
+    assert.ok(activityOne.next, 'a full card-activity page advertises an older cursor');
+    await call(`/api/projects/${parent}/cards/002/log`, {
+      method: 'POST', token: admin, body: JSON.stringify({ message: 'newer than the activity cursor' }),
+    });
+    const activityTwo = (await call(`/api/projects/${parent}/cards/002/activity?limit=2&before=${activityOne.next}`, { token: admin })).body as CardHistoryPage;
+    assert.ok(activityTwo.items.every((entry) => entry.sequence < activityOne.next!));
+    assert.deepEqual(activityTwo.items.filter((entry) => activityOne.items.some((first) => first.sequence === entry.sequence)), []);
+
+    for (const message of ['oldest comment page probe', 'middle comment page probe', 'newest comment page probe']) {
+      await call(`/api/projects/${parent}/cards/002/comment`, { method: 'POST', token: admin, body: JSON.stringify({ message }) });
+    }
+    const commentsOne = (await call(`/api/projects/${parent}/cards/002/comments?limit=2`, { token: admin })).body as CardHistoryPage;
+    assert.deepEqual(commentsOne.items.map((entry) => entry.text), ['newest comment page probe', 'middle comment page probe']);
+    assert.ok(commentsOne.items[0]!.sequence > commentsOne.items[1]!.sequence, 'card comments are newest first');
+    await call(`/api/projects/${parent}/cards/002/comment`, { method: 'POST', token: admin, body: JSON.stringify({ message: 'arrived after comment page one' }) });
+    const commentsTwo = (await call(`/api/projects/${parent}/cards/002/comments?limit=2&before=${commentsOne.next}`, { token: admin })).body as CardHistoryPage;
+    assert.deepEqual(commentsTwo.items.map((entry) => entry.text), ['oldest comment page probe']);
+    assert.equal((await call(`/api/projects/${parent}/cards/002/activity?before=not-a-sequence`, { token: admin })).status, 400);
+    assert.equal((await call(`/api/projects/${parent}/cards/002/comments?before=0`, { token: admin })).status, 400);
+
     // Project activity uses an exclusive sequence cursor. An event inserted
     // after page one cannot leak into page two or duplicate a row.
     const eventPageOne = (await call(`/api/projects/${parent}/events?limit=3`, { token: admin })).body as unknown as { seq: number }[];
@@ -1498,9 +1542,12 @@ vendor:
 
     // Post-import the board holds 001 (own task) and 002 (sneak): scope to 001.
     const cardShare = (await call(`/api/projects/${parent}/shares`, { method: 'POST', token: admin, body: JSON.stringify({ label: 'one card', card: '001' }) })).body['token'] as string;
-    assert.equal((await call(`/api/public/${cardShare}/cards/001`)).status, 200, 'the scoped card is visible');
+    assert.equal((await call(`/api/public/${cardShare}/cards/001?compact=1`)).status, 200, 'the scoped card is visible');
+    assert.equal((await call(`/api/public/${cardShare}/cards/001/activity?limit=1`)).status, 200, 'its bounded activity is visible');
+    assert.equal((await call(`/api/public/${cardShare}/cards/001/comments?limit=1`)).status, 200, 'its bounded comments are visible');
     assert.equal((await call(`/api/public/${cardShare}/board`)).status, 404, 'the board is not');
     assert.equal((await call(`/api/public/${cardShare}/cards/002`)).status, 404, 'sibling cards are not');
+    assert.equal((await call(`/api/public/${cardShare}/cards/002/activity?limit=1`)).status, 404, 'sibling activity is not');
     const gateWithCard = (await call('/api/public/gate')).body as { shares: { token: string }[] };
     assert.ok(!gateWithCard.shares.some((s) => s.token === cardShare), 'card shares never list on the gate');
     const shareRows = (await call(`/api/projects/${parent}/shares`, { token: admin })).body as unknown as { token: string; cardId: string | null }[];

@@ -537,10 +537,19 @@ export default {
           if (share.cardId !== null) return json({ error: 'this link shares a single card' }, 404);
           return json(await stub.publicBoard(url.searchParams.get('flow') !== '0'));
         }
-        const cardMatch = /^\/cards\/([^/]+)$/.exec(rest);
+        const cardMatch = /^\/cards\/([^/]+)(?:\/(activity|comments))?$/.exec(rest);
         if (cardMatch) {
           if (share.cardId !== null && cardMatch[1] !== share.cardId) return json({ error: 'no such card' }, 404);
-          const card = await stub.card(cardMatch[1]!);
+          if (cardMatch[2] !== undefined) {
+            const rawBefore = url.searchParams.get('before');
+            const before = rawBefore === null ? null : Number(rawBefore);
+            if (before !== null && (!Number.isSafeInteger(before) || before < 1)) return json({ error: 'before must be a positive integer' }, 400);
+            const limit = Math.min(100, limitParam(url.searchParams.get('limit')));
+            const history = await stub.cardHistory(cardMatch[1]!, cardMatch[2] as 'activity' | 'comments', limit, before);
+            if (history === null) return json({ error: 'no such card' }, 404);
+            return 'error' in history ? json(history, 400) : json(history);
+          }
+          const card = await stub.card(cardMatch[1]!, url.searchParams.get('compact') === '1');
           return card === null ? json({ error: 'no such card' }, 404) : json(card);
         }
         return json({ error: 'not found' }, 404);
@@ -1593,8 +1602,17 @@ export default {
         const cid = cardMatch[1]!;
         const action = cardMatch[2];
         if (req.method === 'GET' && action === undefined) {
-          const card = await stub.card(cid);
+          const card = await stub.card(cid, url.searchParams.get('compact') === '1');
           return card === null ? json({ error: `no card ${cid}` }, 404) : json(card);
+        }
+        if (req.method === 'GET' && (action === 'activity' || action === 'comments')) {
+          const rawBefore = url.searchParams.get('before');
+          const before = rawBefore === null ? null : Number(rawBefore);
+          if (before !== null && (!Number.isSafeInteger(before) || before < 1)) return json({ error: 'before must be a positive integer' }, 400);
+          const limit = Math.min(100, limitParam(url.searchParams.get('limit')));
+          const history = await stub.cardHistory(cid, action, limit, before);
+          if (history === null) return json({ error: `no card ${cid}` }, 404);
+          return 'error' in history ? json(history, 400) : json(history);
         }
         if (req.method === 'POST' && action !== undefined) {
           const denied = requireWrite();

@@ -456,6 +456,8 @@ const PUB=window.__PUB__||null;
 const PUBCARD=window.__PUBCARD__||null;
 let RO=!!PUB;
 const cardApi=cid=>PUB?'/api/public/'+PUB+'/cards/'+cid:'/api/projects/'+SEL+'/cards/'+cid;
+const cardReadApi=cid=>cardApi(cid)+'?compact=1';
+const cardHistoryApi=(cid,kind)=>cardApi(cid)+'/'+kind;
 let THEME={style:'harbor',accent:'pacific',mode:'system',density:'relaxed',custom:null};
 let ORG=null,SEL=null,VIEW='board',BOARD=null,timer=null,MODAL=null,UPLOADS=false;
 let LAYOUT=localStorage.getItem('bf_layout')||'kanban';
@@ -1971,14 +1973,14 @@ async function publicStart(){
 let PUBTAB='card',PUBLAST='';
 async function publicCardStart(){
   let c;
-  try{c=await api('/api/public/'+PUB+'/cards/'+PUBCARD)}catch(err){return publicDead(err.message)}
+  try{c=await api(cardReadApi(PUBCARD))}catch(err){return publicDead(err.message)}
   document.body.classList.add('pubcard');
   document.body.innerHTML='<header class="top"><h1 id="pctitle"></h1><span class="spacer"></span></header>'
     +'<div class="view" style="flex:1;overflow:auto"><div class="modal cardmodal" style="margin:0 auto" id="pcbox"></div></div>'
     +'<div class="pubfoot">a single card shared with botflow: git-native kanban for AI agents. <a href="/about">learn more</a></div>';
   renderPublicCard(c);
   setInterval(async()=>{
-    try{const nc=await api('/api/public/'+PUB+'/cards/'+PUBCARD);
+    try{const nc=await api(cardReadApi(PUBCARD));
       const next=JSON.stringify(nc);
       if(next!==PUBLAST)renderPublicCard(nc)}catch{}
   },4000);
@@ -1990,6 +1992,7 @@ function renderPublicCard(c){
   const box=$('#pcbox');
   box.innerHTML=cardModalHtml(c,PUBTAB);
   wireTablist(box.querySelector('.tabbar'),'data-ctab',b=>{PUBTAB=b.dataset.ctab;renderPublicCard(c)});
+  if(PUBTAB==='chat'||PUBTAB==='activity')loadCardHistory(box,c,PUBTAB==='chat'?'comments':'activity');
 }
 function renderPublic(b){
   const fresh=!BOARD;
@@ -2013,11 +2016,12 @@ function renderPublic(b){
 }
 // ---- the card modal ----
 async function openCard(cid,tab){
-  let c;try{c=await api(cardApi(cid))}catch(err){return}
+  let c;try{c=await api(cardReadApi(cid))}catch(err){return}
   MODAL=cid;
   const t=tab||'card';
   const m=overlay(cardModalHtml(c,t),'cardmodal',c.id+' '+c.title);
   wireCardModal(m,c,t);
+  if(t==='chat'||t==='activity')loadCardHistory(m,c,t==='chat'?'comments':'activity');
 }
 function cardModalHtml(c,tab){
   const p=c.parsed||{};
@@ -2056,7 +2060,7 @@ function cardModalHtml(c,tab){
       +'<button class="ghost" data-feedcard title="create a private activity feed for this card">☊ feed</button>'
       +'<button class="ghost" data-sharecard title="public read-only link to just this card">↗ share</button>');
   }
-  const tabs=[['card','card'],['chat','chat '+((p.comments||[]).length||'')],['activity','activity']];
+  const tabs=[['card','card'],['chat','chat '+(c.comments||'')],['activity','activity']];
   return (c.coverColor?'<div class="coverband" style="--cover-color:'+esc(c.coverColor)+'"></div>':'')
     +((cov=>cov?'<img class="banner" src="'+esc(cov)+'" alt="">':'')(coverOf(c)))
     +'<div class="inner"><button class="close ghost" data-x aria-label="close card">✕</button>'
@@ -2145,15 +2149,51 @@ function paneCard(c){
   return out;
 }
 function paneChat(c){
-  const list=(c.parsed&&c.parsed.comments)||[];
-  return '<div class="chat">'+(list.length?list.map(m=>'<div class="msg"><div class="who"><b>'+esc(m.actor)+'</b> · '+esc(m.when)+'</div>'+esc(m.text)+'</div>').join('')
-    :'<div class="empty">no comments yet'+(RO?'':'. talk to your agents here')+'</div>')+'</div>'
+  return '<div data-cardhistory="comments">loading…</div>'
     +(RO?'':'<form class="composer"><input placeholder="write a comment…" required><button class="primary">send</button></form>');
 }
 function paneActivity(c){
-  const list=(c.parsed&&c.parsed.log)||[];
-  return '<div class="actlist">'+(list.length?list.map(e=>'<div class="a"><span class="when">'+esc(e.when)+'</span><span><span class="who">'+esc(e.actor)+'</span> '+esc(e.text)+'</span></div>').join('')
-    :'<div class="empty">no activity</div>')+'</div>';
+  return '<div data-cardhistory="activity">loading…</div>';
+}
+const CARD_HISTORY_PAGE_SIZE=25;
+function loadCardHistory(m,c,kind){
+  const host=m.querySelector('[data-cardhistory="'+kind+'"]'),pages=[];
+  if(!host)return;
+  let pageIndex=-1,loading=false,failure='';
+  const current=()=>host.isConnected;
+  const paint=()=>{
+    if(!current())return;
+    const page=pages[pageIndex];
+    if(!page){host.innerHTML=loading?'loading…':failure?'<div class="err">'+esc(failure)+'</div>':'<div class="empty">'+(kind==='comments'?'no comments yet'+(RO?'':'. talk to your agents here'):'no activity')+'</div>';return}
+    const entries=kind==='comments'
+      ?'<div class="chat">'+(page.items.length?page.items.map(e=>'<div class="msg"><div class="who"><b>'+esc(e.actor)+'</b> · '+esc(e.when)+'</div>'+esc(e.text)+'</div>').join(''):'<div class="empty">no comments yet'+(RO?'':'. talk to your agents here')+'</div>')+'</div>'
+      :'<div class="actlist">'+(page.items.length?page.items.map(e=>'<div class="a"><span class="when">'+esc(e.when)+'</span><span><span class="who">'+esc(e.actor)+'</span> '+esc(e.text)+'</span></div>').join(''):'<div class="empty">no activity</div>')+'</div>';
+    const hasNewer=pageIndex>0,hasOlder=pageIndex+1<pages.length||page.next!=null;
+    const pager=hasNewer||hasOlder?'<nav aria-label="Card '+(kind==='comments'?'comment':'activity')+' pages" style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px">'
+      +'<button type="button" data-cardhistory-prev'+(hasNewer&&!loading?'':' disabled')+'>← newer</button>'
+      +'<span class="setting-note" style="margin:0">page '+(pageIndex+1)+' · '+CARD_HISTORY_PAGE_SIZE+' per page</span>'
+      +'<button type="button" data-cardhistory-next'+(hasOlder&&!loading?'':' disabled')+'>'+(loading?'loading…':'older →')+'</button></nav>':'';
+    host.innerHTML=entries+pager+(failure?'<div class="err">'+esc(failure)+'</div>':'');
+    const previous=host.querySelector('[data-cardhistory-prev]');
+    if(previous)previous.onclick=()=>{pageIndex--;failure='';paint()};
+    const next=host.querySelector('[data-cardhistory-next]');
+    if(next)next.onclick=()=>{
+      if(pageIndex+1<pages.length){pageIndex++;failure='';paint();return}
+      if(page.next!=null)load(page.next);
+    };
+  };
+  const load=async before=>{
+    if(loading)return;loading=true;failure='';paint();
+    try{
+      const cursor=before==null?'':'&before='+encodeURIComponent(before);
+      const page=await api(cardHistoryApi(c.id,kind)+'?limit='+CARD_HISTORY_PAGE_SIZE+cursor);
+      if(!current())return;
+      if(!page||!Array.isArray(page.items))throw new Error('Invalid card history response.');
+      pages.splice(pageIndex+1);pages.push(page);pageIndex++;
+    }catch(err){failure=err.message}
+    finally{loading=false;paint()}
+  };
+  load(null);
 }
 function maybeWipPrompt(card,canonical,verb,run){
   const lane=(BOARD&&BOARD.lanes||[]).find(l=>l.canonical===canonical);

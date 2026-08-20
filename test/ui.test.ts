@@ -68,6 +68,19 @@ test('ui: project and integration histories have bounded cursor pages in both di
     'older webhook pages reuse one dialog and retain their newer-page stack');
 });
 
+test('ui: card activity and chat load bounded newest-first server pages', () => {
+  const app = scripts.join('\n');
+  assert.match(app, /const CARD_HISTORY_PAGE_SIZE=25/);
+  assert.match(app, /cardReadApi\(cid\)/, 'modal detail uses the compact response without embedded histories');
+  assert.match(app, /cardHistoryApi\(c\.id,kind\)\+'\?limit='\+CARD_HISTORY_PAGE_SIZE\+cursor/,
+    'each card history tab asks the server for one bounded page');
+  for (const control of ['data-cardhistory-prev', 'data-cardhistory-next']) {
+    assert.ok(app.includes(control), `${control} is wired`);
+  }
+  assert.doesNotMatch(app, /c\.parsed&&c\.parsed\.log/, 'activity no longer renders an embedded full Log');
+  assert.doesNotMatch(app, /c\.parsed&&c\.parsed\.comments/, 'chat no longer renders an embedded full Comments section');
+});
+
 test('ui: ordinary board polls omit flow series until the metrics view needs them', () => {
   const app = scripts.join('\n');
   assert.match(app, /const flow=LAYOUT==='metrics'\?'1':'0'/,

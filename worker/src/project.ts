@@ -12,7 +12,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { analyzeSingle, type ExternalChild, type ExternalReference } from '../../src/core/analyze.ts';
 import { boardFromDocuments, validateBoardDocuments, type BoardDocument } from '../../src/core/docs.ts';
 import { boardJson, cardDetailJson, cardJson } from '../../src/core/json.ts';
-import { parseBody } from '../../src/core/body.ts';
+import { parseBody, type BodyEntry } from '../../src/core/body.ts';
 import type { BoardAnalysis } from '../../src/core/analyze.ts';
 import type { BoardNode, Canonical, Card, Finding, Lane, LoadedBoard } from '../../src/core/model.ts';
 import { RELATION_TYPES, SLUG_RE, defaultRollup, isCanonical } from '../../src/core/model.ts';
@@ -117,6 +117,18 @@ export interface AuditEvent {
   action: string;
   card_id: string | null;
   detail: string;
+}
+
+export interface CardHistoryItem extends BodyEntry {
+  /** Stable 1-based position in the append-only markdown section. */
+  sequence: number;
+}
+
+export interface CardHistoryPage {
+  items: CardHistoryItem[];
+  /** Exclusive upper bound for the next page toward older entries. */
+  next: number | null;
+  total: number;
 }
 
 interface HostedReferenceUse {
@@ -1321,14 +1333,18 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     const { ba, node, children } = await this.analyzed();
     const tree = { rootAbs: '.', boards: new Map([['.', node]]) };
     const analysis = { boards: new Map([['.', ba]]) };
-    const json = boardJson(tree, analysis, '.', Date.now(), { includeFlow, detail: true }) as Record<string, unknown>;
+    // Board polling needs card-face summaries, not every raw body and parsed
+    // history. Modal detail and its paginated history are separate reads.
+    const json = boardJson(tree, analysis, '.', Date.now(), { includeFlow }) as Record<string, unknown>;
     const previewCache = this.unfurlImages();
+    const sourceById = new Map(node.board.cards.map((card) => [card.id, card]));
     const lanes = json['lanes'] as { cards: Record<string, unknown>[] }[];
     json['lanes'] = lanes.map((lane) => ({
       ...lane,
       cards: lane.cards.map((card) => this.withPreviews(
         { ...card, childProgress: children.get(String(card['id']))?.progress ?? null },
         previewCache,
+        sourceById.get(String(card['id'])),
       )),
     }));
     return json;
@@ -1354,11 +1370,46 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     return this.boardProjection(includeFlow);
   }
 
-  async card(id: string): Promise<Record<string, unknown> | null> {
+  async card(id: string, compact = false): Promise<Record<string, unknown> | null> {
     const { board, ba, node } = await this.analyzed();
     const found = board.cards.find((c) => c.id === id);
     if (!found) return null;
-    return this.withPreviews(cardDetailJson(found, node, ba));
+    const detail = this.withPreviews(cardDetailJson(found, node, ba));
+    if (!compact) return detail;
+
+    // The manager has dedicated bounded endpoints for the two append-only
+    // histories. Do not quietly transfer those sections (or the raw body that
+    // contains them) with every modal read as well.
+    const parsed = { ...(detail['parsed'] as Record<string, unknown>) };
+    delete parsed['log'];
+    delete parsed['comments'];
+    const out: Record<string, unknown> = { ...detail, parsed };
+    delete out['body'];
+    return out;
+  }
+
+  cardHistory(
+    id: string,
+    kind: 'activity' | 'comments',
+    requestedLimit: number,
+    before: number | null = null,
+  ): CardHistoryPage | { error: string } | null {
+    const card = this.loadBoardDocs().cards.find((candidate) => candidate.id === id);
+    if (card === undefined) return null;
+    const parsed = parseBody(card.body);
+    const entries = kind === 'activity' ? parsed.log : parsed.comments;
+    if (before !== null && before > entries.length) return { error: 'before exceeds card history' };
+    const limit = Math.max(1, Math.min(100, Number.isInteger(requestedLimit) ? requestedLimit : 25));
+    // `before` is an entry sequence, not an offset. Convert its exclusive
+    // 1-based bound to the zero-based slice end. Appending newer entries does
+    // not renumber this old prefix.
+    const upper = before === null ? entries.length : before - 1;
+    const start = Math.max(0, upper - limit);
+    const items = entries
+      .slice(start, upper)
+      .map((entry, index): CardHistoryItem => ({ ...entry, sequence: start + index + 1 }))
+      .reverse();
+    return { items, next: start > 0 ? start + 1 : null, total: entries.length };
   }
 
   async search(query: string, actor: string): Promise<Record<string, unknown>[] | { error: string }> {
@@ -1366,7 +1417,11 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       const { ba, node } = await this.analyzed();
       const tree = { rootAbs: '.', boards: new Map([['.', node]]) };
       const analysis = { boards: new Map([['.', ba]]) };
-      return queryCards(tree, analysis, query, { actor }).map((match) => this.withPreviews(cardDetailJson(match.card, node, ba)));
+      return queryCards(tree, analysis, query, { actor }).map((match) => this.withPreviews(
+        cardJson(match.card, node, ba),
+        undefined,
+        match.card,
+      ));
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
@@ -1440,10 +1495,11 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
 
   /** Attach previews in attachment order, so the first previewable attachment
    *  is the one a viewer falls back to for cover art. */
-  private withPreviews(card: Record<string, unknown>, cached?: Map<string, string>): Record<string, unknown> {
+  private withPreviews(card: Record<string, unknown>, cached?: Map<string, string>, source?: Card): Record<string, unknown> {
     const images = cached ?? this.unfurlImages();
     const parsed = card['parsed'] as { attachments?: { url: string }[] } | undefined;
-    const previews = (parsed?.attachments ?? [])
+    const attachments = source === undefined ? (parsed?.attachments ?? []) : parseBody(source.body).attachments;
+    const previews = attachments
       .map((a) => ({ url: a.url, image: images.get(a.url) }))
       .filter((p): p is { url: string; image: string } => p.image !== undefined);
     return previews.length > 0 ? { ...card, previews } : card;
