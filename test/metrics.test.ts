@@ -175,8 +175,33 @@ test('due-date change count derives only from the exact edited-field log token',
     '2026-08-03 agent: edited title, due, reminders',
     '2026-08-04 agent: edited overdue-note',
     '2026-08-05 agent: commented: due',
+    '2026-08-06 agent: edited due (woke snooze)',
   ], ['due: 2026-08-20'])]);
-  assert.equal(cardFlowMetrics(board.cards[0]!, board, 'todo', metricTime('2026-08-20')!).dueChanges, 2);
+  assert.equal(cardFlowMetrics(board.cards[0]!, board, 'todo', metricTime('2026-08-20')!).dueChanges, 3);
+});
+
+test('sweep and transfer transitions feed lane time without trusting arrow-shaped reason text', () => {
+  const board = boardFromDocuments(CONFIG, [
+    document('001', 'archive', '2026-08-01', [
+      '2026-08-01 agent: created in todo',
+      '2026-08-03 agent: closed: a note saying moved todo → archive, moved todo → done',
+      '2026-08-10 botflow: swept done → archive after 7 days',
+    ]),
+    document('002', 'archive', '2026-08-01', [
+      '2026-08-01 agent: created in todo',
+      '2026-08-02 agent: moved todo → doing',
+      '2026-08-09 agent: moved to child#001, doing → archive',
+    ]),
+  ]);
+  assert.deepEqual(cardFlowEvents(board.cards[0]!, board).map(({ lane }) => lane), ['todo', 'done', 'archive']);
+  assert.deepEqual(cardFlowEvents(board.cards[1]!, board).map(({ lane }) => lane), ['todo', 'doing', 'archive']);
+
+  const first = cardFlowMetrics(board.cards[0]!, board, 'archive', metricTime('2026-08-12')!);
+  assert.deepEqual(first.laneDays, { todo: 2, done: 7, archive: 2 });
+  assert.equal(first.currentLaneDays, 2);
+  const flow = boardFlowMetrics(board, metricTime('2026-08-12T12:00:00Z')!, 3);
+  assert.equal(flow.cumulativeFlow.at(-1)!.distribution.archive, 2);
+  assert.equal(flow.cumulativeFlow.at(-1)!.distribution.done, 0);
 });
 
 test('board flow metrics rebuild throughput and end-of-day cumulative flow', () => {

@@ -3,7 +3,8 @@ import { test } from 'node:test';
 
 import { boardFromDocuments } from '../src/core/docs.ts';
 import { validCardDate, validEstimate, validHill } from '../src/core/fields.ts';
-import { opAdd, opEdit, UsageError } from '../src/core/ops.ts';
+import { opAdd, opComment, opEdit, UsageError } from '../src/core/ops.ts';
+import { serializeCard } from '../src/core/write.ts';
 
 const CONFIG = `botflow: 0
 name: fields
@@ -43,7 +44,7 @@ test('Hill Chart positions accept every integer endpoint and nothing outside 0â€
   for (const value of [-1, 50.5, 101, '50', null]) assert.equal(validHill(value), false);
 });
 
-test('card parser reports invalid structured fields without retaining bad values', () => {
+test('card parser reports invalid structured fields while preserving their raw values across unrelated mutations', () => {
   const board = boardFromDocuments(CONFIG, [{
     path: 'cards/001-bad.md',
     text: `---\nid: 001\ntitle: bad\nlane: todo\ndelegate: true\nstart: 2026-02-29\ndue: tomorrow\nestimate: 0\nhill: 101\nevergreen: yes\n---\n`,
@@ -55,6 +56,24 @@ test('card parser reports invalid structured fields without retaining bad values
   assert.equal(board.cards[0]!.estimate, null);
   assert.equal(board.cards[0]!.hill, null);
   assert.equal(board.cards[0]!.evergreen, false);
+  assert.deepEqual(board.cards[0]!.extra, {
+    delegate: true,
+    start: '2026-02-29',
+    due: 'tomorrow',
+    estimate: 0,
+    hill: 101,
+    evergreen: 'yes',
+  });
+  opComment(board.cards[0]!, 'test', 'unrelated activity');
+  const unchanged = serializeCard(board.cards[0]!);
+  for (const line of ['delegate: true', 'start: 2026-02-29', 'due: tomorrow', 'estimate: 0', 'hill: 101', 'evergreen: yes']) {
+    assert.match(unchanged, new RegExp(`^${line}$`, 'm'));
+  }
+
+  opEdit(board.cards[0]!, { due: '2026-08-22', estimate: 3, hill: 50, evergreen: true, delegate: 'agent' }, 'test', board);
+  assert.equal(board.cards[0]!.due, '2026-08-22');
+  assert.equal(board.cards[0]!.extra['due'], undefined, 'a correcting edit replaces the preserved raw value');
+  assert.match(serializeCard(board.cards[0]!), /^due: 2026-08-22$/m);
 });
 
 test('mutation validation refuses bad dates and estimates before writing them', () => {

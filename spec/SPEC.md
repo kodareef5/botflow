@@ -173,10 +173,17 @@ and `comment`; every action requires a non-empty `value`. Rules are evaluated in
 order and are subject to the execution bounds in §12a. Unknown keys inside blocker,
 button, and rule maps are preserved.
 
+A declared button/rule filter that does not resolve is a schema error and the affected
+button/rule is inert; it MUST NOT be interpreted as an omitted filter or match every
+card. A mutation that removes a saved filter MUST refuse while a button or rule names
+it. This keeps a typo or stale reference fail-closed and preserves it for repair.
+
 The automation map currently accepts `archive_done_after`, a positive whole number of
 elapsed days. When set, a done card whose first completion can be proven from its Log is
 eligible for a lazy sweep after that interval (§6b). Unknown automation keys are
-preserved.
+preserved. Setting `archive_done_after` without an archive-canonical lane is a schema
+error. Readers and automation passes remain total on such hand-authored input: they
+skip impossible sweeps rather than throwing or repeatedly scheduling the same action.
 
 Unknown keys in the top-level board mapping, lane, label, custom-field, template,
 saved-filter, subscription, blocker, button, rule, `automation`, or `rollup`
@@ -242,6 +249,11 @@ semantically by any tool that rewrites a card. Rewriters MAY normalize key order
 scalar quoting, whitespace, and comments inside frontmatter; the parsed value and
 all markdown body content outside the requested edit MUST survive.
 
+A recognized frontmatter key whose value is rejected by schema validation MUST likewise
+survive an unrelated rewrite with its original parsed YAML value. The semantic card model
+MAY use its documented fallback while the finding remains, but it MUST NOT silently erase
+the rejected value. An explicit valid mutation of that key replaces the preserved value.
+
 Body: free markdown. Conventional sections, all optional:
 
 ```markdown
@@ -286,6 +298,11 @@ Once their target is done/archive, presentation degrades them to an ordinary res
 relation; the raw `deps` entry is deliberately retained as history. Text may opt into a
 derived relation with `[[card-ref]]` in Description or Comments. Derived text relations
 are a view and are never written to frontmatter.
+
+A dependency-cycle member is never ready or claimable even when its immediate
+dependency happens to be in a done/archive lane. For a board-card dependency,
+readiness and claimability both use the target's effective rollup state; they MUST NOT
+disagree by mixing effective and local lane state.
 
 ### 5b. Search, mentions, and audiences
 
@@ -344,8 +361,13 @@ frontmatter. Date-only entries are interpreted at `00:00 UTC` for elapsed-day ma
 Durations are whole elapsed UTC days, rounded down, because historic v0 logs may have
 day-only precision.
 
-- **Current/cumulative lane time:** creation and every `moved <from> → <to>` or
-  `migrated <from> → <to>` entry define intervals. Lane totals include re-entry.
+- **Current/cumulative lane time:** creation and every tool-written transition entry
+  define intervals. Conforming v0 transition forms include `moved <from> → <to>`,
+  `migrated <from> → <to>`, and `swept <from> → <archive> after <n> days`; claim/close
+  entries may carry their final `moved <from> → <to>` clause, and historical transfer
+  entries may prefix it with `moved to <ref>,`. Parsers match the mutation form from
+  the start of its Log message and MUST NOT treat arrow-shaped user reason text as a
+  transition. Lane totals include re-entry.
 - **Stalled:** a card whose effective state is `doing` and whose last Log activity is
   at least 3 days old. `evergreen` suppresses the signal.
 - **Aging:** only `doing`/`blocked` cards age visually, at 7/14/28 idle days;
@@ -364,8 +386,8 @@ day-only precision.
 - **Throughput:** first completions grouped by UTC date. **Cumulative flow:** end-of-day
   card counts reconstructed from the same creation and transition entries.
 
-System reminder entries are audit history but not human/agent work activity: they MUST
-NOT reset stalled/aging clocks and MUST NOT wake snooze.
+System reminder and snooze-expiry entries are audit history but not human/agent work
+activity: they MUST NOT reset stalled/aging clocks and MUST NOT wake snooze.
 
 Incomplete historic logs produce `null` for a duration whose start or end cannot be
 proven; tools MUST NOT invent precision.
@@ -394,8 +416,10 @@ until the next due instant is strictly after completion, skipping missed slots w
 retaining cadence. `from: completion` advances the UTC completion date/time by one
 interval. When both start and due exist, the successor preserves their elapsed offset.
 The new creation entry and inverse relations are part of the same mutation. A surviving
-`recurs-to` target makes close replay idempotent; file writers create the valid target
-before rewriting the source, and hosted writers transact both.
+`recurs-to` target makes close replay idempotent; more generally, closing any card that
+is already in done/archive is a no-op: it does not move the card, append another Log
+entry, rerun rules, or emit another hosted event/integration delivery. File writers
+create the valid target before rewriting the source, and hosted writers transact both.
 
 Genuine card activity before `snooze` expires clears it as part of the same mutation and
 records that wake in the mutation's Log text. Genuine activity includes edit, move,
@@ -405,8 +429,9 @@ wake it. Expired snooze no longer affects readiness even before cleanup. An auto
 pass removes an expired stored value and logs `snooze expired` once.
 
 With `archive_done_after: n`, a pass sweeps a card only when its first completion is
-proven and at least `n` whole UTC days have elapsed. It moves to the first
-archive-canonical lane and logs `swept <from> → <archive> after <n> days`. A run applies
+proven, at least `n` whole UTC days have elapsed, and an archive-canonical lane exists.
+It moves to the first archive-canonical lane and logs
+`swept <from> → <archive> after <n> days`. A run applies
 at most 100 reminder, snooze-expiry, or sweep mutations; when work remains it MUST
 schedule or request another pass rather than silently discard it. File-backed tools
 offer an explicit automation command and SHOULD run the same lazy pass before `board`,
@@ -539,7 +564,7 @@ Expected files record, per board: lint findings (rule ids + card ids), per-card 
 
 ## 12. Conventions for tools
 
-- **Claim is a coordination primitive, not a shortcut.** A claim MUST succeed only when the card is claimable by the actor: its local canonical state (lane canonical, or `blocked` when the flag is set) is `todo`, it is not actively snoozed, every dep resolves to a card whose local canonical state is `done` or `archive`, and the selected holder field is empty or already the actor. A normal (human/accountability) claim selects `assignee`; an explicit delegate-mode claim selects `delegate` and leaves `assignee` intact. Success sets the selected field and moves the card to a `doing`-canonical lane (first substate if any), appending a Log entry: one atomic rewrite. A claim by the actor already named in the selected field while the card is `doing` is an idempotent no-op. Two actors racing for the same selected role get exactly one winner; assignee and delegate are different roles and may coexist. Anything else MUST fail with a conflict that names the reason (`assigned`, `blocked`, `snoozed`, `not-ready`, `deps`) and MUST NOT modify the card. Tools MAY offer an explicit force override for human operators; hosted APIs MUST restrict that override to admin identities and record its use. A forced normal claim clears an existing delegate because the human is taking execution back; a forced delegate claim replaces only the delegate. Board-cards never appear in `ready` (§5); claiming one explicitly is judged by its own lane, because rollup state is a view, not a lock.
+- **Claim is a coordination primitive, not a shortcut.** A claim MUST succeed only when the card is claimable by the actor: its effective canonical state (lane canonical for task cards, rollup state for board-cards, or `blocked` when the flag is active) is `todo`, it is not actively snoozed, it is not a dependency-cycle member, every dep resolves to a card whose effective canonical state is `done` or `archive`, and the selected holder field is empty or already the actor. A normal (human/accountability) claim selects `assignee`; an explicit delegate-mode claim selects `delegate` and leaves `assignee` intact. Success sets the selected field and moves the card to a `doing`-canonical lane (first substate if any), appending a Log entry: one atomic rewrite. A claim by the actor already named in the selected field while the card is `doing` is an idempotent no-op. Two actors racing for the same selected role get exactly one winner; assignee and delegate are different roles and may coexist. Anything else MUST fail with a conflict that names the reason (`assigned`, `blocked`, `snoozed`, `not-ready`, `deps`) and MUST NOT modify the card. Tools MAY offer an explicit force override for human operators; hosted APIs MUST restrict that override to admin identities and record its use. A forced normal claim clears an existing delegate because the human is taking execution back; a forced delegate claim replaces only the delegate. Board-cards never appear in `ready` (§5), but an explicit claim is judged by the same effective-state and dependency analysis so it cannot disagree with projections.
 - Every workflow mutation appends a Log line; never rewrite existing Log lines. Comments append to `## Comments` and Boosts append to `## Boosts`; both bump `updated` without a redundant Log line because their append-only sections are already the record. Checklist toggles and attachment changes DO log.
 - Promoting a checklist item creates a normal card, checks the source item, and writes inverse `parent`/`subtask` relations in the same atomic mutation. The promoted card inherits labels, accountable/delegated actors, due date, and estimate unless the caller overrides them.
 - Duplicate merge never deletes history: it transfers unique attachments to the canonical card, rewires same-board inbound references, writes `duplicates`/`supersedes`, and archives the duplicate. Both cards are logged.

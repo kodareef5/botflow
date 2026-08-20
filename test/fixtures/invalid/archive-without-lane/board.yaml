@@ -1,0 +1,10 @@
+botflow: 0
+name: archive policy without archive lane
+features: [automation]
+lanes:
+  - id: todo
+    canonical: todo
+  - id: done
+    canonical: done
+automation:
+  archive_done_after: 7

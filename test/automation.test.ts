@@ -12,11 +12,13 @@ import {
   claimability,
   opAutomationPass,
   opBlock,
+  opBulk,
   opButton,
   opClaim,
   opClose,
   opComment,
   opMove,
+  opRemoveFilter,
 } from '../src/core/ops.ts';
 
 const NOW = new Date('2026-08-20T12:00:00Z');
@@ -150,8 +152,50 @@ Repeat this work.
   assert.equal(source.relations.some((relation) => relation.type === 'recurs-to' && relation.target === next.id), true);
 
   board.cards.push(next);
+  const beforeReplay = source.body;
+  const beforeLane = source.laneId;
   const replay = opClose(board, source, 'sam', 'replay', undefined, false, NOW);
   assert.equal(replay.created, undefined);
+  assert.equal(replay.alreadyClosed, true);
+  assert.equal(source.body, beforeReplay, 'close replay does not append another log or rule');
+  assert.equal(source.laneId, beforeLane, 'close replay does not move an already-closed card');
+  assert.deepEqual(opBulk(board, ['001'], { kind: 'close' }, 'sam').cards, [], 'bulk close also treats an already-closed card as unchanged');
+});
+
+test('missing automation filters are inert and referenced filters cannot be removed', () => {
+  const missing = boardFromDocuments(`botflow: 0
+name: inert rules
+features: [automation]
+lanes:
+  - id: todo
+  - id: done
+  - id: archive
+rules:
+  - id: scoped-close
+    event: close
+    filter: no-longer-there
+    action: label
+    value: should-not-appear
+`, [doc('001', ['lane: todo'])]);
+  assert.match(missing.findings.map((finding) => finding.message).join('\n'), /filter must name a saved filter/);
+  opClose(missing, missing.cards[0]!, 'sam', undefined, undefined, false, NOW);
+  assert.deepEqual(missing.cards[0]!.labels, [], 'an invalid declared filter never becomes match-all');
+  assert.equal(missing.config.rules[0]!.filter, 'no-longer-there', 'the stale reference remains available for repair');
+
+  const referenced = boardFromDocuments(`botflow: 0
+name: referenced rules
+features: [automation]
+filters:
+  - id: bugs
+    query: label:bug
+rules:
+  - id: scoped-close
+    event: close
+    filter: bugs
+    action: label
+    value: reviewed
+`, [doc('001', ['lane: todo'])]);
+  assert.throws(() => opRemoveFilter(referenced.config, 'bugs'), /referenced by rule "scoped-close"/);
 });
 
 test('automation pass applies due reminders, snooze expiry, and lazy sweeps once', () => {
@@ -169,6 +213,24 @@ test('automation pass applies due reminders, snooze expiry, and lazy sweeps once
 
   const applied = { ...board, cards: board.cards.map((card) => byId.get(card.id) ?? card) };
   assert.deepEqual(opAutomationPass(applied, NOW).actions, []);
+});
+
+test('archive policy without an archive lane stays readable and never schedules an impossible sweep', () => {
+  const board = boardFromDocuments(`botflow: 0
+name: no archive
+features: [automation]
+lanes:
+  - id: todo
+  - id: doing
+  - id: done
+automation:
+  archive_done_after: 1
+`, [doc('001', ['lane: done'], `## Log
+- 2026-08-01 sam: created in todo
+- 2026-08-02 sam: closed, moved todo → done
+`)]);
+  assert.match(board.findings.map((finding) => finding.message).join('\n'), /archive_done_after requires an archive-canonical lane/);
+  assert.deepEqual(opAutomationPass(board, NOW).actions, []);
 });
 
 test('card and board buttons stay declarative, filtered, and atomic', () => {

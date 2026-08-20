@@ -1,0 +1,13 @@
+botflow: 0
+name: missing rule filter
+features: [automation]
+lanes:
+  - id: todo
+  - id: doing
+  - id: done
+rules:
+  - id: notify-close
+    event: close
+    filter: missing-filter
+    action: comment
+    value: closed

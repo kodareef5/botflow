@@ -1,5 +1,43 @@
 {
   "cases": {
+    "archive-without-lane": [
+      {
+        "rule": "schema",
+        "ref": "board.yaml"
+      }
+    ],
+    "bad-rule-filter": [
+      {
+        "rule": "schema",
+        "ref": "board.yaml"
+      }
+    ],
+    "invalid-known-values": [
+      {
+        "rule": "schema",
+        "ref": "001"
+      },
+      {
+        "rule": "schema",
+        "ref": "001"
+      },
+      {
+        "rule": "schema",
+        "ref": "001"
+      },
+      {
+        "rule": "schema",
+        "ref": "001"
+      },
+      {
+        "rule": "schema",
+        "ref": "001"
+      },
+      {
+        "rule": "schema",
+        "ref": "001"
+      }
+    ],
     "bad-automation-config": [
       {
         "rule": "schema",

@@ -9,6 +9,7 @@ import { analyze, lintBoard } from '../src/core/analyze.ts';
 import { boardFromDocuments, singleBoardTree } from '../src/core/docs.ts';
 import type { BoardDocument } from '../src/core/docs.ts';
 import {
+  claimability,
   opAdd,
   opBulk,
   opLink,
@@ -215,6 +216,39 @@ test('dependency cycles are detected across discovered boards', () => {
   const cycles = [...tree.boards].flatMap(([key, node]) => lintBoard(node, result.boards.get(key)!).filter((finding) => finding.rule === 'dep-cycle'));
   assert.equal(cycles.length, 1);
   assert.match(cycles[0]!.message, /001 → child#001 → 001/);
+});
+
+test('every dependency-cycle member is non-ready and non-claimable regardless of lane state', () => {
+  const done = doc('001', 'Done half', 'done');
+  done.text = done.text.replace('lane: done\n', 'lane: done\ndeps: [002]\n');
+  const todo = doc('002', 'Todo half', 'todo');
+  todo.text = todo.text.replace('lane: todo\n', 'lane: todo\ndeps: [001]\n');
+  const b = board([done, todo]);
+  const analysis = analyze(singleBoardTree(b)).boards.get('.')!;
+
+  assert.deepEqual(analysis.ready, []);
+  assert.deepEqual([...analysis.cycleMembers].sort(), ['001', '002']);
+  const check = claimability(b, b.cards.find((card) => card.id === '002')!, 'dev', 'assign', analysis.dependencyStates.get('002'), new Date('2026-08-20T12:00:00Z'), analysis.cycleMembers);
+  assert.equal(check.ok, false);
+  if (!check.ok) {
+    assert.equal(check.conflict.reason, 'deps');
+    assert.match(check.conflict.message, /dependency cycle/);
+  }
+});
+
+test('claimability consumes effective dependency state instead of a board-card local lane', () => {
+  const container = doc('001', 'Rolled-up child', 'todo');
+  container.text = container.text.replace('lane: todo\n', 'lane: todo\ntype: board\nboard: child\n');
+  const waiting = doc('002', 'Waits for child', 'todo');
+  waiting.text = waiting.text.replace('lane: todo\n', 'lane: todo\ndeps: [001]\n');
+  const b = board([container, waiting]);
+  const card = b.cards.find((candidate) => candidate.id === '002')!;
+
+  const rolledUpDone = claimability(b, card, 'dev', 'assign', new Map([['001', 'done']]));
+  assert.equal(rolledUpDone.ok, true, 'done child rollup wins over the container todo lane');
+  const rolledUpTodo = claimability(b, card, 'dev', 'assign', new Map([['001', 'todo']]));
+  assert.equal(rolledUpTodo.ok, false);
+  if (!rolledUpTodo.ok) assert.equal(rolledUpTodo.conflict.reason, 'deps');
 });
 
 test('cross-board copy rebases references and replay converges; move retires source only after target exists', () => {

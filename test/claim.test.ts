@@ -142,7 +142,7 @@ test('unsatisfied and dangling deps are "deps" conflicts; done deps clear', () =
   assert.equal(res.card.laneId, 'doing');
 });
 
-test('board-cards never enter the ready queue, so ready and claim agree', async () => {
+test('board-cards stay out of the ready queue and the pure claim primitive has a lane fallback', async () => {
   const { analyzeSingle } = await import('../src/core/analyze.ts');
   const b = boardFromDocuments(
     `botflow: 0
@@ -159,7 +159,8 @@ lanes:
   );
   const analysis = analyzeSingle(b);
   assert.deepEqual(analysis.ready, ['001'], 'only the task card is ready');
-  // Claiming the container explicitly is still judged by its own lane.
+  // Without a loaded child analysis, the pure primitive falls back to the
+  // container lane; filesystem/hosted wrappers pass effective rollup state.
   const res = opClaim(b, b.cards.find((c) => c.id === '002')!, 'a');
   assert.equal(res.card.laneId, 'doing');
 });

@@ -41,6 +41,10 @@ blockers:
   - id: external-review
     name: External review
     color: "#b42318"
+filters:
+  - id: protected
+    name: Protected filter
+    query: ""
 buttons:
   - id: reviewed
     name: Mark reviewed
@@ -52,6 +56,11 @@ rules:
     event: block
     action: label
     value: waiting
+  - id: protected-close
+    event: close
+    filter: protected
+    action: comment
+    value: Closed through MCP.
 lanes:
   - id: wishlist
   - id: todo
@@ -165,9 +174,15 @@ lanes:
     assert.ok((blockedDetail['labels'] as string[]).includes('reviewed'));
     assert.equal((JSON.parse((await callTool('buttons_list', {})).text) as unknown[]).length, 1);
     assert.equal((await callTool('automation_run', {})).isError, false);
+    const protectedRemoval = await callTool('filter_remove', { id: 'protected' });
+    assert.equal(protectedRemoval.isError, true);
+    assert.match(protectedRemoval.text, /referenced by rule/);
     const close = await callTool('card_close', { id, reason: 'mcp round trip done' });
     assert.equal(close.isError, false);
     assert.ok((JSON.parse(close.text) as { created: string | null }).created, 'recurring close creates a successor');
+    const closeReplay = await callTool('card_close', { id, reason: 'must not replay effects' });
+    assert.equal(closeReplay.isError, false);
+    assert.deepEqual(JSON.parse(closeReplay.text), { id, from: 'done', to: 'done', created: null, alreadyClosed: true });
 
     const board = await callTool('board', {});
     const parsed = JSON.parse(board.text) as { distribution: Record<string, number> };

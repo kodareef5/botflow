@@ -213,8 +213,44 @@ lanes:
   ok(dir, 'card', 'add', 'Recurring audit', '--due', '2099-02-01', '--repeat', '1:week:due'); // 005
   const closed = JSON.parse(ok(dir, 'card', 'close', '005', '--json')) as { created: string | null };
   assert.equal(closed.created, '006');
+  const closedPath = join(dir, '.botflow', 'cards', '005-recurring-audit.md');
+  const closedOnce = readFileSync(closedPath, 'utf8');
+  const replay = JSON.parse(ok(dir, 'card', 'close', '005', '--json')) as { alreadyClosed: boolean; created: string | null };
+  assert.deepEqual(replay, { id: '005', from: 'done', to: 'done', alreadyClosed: true, created: null, warnings: [] });
+  assert.equal(readFileSync(closedPath, 'utf8'), closedOnce, 'replayed close does not rewrite the source card');
   const successor = JSON.parse(ok(dir, 'card', 'show', '006', '--json')) as Record<string, unknown>;
   assert.deepEqual(successor['repeat'], { every: 1, unit: 'week', from: 'due' });
+  assert.equal(bf(dir, 'filter', 'rm', 'todo-work').code, 1, 'a filter referenced by a board button cannot be removed');
+});
+
+test('cli: every lazy-automation read stays usable when an archive policy has no archive lane', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'botflow-no-archive-'));
+  ok(dir, 'init', '--name', 'no archive');
+  writeFileSync(join(dir, '.botflow', 'board.yaml'), `botflow: 0
+name: no archive
+features: [automation]
+lanes:
+  - id: todo
+  - id: doing
+  - id: done
+automation:
+  archive_done_after: 1
+`);
+  writeFileSync(join(dir, '.botflow', 'cards', '001-old-done.md'), `---
+id: 001
+title: Old completion
+lane: done
+---
+## Log
+- 2020-01-01 12:00 test-agent: closed, moved doing → done
+`);
+  for (const args of [['board', '--json'], ['prime', '--json'], ['ready', '--json'], ['query', 'state:done', '--json']]) {
+    assert.equal(bf(dir, ...args).code, 0, `botflow ${args.join(' ')} remains a total read`);
+  }
+  const lintResult = bf(dir, 'lint', '--json');
+  assert.equal(lintResult.code, 1, 'the invalid configuration remains visible to lint');
+  const lint = JSON.parse(lintResult.stdout) as { message: string }[];
+  assert.ok(lint.some((finding) => finding.message.includes('archive_done_after requires an archive-canonical lane')));
 });
 
 test('cli: strict substates enforce one step at a time', () => {
@@ -246,14 +282,21 @@ test('cli: rewrites preserve unknown frontmatter keys and body', () => {
   const cardPath = join(dir, '.botflow', 'cards', '001-custom.md');
   writeFileSync(
     cardPath,
-    ['---', 'id: 001', 'title: Custom card', 'lane: todo', 'vendor_estimate: 3d', '---', '## Description', 'Hand-written body.', ''].join('\n'),
+    ['---', 'id: 001', 'title: Custom card', 'lane: todo', 'due: tomorrow', 'estimate: 0', 'vendor_estimate: 3d', '---', '## Description', 'Hand-written body.', ''].join('\n'),
   );
   ok(dir, 'card', 'edit', '001', '--title', 'Custom card v2', '--priority', 'p2');
-  const rewritten = readFileSync(cardPath, 'utf8');
+  let rewritten = readFileSync(cardPath, 'utf8');
   assert.ok(rewritten.includes('vendor_estimate: 3d'), 'unknown key preserved');
+  assert.ok(rewritten.includes('due: tomorrow'), 'invalid known date preserved');
+  assert.ok(rewritten.includes('estimate: 0'), 'invalid known estimate preserved');
   assert.ok(rewritten.includes('Hand-written body.'), 'body preserved');
   assert.ok(rewritten.includes('title: Custom card v2'));
   assert.ok(rewritten.includes('priority: p2'));
+
+  ok(dir, 'card', 'edit', '001', '--due', '2026-08-22', '--estimate', '3');
+  rewritten = readFileSync(cardPath, 'utf8');
+  assert.ok(rewritten.includes('due: 2026-08-22'), 'explicit repair replaces invalid date');
+  assert.ok(rewritten.includes('estimate: 3'), 'explicit repair replaces invalid estimate');
 
   // The unknown key still lints as info, not error.
   const lint = JSON.parse(ok(dir, 'lint', '--json')) as { rule: string; severity: string }[];

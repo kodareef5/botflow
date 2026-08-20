@@ -1,0 +1,6 @@
+botflow: 0
+name: invalid known values
+lanes:
+  - id: todo
+  - id: doing
+  - id: done
