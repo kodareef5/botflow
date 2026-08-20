@@ -1039,6 +1039,64 @@ function addRelation(card: Card, type: CardRelation['type'], target: string): bo
   return true;
 }
 
+function validateRelationHalf(card: Card, type: CardRelation['type'], target: string): void {
+  if (!(RELATION_TYPES as readonly string[]).includes(type)) throw new UsageError(`unknown relation type "${type}"`);
+  const parsed = parseCardReference(target);
+  if (parsed === null) throw new UsageError(`invalid relation target "${target}"`);
+  if (parsed.boardRef === null && parsed.cardId === card.id) throw new UsageError('a card cannot relate to itself');
+}
+
+/** Mutate one idempotent relation half. Cross-board wrappers deliberately
+ * persist the target half before calling this for the source, so an
+ * interrupted request can be replayed to convergence. */
+export function opLinkHalf(card: Card, type: CardRelation['type'], target: string, actor: string): boolean {
+  validateRelationHalf(card, type, target);
+  const changed = addRelation(card, type, target);
+  if (changed) logMutation(card, actor, `linked ${type} ${target}`);
+  return changed;
+}
+
+export function opUnlinkHalf(card: Card, type: CardRelation['type'], target: string, actor: string): boolean {
+  validateRelationHalf(card, type, target);
+  const before = card.relations.length;
+  card.relations = card.relations.filter((relation) => relation.type !== type || relation.target !== target);
+  const changed = card.relations.length !== before;
+  if (changed) logMutation(card, actor, `unlinked ${type} ${target}`);
+  return changed;
+}
+
+export function opLinkPair(
+  source: Card,
+  target: Card,
+  type: CardRelation['type'],
+  sourceTarget: string,
+  targetSource: string,
+  actor: string,
+): { source: Card; target: Card; sourceChanged: boolean; targetChanged: boolean; changed: boolean } {
+  validateRelationHalf(source, type, sourceTarget);
+  const inverse = relationInverse(type);
+  validateRelationHalf(target, inverse, targetSource);
+  const targetChanged = opLinkHalf(target, inverse, targetSource, actor);
+  const sourceChanged = opLinkHalf(source, type, sourceTarget, actor);
+  return { source, target, sourceChanged, targetChanged, changed: sourceChanged || targetChanged };
+}
+
+export function opUnlinkPair(
+  source: Card,
+  target: Card,
+  type: CardRelation['type'],
+  sourceTarget: string,
+  targetSource: string,
+  actor: string,
+): { source: Card; target: Card; sourceChanged: boolean; targetChanged: boolean; changed: boolean } {
+  validateRelationHalf(source, type, sourceTarget);
+  const inverse = relationInverse(type);
+  validateRelationHalf(target, inverse, targetSource);
+  const targetChanged = opUnlinkHalf(target, inverse, targetSource, actor);
+  const sourceChanged = opUnlinkHalf(source, type, sourceTarget, actor);
+  return { source, target, sourceChanged, targetChanged, changed: sourceChanged || targetChanged };
+}
+
 /** Add a same-board relation and its natural inverse. Idempotent. */
 export function opLink(
   board: LoadedBoard,
@@ -1047,16 +1105,10 @@ export function opLink(
   type: CardRelation['type'],
   actor: string,
 ): { source: Card; target: Card; changed: boolean } {
-  if (!(RELATION_TYPES as readonly string[]).includes(type)) throw new UsageError(`unknown relation type "${type}"`);
   if (sourceId === targetId) throw new UsageError('a card cannot relate to itself');
   const source = getCard(board, sourceId);
   const target = getCard(board, targetId);
-  const inverse = relationInverse(type);
-  const sourceChanged = addRelation(source, type, target.id);
-  const targetChanged = addRelation(target, inverse, source.id);
-  if (sourceChanged) logMutation(source, actor, `linked ${type} ${target.id}`);
-  if (targetChanged) logMutation(target, actor, `linked ${inverse} ${source.id}`);
-  return { source, target, changed: sourceChanged || targetChanged };
+  return opLinkPair(source, target, type, target.id, source.id, actor);
 }
 
 /** Remove a same-board relation and its inverse. Idempotent. */
@@ -1067,20 +1119,10 @@ export function opUnlink(
   type: CardRelation['type'],
   actor: string,
 ): { source: Card; target: Card; changed: boolean } {
-  if (!(RELATION_TYPES as readonly string[]).includes(type)) throw new UsageError(`unknown relation type "${type}"`);
   if (sourceId === targetId) throw new UsageError('a card cannot relate to itself');
   const source = getCard(board, sourceId);
   const target = getCard(board, targetId);
-  const inverse = relationInverse(type);
-  const sourceLength = source.relations.length;
-  const targetLength = target.relations.length;
-  source.relations = source.relations.filter((relation) => relation.type !== type || relation.target !== target.id);
-  target.relations = target.relations.filter((relation) => relation.type !== inverse || relation.target !== source.id);
-  const sourceChanged = source.relations.length !== sourceLength;
-  const targetChanged = target.relations.length !== targetLength;
-  if (sourceChanged) logMutation(source, actor, `unlinked ${type} ${target.id}`);
-  if (targetChanged) logMutation(target, actor, `unlinked ${inverse} ${source.id}`);
-  return { source, target, changed: sourceChanged || targetChanged };
+  return opUnlinkPair(source, target, type, target.id, source.id, actor);
 }
 
 export interface PromoteOptions {

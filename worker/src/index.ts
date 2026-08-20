@@ -999,7 +999,7 @@ export default {
           return json(res);
         }
       }
-      const keyOne = /^\/api\/keys\/([^/]+)(\/revoke)?$/.exec(url.pathname);
+      const keyOne = /^\/api\/keys\/([^/]+)(?:\/(revoke|replace))?$/.exec(url.pathname);
       if (keyOne && (req.method === 'POST' || req.method === 'PATCH')) {
         const kid = keyOne[1]!;
         const owner = await registry.keyOwner(kid);
@@ -1008,12 +1008,18 @@ export default {
           const denied = requireOwner();
           if (denied) return denied;
         }
-        if (keyOne[2] === '/revoke') {
+        if (req.method === 'POST' && keyOne[2] === 'revoke') {
           const res = await registry.revokeKey(kid);
           await registry.audit(actor, 'revoke-key', kid);
           return json(res);
         }
-        if (req.method === 'PATCH') {
+        if (req.method === 'POST' && keyOne[2] === 'replace') {
+          const res = await registry.replaceKey(kid);
+          if ('error' in res) return json(res, 400);
+          await registry.audit(actor, 'replace-key', `${kid} → ${res.id}`);
+          return json(res);
+        }
+        if (req.method === 'PATCH' && keyOne[2] === undefined) {
           const body = (await req.json().catch(() => ({}))) as { label?: unknown };
           const res = await registry.renameKey(kid, body.label);
           if ('error' in res) return json(res, 400);
@@ -1209,8 +1215,11 @@ export default {
         return 'error' in res ? json(res, 400) : json(res);
       }
       if (req.method === 'GET' && rest === '/events') {
-        const limit = limitParam(url.searchParams.get('limit'));
-        return json(await stub.listEvents(limit));
+        const rawBefore = url.searchParams.get('before');
+        const before = rawBefore === null ? null : Number(rawBefore);
+        if (before !== null && (!Number.isSafeInteger(before) || before < 1)) return json({ error: 'before must be a positive integer' }, 400);
+        const limit = Math.min(100, limitParam(url.searchParams.get('limit')));
+        return json(await stub.listEvents(limit, before));
       }
       if (rest === '/webhooks') {
         const denied = requireOwner();
@@ -1621,11 +1630,45 @@ export default {
             if (denied) return json({ error: 'force is an owner override: members coordinate, they do not push through' }, 403);
             await registry.audit(actor, 'force-override', `${action} on ${pid}/${cid}`);
           }
+          if (action === 'link' || action === 'unlink') {
+            const rawTarget = typeof body['target'] === 'string' ? body['target'] : '';
+            const parsed = parseCardReference(rawTarget);
+            if (parsed === null) return json({ error: 'a valid target card ref is required' }, 400);
+            if (parsed.boardRef !== null) {
+              if (!parsed.boardRef.startsWith('project:')) return json({ error: 'hosted cross-project refs use project:<id>#<card-id>' }, 400);
+              const targetProject = parsed.boardRef.slice('project:'.length);
+              if (targetProject === pid) {
+                body['target'] = parsed.cardId;
+              } else {
+                if (targetProject === '' || !(await registry.reaches(identity, targetProject))) {
+                  return json({ error: 'target project is outside your scope' }, 403);
+                }
+                const descendant = await registry.isWithin(targetProject, pid);
+                const inverseSide = action === 'unlink' && await registry.isWithin(pid, targetProject);
+                if (!descendant && !inverseSide) {
+                  return json({ error: 'relation target must be a descendant project (an authorized inverse may be unlinked from either side)' }, 400);
+                }
+                const source = await stub.relationSource(cid);
+                if ('error' in source) return json(source, 400);
+                const type = String(body['type'] ?? '') as Parameters<ProjectDO['receiveRelation']>[3];
+                const unlink = action === 'unlink';
+                const received = await project(targetProject).receiveRelation(pid, cid, parsed.cardId, type, actor, unlink);
+                if ('error' in received) return json(received, 400);
+                const completed = await stub.completeRelation(cid, targetProject, parsed.cardId, type, actor, unlink);
+                if ('error' in completed) {
+                  return json({ error: `${completed.error}; target half converged safely — retry to finish`, target: parsed.cardId, recoverable: true }, 409);
+                }
+                const changed = received['changed'] === true || completed['changed'] === true;
+                if (changed) await registry.audit(actor, `${action}-card`, `${pid}/${cid} ${type} project:${targetProject}#${parsed.cardId}`);
+                return json({ source: cid, target: `project:${targetProject}#${parsed.cardId}`, targetId: parsed.cardId, project: targetProject, type, changed });
+              }
+            }
+          }
           if (action === 'transfer') {
             const target = typeof body['target'] === 'string' ? body['target'] : '';
             const move = body['move'] === true;
             const lane = typeof body['lane'] === 'string' && body['lane'] !== '' ? body['lane'] : null;
-            if (target === '' || target === pid || (await registry.projectName(target)) === null) return json({ error: 'a different target project is required' }, 400);
+            if (target === '' || target === pid) return json({ error: 'a different target project is required' }, 400);
             if (!(await registry.reaches(identity, target))) return json({ error: 'target project is outside your scope' }, 403);
             // Persisted cross-project refs must remain safe for every future
             // reader of this board, including identities scoped below it.

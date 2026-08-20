@@ -19,6 +19,8 @@ test('mcp: handshake, tools/list, lifecycle via tools/call', async () => {
   const targetDir = join(dir, '.botflow', 'child');
   const initTarget = spawnSync(process.execPath, [ENTRY, 'init', '--name', 'mcp-child', '--dir', targetDir], { encoding: 'utf8' });
   assert.equal(initTarget.status, 0, initTarget.stderr);
+  const targetCard = spawnSync(process.execPath, [ENTRY, 'card', 'add', 'Cross-board target', '--board', targetDir], { encoding: 'utf8' });
+  assert.equal(targetCard.status, 0, targetCard.stderr);
   writeFileSync(join(dir, '.botflow', 'board.yaml'), `botflow: 0
 name: mcp-board
 features: [scoped-labels, custom-fields, cover-colors, relations, templates, automation, named-blockers]
@@ -214,6 +216,12 @@ lanes:
     const canonicalId = (JSON.parse(canonical.text) as { id: string }).id;
     assert.equal((await callTool('card_link', { id: templatedId, target: canonicalId, type: 'relates' })).isError, false);
     assert.equal((await callTool('card_unlink', { id: templatedId, target: canonicalId, type: 'relates' })).isError, false);
+    const crossLinked = await callTool('card_link', { id: templatedId, target: 'child#001', type: 'parent' });
+    assert.equal(crossLinked.isError, false);
+    assert.equal((JSON.parse(crossLinked.text) as { target: string }).target, 'child/.botflow#001');
+    assert.equal((await callTool('card_link', { id: templatedId, target: 'child#001', type: 'parent' })).isError, false,
+      'cross-board link replay is idempotent');
+    assert.equal((await callTool('card_unlink', { id: templatedId, target: 'child#001', type: 'parent' })).isError, false);
 
     const quick = await callTool('card_quick_add', { text: 'Quick MCP *batch\n  Quick child !p2' });
     assert.equal(quick.isError, false);
@@ -231,7 +239,7 @@ lanes:
 
     const transferred = await callTool('card_transfer', { id: templatedId, target_board: targetDir });
     assert.equal(transferred.isError, false);
-    assert.equal((JSON.parse(transferred.text) as { target: string }).target, '001');
+    assert.equal((JSON.parse(transferred.text) as { target: string }).target, '002');
     const linted = JSON.parse((await callTool('lint', {})).text) as { severity: string }[];
     assert.equal(linted.some((finding) => finding.severity === 'error'), false);
     assert.ok(promotedId, 'promoted relation target remains part of the source tree');

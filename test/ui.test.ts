@@ -53,6 +53,21 @@ test('ui: company activity is fetched in cursor-paginated pages', () => {
   assert.doesNotMatch(app, /\/api\/org\/activity\?limit=50/, 'settings no longer loads its activity history in one batch');
 });
 
+test('ui: project and integration histories have bounded cursor pages in both directions', () => {
+  const app = scripts.join('\n');
+  assert.match(app, /const PROJECT_EVENT_PAGE_SIZE=50/);
+  assert.match(app, /\/events\?limit='\+\(PROJECT_EVENT_PAGE_SIZE\+1\)\+cursor/,
+    'project activity fetches one bounded page plus a sentinel');
+  for (const control of [
+    'data-event-prev', 'data-event-next',
+    'data-delivery-prev', 'data-delivery-next',
+    'data-outbox-prev', 'data-outbox-next', 'data-emailhistory',
+  ]) assert.ok(app.includes(control), `${control} is wired`);
+  assert.doesNotMatch(app, /\/events\?limit=200/, 'the old fixed project-event batch is gone');
+  assert.doesNotMatch(app, /webhookDeliveriesModal\(hook,Number/,
+    'older webhook pages reuse one dialog and retain their newer-page stack');
+});
+
 // ---- a minimal DOM for the reconciler ----
 type Attr = { name: string; value: string };
 class MiniNode {
@@ -413,6 +428,14 @@ test('ui: owners can administer hardened webhook and email integrations', () => 
   assert.match(app, /SPF\/DKIM/, 'provider responsibility is visible, not hidden in implementation notes');
 });
 
+test('ui: relation authoring offers the current project and authorized descendants', () => {
+  const app = scripts.join('\n');
+  assert.match(app, /projects=\[\{id:SEL,name:\(here&&here\.name\)\|\|'this project'\}\]\.concat\(handoffTargets\(\)\)/);
+  assert.match(app, /const target=d\.project===SEL\?d\.target:'project:'\+d\.project\+'#'\+d\.target/);
+  assert.match(app, /JSON\.stringify\(\{target,type:d\.type\}\)/);
+  assert.match(app, /data-unlinkcard/);
+});
+
 test('ui: a link preview can become cover art without overriding cover: none', () => {
   const app = scripts.join('\n');
   // cover is null both when art is suppressed and when there simply is none,
@@ -544,14 +567,19 @@ test('ui: the member directory consumes the flat identity scope contract', () =>
   const bot = memberRow({ ...common, memberId: 'm-bot', kind: 'bot' });
   const human = memberRow({ ...common, memberId: 'm-human', kind: 'human' });
   assert.match(bot, /data-keym="m-bot"/, 'owners get an explicit key action for bots');
-  assert.match(bot, /aria-label="create API key for agent"/);
+  assert.match(bot, /aria-label="manage API keys for agent"/);
   assert.doesNotMatch(human, /data-keym=/, 'human accounts keep key creation in their own account panel');
 
   const app = scripts.join('\n');
-  assert.match(app, /api\('\/api\/keys\?member='\+encodeURIComponent\(m\.memberId\),\{method:'POST'/,
+  assert.match(app, /const endpoint='\/api\/keys\?member='\+encodeURIComponent\(m\.memberId\)/);
+  assert.match(app, /api\(endpoint,\{method:'POST'/,
     'the bot key flow provisions the selected member, not the logged-in owner');
+  for (const control of ['data-renbotkey', 'data-repbotkey', 'data-revbotkey']) {
+    assert.ok(app.includes(control), `${control} is available to an owner managing a bot`);
+  }
+  assert.match(app, /\/replace',\{method:'POST'/, 'key replacement has a first-class API action');
   assert.match(app, /The bot does not need to log in/);
-  assert.match(app, /Copy this key now\. It is never shown again/);
+  assert.match(app, /It is never shown again/);
 });
 
 test('ui: a card can be moved without a pointer', () => {

@@ -15,7 +15,7 @@ import { boardJson, cardDetailJson, cardJson } from '../../src/core/json.ts';
 import { parseBody } from '../../src/core/body.ts';
 import type { BoardAnalysis } from '../../src/core/analyze.ts';
 import type { BoardNode, Canonical, Card, Finding, Lane, LoadedBoard } from '../../src/core/model.ts';
-import { SLUG_RE, defaultRollup, isCanonical } from '../../src/core/model.ts';
+import { RELATION_TYPES, SLUG_RE, defaultRollup, isCanonical } from '../../src/core/model.ts';
 import {
   emitBoardYaml,
   parseAutomation,
@@ -30,7 +30,7 @@ import {
 } from '../../src/core/config.ts';
 import type { YamlValue } from '../../src/core/yaml.ts';
 import { validCustomFieldValue } from '../../src/core/presentation.ts';
-import { parseCardReference } from '../../src/core/refs.ts';
+import { parseCardReference, relationInverse } from '../../src/core/refs.ts';
 import {
   ClaimConflict,
   UsageError,
@@ -50,7 +50,9 @@ import {
   opEdit,
   opLog,
   opLink,
+  opLinkHalf,
   opUnlink,
+  opUnlinkHalf,
   opPromote,
   opMergeDuplicates,
   opQuickAdd,
@@ -980,25 +982,24 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
 
   /** Resolve hosted dependency/relation refs without exposing arbitrary
    * projects through a board visible to a narrower identity. State-bearing
-   * refs may point only down the hierarchy. The copied-from half of a transfer
-   * may retain its ancestor as opaque provenance, but we deliberately do not
-   * ask that ancestor whether the card exists. */
+   * refs may point only down the hierarchy. An inverse relation written on a
+   * descendant may retain its ancestor as an opaque endpoint, but we
+   * deliberately do not ask that ancestor whether the card exists. */
   private async resolveReferences(board: LoadedBoard, visited: string[]): Promise<Map<string, ExternalReference | null>> {
     const references = new Map<string, ExternalReference | null>();
     const chain = [...visited, this.selfId()];
-    const wanted = new Map<string, { stateBearing: boolean; copiedFrom: boolean }>();
+    const wanted = new Map<string, { dependency: boolean; relation: boolean }>();
     for (const card of board.cards) {
       for (const dep of card.deps) {
         if (!dep.startsWith(PROJECT_REF)) continue;
-        const use = wanted.get(dep) ?? { stateBearing: false, copiedFrom: false };
-        use.stateBearing = true;
+        const use = wanted.get(dep) ?? { dependency: false, relation: false };
+        use.dependency = true;
         wanted.set(dep, use);
       }
       for (const relation of card.relations) {
         if (!relation.target.startsWith(PROJECT_REF)) continue;
-        const use = wanted.get(relation.target) ?? { stateBearing: false, copiedFrom: false };
-        if (relation.type === 'copied-from') use.copiedFrom = true;
-        else use.stateBearing = true;
+        const use = wanted.get(relation.target) ?? { dependency: false, relation: false };
+        use.relation = true;
         wanted.set(relation.target, use);
       }
     }
@@ -1016,9 +1017,10 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
         references.set(value, await stub.referenceState(parsed.cardId, chain));
         return;
       }
-      // Only a pure copied-from use gets the opaque ancestor treatment. If
-      // the same ref is also a dependency or another relation, it fails closed.
-      if (!use.stateBearing && use.copiedFrom && await registry.isWithin(this.selfId(), pid)) {
+      // A relation-only ancestor ref is displayable but never resolved. If
+      // the same ref is also a dependency it remains state-bearing and fails
+      // closed, regardless of relation type.
+      if (!use.dependency && use.relation && await registry.isWithin(this.selfId(), pid)) {
         references.set(value, { state: null });
       } else {
         references.set(value, null);
@@ -1126,6 +1128,75 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     if (card === undefined) return { error: `no card "${id}"` };
     const lane = board.config.lanes.find((candidate) => candidate.id === card.laneId);
     return { card, canonical: lane?.canonical ?? 'todo' };
+  }
+
+  /** Source preflight before a remote target half is touched. Cards are not
+   * ordinarily deleted, so a successful check plus target-first idempotent
+   * writes gives a retryable cross-DO relation operation. */
+  relationSource(id: string): { ok: true } | { error: string } {
+    const board = this.loadBoardDocs();
+    if (board.config.mutationBlocked !== null) return { error: `board is read-only: ${board.config.mutationBlocked}` };
+    return board.cards.some((card) => card.id === id) ? { ok: true } : { error: `no card "${id}"` };
+  }
+
+  /** Target half of a cross-project relation. It is deliberately independent
+   * of the source DO so a timeout after commit can be replayed safely. */
+  receiveRelation(
+    sourceProject: string,
+    sourceId: string,
+    targetId: string,
+    type: Card['relations'][number]['type'],
+    actor: string,
+    unlink: boolean,
+  ): ActionResult {
+    try {
+      if (!(RELATION_TYPES as readonly string[]).includes(type)) throw new UsageError(`unknown relation type "${type}"`);
+      const board = this.loadBoardDocs();
+      if (board.config.mutationBlocked !== null) throw new UsageError(`board is read-only: ${board.config.mutationBlocked}`);
+      const target = getCard(board, targetId);
+      const inverse = relationInverse(type);
+      const sourceRef = `project:${sourceProject}#${sourceId}`;
+      const changed = unlink
+        ? opUnlinkHalf(target, inverse, sourceRef, actor)
+        : opLinkHalf(target, inverse, sourceRef, actor);
+      if (changed) {
+        this.persistCard(target);
+        this.event(actor, unlink ? 'unlink' : 'link', targetId, `${inverse} ${sourceRef}`);
+      }
+      return { id: targetId, changed };
+    } catch (err) {
+      if (err instanceof UsageError) return { error: err.message };
+      throw err;
+    }
+  }
+
+  /** Source half, called only after receiveRelation committed or confirmed
+   * its target half. */
+  completeRelation(
+    id: string,
+    targetProject: string,
+    targetId: string,
+    type: Card['relations'][number]['type'],
+    actor: string,
+    unlink: boolean,
+  ): ActionResult {
+    try {
+      const board = this.loadBoardDocs();
+      if (board.config.mutationBlocked !== null) throw new UsageError(`board is read-only: ${board.config.mutationBlocked}`);
+      const source = getCard(board, id);
+      const targetRef = `project:${targetProject}#${targetId}`;
+      const changed = unlink
+        ? opUnlinkHalf(source, type, targetRef, actor)
+        : opLinkHalf(source, type, targetRef, actor);
+      if (changed) {
+        this.persistCard(source);
+        this.event(actor, unlink ? 'unlink' : 'link', id, `${type} ${targetRef}`);
+      }
+      return { id, target: targetId, changed };
+    } catch (err) {
+      if (err instanceof UsageError) return { error: err.message };
+      throw err;
+    }
   }
 
   /** Idempotent target half of a cross-DO transfer. */
@@ -2181,10 +2252,11 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     return { removed: doomed.length };
   }
 
-  listEvents(limit: number): AuditEvent[] {
-    return this.sql
-      .exec('SELECT seq, ts, actor, action, card_id, detail FROM events ORDER BY seq DESC LIMIT ?', limit)
-      .toArray() as unknown as AuditEvent[];
+  listEvents(limit: number, before: number | null = null): AuditEvent[] {
+    return (before === null
+      ? this.sql.exec('SELECT seq, ts, actor, action, card_id, detail FROM events ORDER BY seq DESC LIMIT ?', limit)
+      : this.sql.exec('SELECT seq, ts, actor, action, card_id, detail FROM events WHERE seq < ? ORDER BY seq DESC LIMIT ?', before, limit)
+    ).toArray() as unknown as AuditEvent[];
   }
 
   /** Apply capability scope in SQLite before LIMIT. Filtering a newest-first

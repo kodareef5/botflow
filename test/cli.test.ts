@@ -451,6 +451,16 @@ lanes:
   assert.equal(moved.moved, true);
   shown = JSON.parse(ok(dir, 'card', 'show', '002', '--json')) as Record<string, unknown>;
   assert.equal(shown['state'], 'archive', 'move-to retires the source only after the target write succeeds');
+  const crossLinked = JSON.parse(ok(dir, 'card', 'link', '003', 'child#001', '--type', 'parent', '--json')) as {
+    target: string; targetId: string; changed: boolean;
+  };
+  assert.equal(crossLinked.target, 'child/.botflow#001');
+  assert.equal(crossLinked.targetId, '001');
+  assert.equal(crossLinked.changed, true);
+  assert.equal((JSON.parse(ok(child, 'card', 'show', '001', '--json')) as { relations: { type: string; target: string }[] }).relations
+    .some((relation) => relation.type === 'subtask' && relation.target === '../..#003'), true);
+  assert.equal((JSON.parse(ok(dir, 'card', 'link', '003', 'child#001', '--type', 'parent', '--json')) as { changed: boolean }).changed, false);
+  assert.equal((JSON.parse(ok(dir, 'card', 'unlink', '003', 'child#001', '--type', 'parent', '--json')) as { changed: boolean }).changed, true);
   const rootLint = bf(dir, 'lint');
   assert.equal(rootLint.code, 0, rootLint.stderr || rootLint.stdout);
 });

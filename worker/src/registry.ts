@@ -1212,6 +1212,35 @@ export class RegistryDO extends DurableObject {
     return { id, token, label: named };
   }
 
+  /** Mint a successor and revoke the old credential in one SQLite
+   * transaction. The old label carries forward so clients can replace a
+   * deployed secret without quietly changing its operator-facing identity. */
+  async replaceKey(id: string): Promise<{ id: string; token: string; label: string; replaced: string } | { error: string }> {
+    const row = this.sql.exec('SELECT member_id, label, revoked FROM member_keys WHERE id = ?', id).toArray()[0];
+    if (!row) return { error: `no key ${id}` };
+    if (row['revoked'] === 1) return { error: `key ${id} is already revoked` };
+    const token = randomToken('bfk');
+    const replacementId = `k-${shortId()}`;
+    const hash = await sha256hex(token);
+    const created = new Date().toISOString();
+    let label: string | null = null;
+    this.ctx.storage.transactionSync(() => {
+      // A crypto await yields the DO. Re-check under the SQLite transaction
+      // so two concurrent replacements cannot both succeed.
+      const current = this.sql.exec('SELECT member_id, label, revoked FROM member_keys WHERE id = ?', id).toArray()[0];
+      if (!current || current['revoked'] === 1) return;
+      label = String(current['label']);
+      this.sql.exec(
+        'INSERT INTO member_keys(id, hash, member_id, label, created) VALUES (?, ?, ?, ?, ?)',
+        replacementId, hash, current['member_id'], label, created,
+      );
+      this.sql.exec('UPDATE member_keys SET revoked = 1 WHERE id = ?', id);
+    });
+    if (label === null) return { error: `key ${id} is already revoked` };
+    this.basicCache.clear();
+    return { id: replacementId, token, label, replaced: id };
+  }
+
   listKeys(memberId: string): { id: string; label: string; created: string; lastUsed: string | null; revoked: boolean }[] {
     return this.sql
       .exec('SELECT id, label, created, last_used, revoked FROM member_keys WHERE member_id = ? ORDER BY created', memberId)
@@ -1243,6 +1272,7 @@ export class RegistryDO extends DurableObject {
 
   revokeKey(id: string): { ok: boolean } {
     this.sql.exec('UPDATE member_keys SET revoked = 1 WHERE id = ?', id);
+    this.basicCache.clear();
     return { ok: true };
   }
 }

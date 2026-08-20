@@ -36,7 +36,9 @@ import {
   opSubscribeLane,
   opSnooze,
   opLink,
+  opLinkPair,
   opUnlink,
+  opUnlinkPair,
   opPromote,
   opMergeDuplicates,
   opQuickAdd,
@@ -177,26 +179,75 @@ export function addCard(root: string, opts: AddOptions): Card {
   });
 }
 
-export function linkCards(root: string, sourceId: string, targetId: string, type: Card['relations'][number]['type'], actor: string): { source: Card; target: Card; changed: boolean } {
-  return mutateCard(root, (board) => {
-    const result = opLink(board, sourceId, targetId, type, actor);
-    if (result.changed) {
-      writeCard(root, result.source);
-      writeCard(root, result.target);
-    }
-    return result;
+export interface RelationMutationResult {
+  source: Card;
+  target: Card;
+  changed: boolean;
+  sourceRoot: string;
+  targetRoot: string;
+  targetRef: string;
+}
+
+function mutateRelation(
+  rootValue: string,
+  sourceId: string,
+  targetValue: string,
+  type: Card['relations'][number]['type'],
+  actor: string,
+  unlink: boolean,
+): RelationMutationResult {
+  const parsed = parseCardReference(targetValue);
+  if (parsed === null) throw new UsageError(`invalid relation target "${targetValue}"`);
+  const sourceRoot = resolveBoardRoot(rootValue) ?? resolve(rootValue);
+  if (parsed.boardRef === null) {
+    return mutateCard(sourceRoot, (board) => {
+      const result = unlink
+        ? opUnlink(board, sourceId, parsed.cardId, type, actor)
+        : opLink(board, sourceId, parsed.cardId, type, actor);
+      if (result.changed) {
+        writeCard(sourceRoot, result.source);
+        writeCard(sourceRoot, result.target);
+      }
+      return { ...result, sourceRoot, targetRoot: sourceRoot, targetRef: parsed.cardId };
+    });
+  }
+  if (parsed.boardRef.startsWith('project:')) throw new UsageError('local relation targets use a relative board ref, not project:');
+  const targetRoot = resolveBoardRoot(resolve(sourceRoot, parsed.boardRef));
+  if (targetRoot === null) throw new UsageError(`no target board at ${parsed.boardRef}`);
+  if (resolve(sourceRoot) === resolve(targetRoot)) {
+    return mutateRelation(sourceRoot, sourceId, parsed.cardId, type, actor, unlink);
+  }
+  const targetPath = relative(sourceRoot, targetRoot);
+  if (targetPath === '..' || targetPath.startsWith(`..${sep}`)) {
+    throw new UsageError('relation target board must be nested inside the source project tree');
+  }
+  return withBoardLocks([sourceRoot, targetRoot], () => {
+    const sourceBoard = loadBoard(sourceRoot);
+    const targetBoard = loadBoard(targetRoot);
+    if (sourceBoard.config.mutationBlocked !== null) throw new UsageError(`source board is read-only: ${sourceBoard.config.mutationBlocked}`);
+    if (targetBoard.config.mutationBlocked !== null) throw new UsageError(`target board is read-only: ${targetBoard.config.mutationBlocked}`);
+    const source = getCard(sourceBoard, sourceId);
+    const target = getCard(targetBoard, parsed.cardId);
+    const targetRef = cardReference(sourceRoot, targetRoot, target.id);
+    const sourceRef = cardReference(targetRoot, sourceRoot, source.id);
+    const result = unlink
+      ? opUnlinkPair(source, target, type, targetRef, sourceRef, actor)
+      : opLinkPair(source, target, type, targetRef, sourceRef, actor);
+    // Target first is the recovery boundary. If the source write is
+    // interrupted, replay sees the idempotent inverse and completes only the
+    // missing source half.
+    if (result.targetChanged) writeCard(targetRoot, result.target);
+    if (result.sourceChanged) writeCard(sourceRoot, result.source);
+    return { ...result, sourceRoot, targetRoot, targetRef };
   });
 }
 
-export function unlinkCards(root: string, sourceId: string, targetId: string, type: Card['relations'][number]['type'], actor: string): { source: Card; target: Card; changed: boolean } {
-  return mutateCard(root, (board) => {
-    const result = opUnlink(board, sourceId, targetId, type, actor);
-    if (result.changed) {
-      writeCard(root, result.source);
-      writeCard(root, result.target);
-    }
-    return result;
-  });
+export function linkCards(root: string, sourceId: string, target: string, type: Card['relations'][number]['type'], actor: string): RelationMutationResult {
+  return mutateRelation(root, sourceId, target, type, actor, false);
+}
+
+export function unlinkCards(root: string, sourceId: string, target: string, type: Card['relations'][number]['type'], actor: string): RelationMutationResult {
+  return mutateRelation(root, sourceId, target, type, actor, true);
 }
 
 export function promoteCard(root: string, id: string, index: number, actor: string, overrides: PromoteOptions = {}): { source: Card; promoted: Card; item: string } {

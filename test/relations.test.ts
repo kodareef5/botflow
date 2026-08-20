@@ -23,7 +23,7 @@ import {
 } from '../src/core/ops.ts';
 import { parseCardReference, resolveTreeCardReference, textCardReferences } from '../src/core/refs.ts';
 import { loadBoard, loadTree } from '../src/core/load.ts';
-import { transferCard } from '../src/core/mutate.ts';
+import { linkCards, transferCard, unlinkCards } from '../src/core/mutate.ts';
 
 const CONFIG = `botflow: 0
 name: operations
@@ -301,6 +301,47 @@ test('cross-board copy rebases references and replay converges; move retires sou
   mkdirSync(join(sibling, 'cards'), { recursive: true });
   writeFileSync(join(sibling, 'board.yaml'), CONFIG);
   assert.throws(() => transferCard(root, sibling, '001', 'dev'), /nested inside the source project tree/);
+});
+
+test('cross-board relation halves are target-first, idempotent, and descendant-scoped', () => {
+  const root = mkdtempSync(join(tmpdir(), 'botflow-cross-relation-'));
+  const childDir = join(root, 'child');
+  const childRoot = join(childDir, '.botflow');
+  mkdirSync(join(root, 'cards'), { recursive: true });
+  mkdirSync(join(childRoot, 'cards'), { recursive: true });
+  writeFileSync(join(root, 'board.yaml'), CONFIG);
+  writeFileSync(join(childRoot, 'board.yaml'), CONFIG.replace('name: operations', 'name: child'));
+  writeFileSync(join(root, doc('001', 'Parent source').path), doc('001', 'Parent source').text);
+  const target = doc('001', 'Child target');
+  // Simulate interruption after the target half committed. The public
+  // wrapper must add only the missing source half on retry.
+  target.text = target.text.replace(
+    'lane: todo\n',
+    'lane: todo\nrelations:\n  - type: subtask\n    target: "../..#001"\n',
+  );
+  writeFileSync(join(childRoot, target.path), target.text);
+
+  const linked = linkCards(root, '001', 'child#001', 'parent', 'dev');
+  assert.equal(linked.changed, true);
+  assert.equal(linked.targetRef, 'child/.botflow#001');
+  const sourceAfter = loadBoard(root).cards[0]!;
+  const targetAfter = loadBoard(childRoot).cards[0]!;
+  assert.equal(sourceAfter.relations.filter((relation) => relation.type === 'parent' && relation.target === 'child/.botflow#001').length, 1);
+  assert.equal(targetAfter.relations.filter((relation) => relation.type === 'subtask' && relation.target === '../..#001').length, 1,
+    'retry does not duplicate the already-committed inverse');
+  assert.equal(linkCards(root, '001', 'child#001', 'parent', 'dev').changed, false, 'a complete replay is a no-op');
+
+  const unlinked = unlinkCards(root, '001', 'child#001', 'parent', 'dev');
+  assert.equal(unlinked.changed, true);
+  assert.deepEqual(loadBoard(root).cards[0]!.relations, []);
+  assert.deepEqual(loadBoard(childRoot).cards[0]!.relations, []);
+  assert.equal(unlinkCards(root, '001', 'child#001', 'parent', 'dev').changed, false);
+
+  const sibling = mkdtempSync(join(tmpdir(), 'botflow-cross-relation-sibling-'));
+  mkdirSync(join(sibling, 'cards'), { recursive: true });
+  writeFileSync(join(sibling, 'board.yaml'), CONFIG);
+  writeFileSync(join(sibling, doc('001', 'Sibling').path), doc('001', 'Sibling').text);
+  assert.throws(() => linkCards(root, '001', `${sibling}#001`, 'relates', 'dev'), /nested inside the source project tree/);
 });
 
 test('transfer validates destination blocker registry before touching either half', () => {

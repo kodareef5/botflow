@@ -98,6 +98,7 @@ templates:
 botflow card add "Login crash" --template bug
 botflow card promote 012 2                       # checklist item → related card
 botflow card link 012 019 --type relates         # writes the inverse too
+botflow card link 012 'child#004' --type parent  # descendant board, target half first
 botflow card merge 021 019                       # transfer attachments, archive duplicate
 botflow card quick $'API *backend !p1\n  contract tests ^3'
 botflow card bulk 012,019 mv doing
@@ -110,11 +111,15 @@ Quick-add recognizes `*label`, `@assignee`, `!p0`–`!p3`, `today`,
 links, while quotes keep tokens literal. Typed relations are `relates`,
 `duplicates`/`supersedes`, `parent`/`subtask`, and
 `copied-from`/`copied-to`. Dependencies appear as active blocking edges and
-degrade to resolved related edges when their target completes. Local and hosted
-boards draw same-board edges as directional SVG connectors. Filesystem and
-hosted transfers are replay-safe and target descendant boards only, keeping
-every persisted cross-board reference inside the loaded project tree. In the
-manager, nested boards also appear as “wormhole” drop targets while dragging.
+degrade to resolved related edges when their target completes. Link/unlink accepts
+a same-board id or a descendant-board card ref and writes the inverse target half
+first, so retry converges after interruption. Hosted refs use
+`project:<project-id>#<card-id>`; the manager's link dialog lists only the current
+project and authorized descendants. Local and hosted boards draw same-board edges
+as directional SVG connectors. Filesystem and hosted transfers are likewise
+replay-safe and target descendant boards only, keeping every persisted cross-board
+reference inside the loaded project tree. In the manager, nested boards also appear
+as “wormhole” drop targets while dragging.
 
 ### Search, collaboration, and feeds
 
@@ -341,8 +346,10 @@ A member holds a password and, optionally, any number of **api keys**. A key car
 member's identity and scope and can be revoked on its own, which is what makes it the right
 credential for CI. A key's label ("laptop", "CI runner") is a note to yourself, not an
 identity: unnamed keys name themselves `api key #1`, `#2`, and so on, and renaming one changes
-nothing on any board. An owner can mint a bot's key directly from **Settings → Members → + key**;
-the secret is shown once, so the owner never has to sign in as the bot.
+nothing on any board. An owner can manage a bot's keys directly from
+**Settings → Members → keys**: list labels and usage dates, mint, rename, revoke, or
+atomically replace a credential. A minted or replacement secret is shown once; token
+material is never returned by later listings, so the owner never has to sign in as the bot.
 
 So a bot can authenticate three ways, all resolving to the same identity:
 

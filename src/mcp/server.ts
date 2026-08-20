@@ -344,24 +344,24 @@ function buildTools(root: string, defaultActor: string): Tool[] {
     },
     {
       name: 'card_link',
-      description: 'Create a typed same-board relation and its natural inverse.',
+      description: 'Create a typed relation and its natural inverse. target may be a same-board id or a descendant-board card ref.',
       inputSchema: schema(['id', 'target', 'type'], { id: str, target: str, type: { type: 'string', enum: RELATIONS }, actor: str }),
       run: (args) => {
         const type = strOf(args['type'], 'type');
         if (!(RELATIONS as readonly string[]).includes(type)) throw new UsageError(`invalid relation type "${type}"`);
         const result = linkCards(root, strOf(args['id'], 'id'), strOf(args['target'], 'target'), type as typeof RELATIONS[number], actorOf(args));
-        return { id: result.source.id, target: result.target.id, type, changed: result.changed };
+        return { id: result.source.id, target: result.targetRef, targetId: result.target.id, targetBoard: result.targetRoot, type, changed: result.changed };
       },
     },
     {
       name: 'card_unlink',
-      description: 'Remove a typed same-board relation and its natural inverse.',
+      description: 'Remove a typed relation and its natural inverse. target may be a same-board id or a descendant-board card ref.',
       inputSchema: schema(['id', 'target', 'type'], { id: str, target: str, type: { type: 'string', enum: RELATIONS }, actor: str }),
       run: (args) => {
         const type = strOf(args['type'], 'type');
         if (!(RELATIONS as readonly string[]).includes(type)) throw new UsageError(`invalid relation type "${type}"`);
         const result = unlinkCards(root, strOf(args['id'], 'id'), strOf(args['target'], 'target'), type as typeof RELATIONS[number], actorOf(args));
-        return { id: result.source.id, target: result.target.id, type, changed: result.changed };
+        return { id: result.source.id, target: result.targetRef, targetId: result.target.id, targetBoard: result.targetRoot, type, changed: result.changed };
       },
     },
     {

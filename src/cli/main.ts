@@ -122,8 +122,8 @@ usage: botflow <command> [args]
   card item <id> <text…> [--section s]  add an unchecked checklist task
   card check <id> <n> [--off]           check/uncheck checklist item n (1-based)
   card promote <id> <n> [--lane l]      turn checklist item n into a related card
-  card link <id> <target> --type <kind> add a typed relation and its inverse
-  card unlink <id> <target> --type <kind>
+  card link <id> <card-ref> --type <kind> add a typed relation and its inverse
+  card unlink <id> <card-ref> --type <kind> same board or descendant board ref
   card merge <duplicate> <canonical>    archive a duplicate and rewire references
   card copy <id> --to-board <path>      copy to a descendant board; rebase references
   card move-to <id> --to-board <path>   safe descendant copy, then archive source
@@ -828,8 +828,8 @@ function runCard(argv: string[]): number {
         ? linkCards(getRoot(values), source, target, type, getActor(values))
         : unlinkCards(getRoot(values), source, target, type, getActor(values));
       values['json']
-        ? emitJson({ source, target, type, changed: result.changed })
-        : out(`${result.changed ? '✓' : '='} ${source} ${sub === 'link' ? 'linked' : 'unlinked'} ${type} ${target}${result.changed ? '' : ' (already)'}`);
+        ? emitJson({ source, target: result.targetRef, targetId: result.target.id, targetBoard: result.targetRoot, type, changed: result.changed })
+        : out(`${result.changed ? '✓' : '='} ${source} ${sub === 'link' ? 'linked' : 'unlinked'} ${type} ${result.targetRef}${result.changed ? '' : ' (already)'}`);
       return 0;
     }
     case 'merge': {

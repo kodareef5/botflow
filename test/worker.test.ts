@@ -797,6 +797,17 @@ vendor:
       assert.equal(webhookSite.requests.length, 2, 'manual replay is delivered');
       assert.equal(webhookSite.requests[1]!.body, sent.body, 'replay uses the exact frozen event body');
       assert.notEqual(webhookSite.requests[1]!.headers['x-botflow-delivery'], sent.headers['x-botflow-delivery'], 'replay gets a fresh delivery id');
+      const firstDeliveryPage = (await call(`/api/projects/${parent}/webhooks/${hook.id}/deliveries?limit=1`, { token: admin })).body as {
+        deliveries: { id: string; sequence: number }[]; next: number | null;
+      };
+      assert.equal(firstDeliveryPage.deliveries.length, 1);
+      assert.ok(firstDeliveryPage.next, 'a one-row delivery page advertises its older cursor');
+      const secondDeliveryPage = (await call(`/api/projects/${parent}/webhooks/${hook.id}/deliveries?limit=1&before=${firstDeliveryPage.next}`, { token: admin })).body as {
+        deliveries: { id: string; sequence: number }[]; next: number | null;
+      };
+      assert.equal(secondDeliveryPage.deliveries.length, 1);
+      assert.notEqual(secondDeliveryPage.deliveries[0]!.id, firstDeliveryPage.deliveries[0]!.id);
+      assert.ok(secondDeliveryPage.deliveries[0]!.sequence < firstDeliveryPage.deliveries[0]!.sequence);
       const rotated = await call(`/api/projects/${parent}/webhooks/${hook.id}/rotate`, { method: 'POST', token: admin, body: '{}' });
       assert.match(String(rotated.body['secret']), /^bfwhsec_[a-f0-9]{64}$/);
       assert.notEqual(rotated.body['secret'], webhookSecret);
@@ -865,6 +876,18 @@ vendor:
       })).status, 409, 'a stale lease cannot acknowledge twice');
       const outbox = await call(`/api/projects/${parent}/email/outbox?subscription=${subscriptionId}`, { token: admin });
       assert.equal(((outbox.body['messages'] as unknown as { status: string }[])[0]!).status, 'sent');
+      await call(`/api/projects/${parent}/cards`, { method: 'POST', token: admin, body: JSON.stringify({ title: 'Second outbox page' }) });
+      const firstOutboxPage = (await call(`/api/projects/${parent}/email/outbox?subscription=${subscriptionId}&limit=1`, { token: admin })).body as {
+        messages: { id: string; sequence: number }[]; next: number | null;
+      };
+      assert.equal(firstOutboxPage.messages.length, 1);
+      assert.ok(firstOutboxPage.next, 'a one-row outbox page advertises its older cursor');
+      const secondOutboxPage = (await call(`/api/projects/${parent}/email/outbox?subscription=${subscriptionId}&limit=1&before=${firstOutboxPage.next}`, { token: admin })).body as {
+        messages: { id: string; sequence: number }[]; next: number | null;
+      };
+      assert.equal(secondOutboxPage.messages.length, 1);
+      assert.notEqual(secondOutboxPage.messages[0]!.id, firstOutboxPage.messages[0]!.id);
+      assert.ok(secondOutboxPage.messages[0]!.sequence < firstOutboxPage.messages[0]!.sequence);
       assert.equal((await call(`/api/projects/${parent}/email/routes/${route.id}`, { method: 'DELETE', token: admin })).status, 200);
       assert.equal((await call(`/api/email/inbound/${parent}/${inboundToken}`, { method: 'POST', body: JSON.stringify({ ...normalized, messageId: 'provider-message-2' }) })).status, 404,
         'route revocation is immediate');
@@ -882,6 +905,18 @@ vendor:
     assert.equal(authoredParsed.description, 'Written by an agent.');
     assert.deepEqual(authoredParsed.checklists.map((cl) => cl.section), ['Checklist', 'Launch']);
     assert.deepEqual(authored.body['checklist'], { done: 0, total: 2 });
+
+    // Project activity uses an exclusive sequence cursor. An event inserted
+    // after page one cannot leak into page two or duplicate a row.
+    const eventPageOne = (await call(`/api/projects/${parent}/events?limit=3`, { token: admin })).body as unknown as { seq: number }[];
+    assert.equal(eventPageOne.length, 3);
+    const eventCursor = eventPageOne.at(-1)!.seq;
+    await call(`/api/projects/${parent}/cards/002/comment`, { method: 'POST', token: admin, body: JSON.stringify({ message: 'arrived between activity pages' }) });
+    const eventPageTwo = (await call(`/api/projects/${parent}/events?limit=3&before=${eventCursor}`, { token: admin })).body as unknown as { seq: number }[];
+    assert.ok(eventPageTwo.length > 0);
+    assert.ok(eventPageTwo.every((event) => event.seq < eventCursor));
+    assert.deepEqual(eventPageTwo.filter((event) => eventPageOne.some((first) => first.seq === event.seq)), []);
+    assert.equal((await call(`/api/projects/${parent}/events?before=not-a-sequence`, { token: admin })).status, 400);
 
     // ---- the members model: scopes, roles, credential forms, renaming ----
 
@@ -935,9 +970,34 @@ vendor:
     assert.equal(((await call(`/api/whoami`, { token: key })).body)['username'], 'alpha-agent', 'renaming a key does not rename its member');
     const second2 = await call(`/api/keys?member=${botId}`, { method: 'POST', token: admin, body: JSON.stringify({}) });
     assert.equal(second2.body['label'], 'api key #2', 'default key names do not collide after a rename');
+    const oldSecondToken = second2.body['token'] as string;
+    const oldSecondId = second2.body['id'] as string;
+    const replacement = await call(`/api/keys/${oldSecondId}/replace`, { method: 'POST', token: admin });
+    assert.equal(replacement.status, 200);
+    assert.equal(replacement.body['label'], 'api key #2', 'replacement retains the deployed key label');
+    assert.equal((await call('/api/whoami', { token: oldSecondToken })).status, 401, 'replacement atomically revokes the old secret');
+    const replacementToken = replacement.body['token'] as string;
+    assert.equal(((await call('/api/whoami', { token: replacementToken })).body)['username'], 'alpha-agent');
+    const afterReplace = (await call(`/api/keys?member=${botId}`, { token: admin })).body as unknown as {
+      id: string; label: string; revoked: boolean; token?: string;
+    }[];
+    assert.equal(afterReplace.find((item) => item.id === oldSecondId)?.revoked, true);
+    assert.equal(afterReplace.find((item) => item.id === replacement.body['id'])?.revoked, false);
+    assert.equal(afterReplace.some((item) => item.token !== undefined), false, 'key listings never reveal token material');
+    assert.equal((await call(`/api/keys/${oldSecondId}/replace`, { method: 'POST', token: admin })).status, 400, 'a revoked key cannot be replaced again');
+    const replacementId = replacement.body['id'] as string;
+    const competingReplacements = await Promise.all([
+      call(`/api/keys/${replacementId}/replace`, { method: 'POST', token: admin }),
+      call(`/api/keys/${replacementId}/replace`, { method: 'POST', token: admin }),
+    ]);
+    assert.deepEqual(competingReplacements.map((result) => result.status).sort(), [200, 400],
+      'the old-key recheck inside the registry transaction permits exactly one replacement winner');
     assert.equal((await call(`/api/keys?member=${botId}`, { method: 'POST', token: reader, body: JSON.stringify({}) })).status, 403,
       'a non-owner cannot provision a key for another member');
     assert.equal((await call(`/api/keys/${keyId}`, { method: 'PATCH', token: reader, body: JSON.stringify({ label: 'stolen' }) })).status, 403, 'you cannot rename someone else\'s key');
+    assert.equal((await call(`/api/keys/${keyId}/replace`, { method: 'POST', token: reader })).status, 403, 'you cannot replace someone else\'s key');
+    const keyAudit = (await call('/api/org/activity?limit=100', { token: admin })).body as unknown as { action: string; detail: string }[];
+    assert.ok(keyAudit.some((event) => event.action === 'replace-key' && event.detail.includes(oldSecondId)), 'replacement is audited without its secret');
 
     // The bug this whole model exists to fix: a display-name edit must show
     // up on the boards without rewriting one byte of card history.
@@ -1014,6 +1074,39 @@ vendor:
       'the target copied-from link resolves to its ancestor without opening sibling visibility');
     assert.equal((await call(`/api/projects/${childP}/cards/${handoff.body['target'] as string}/close`, { method: 'POST', token: admin, body: '{}' })).status, 200);
 
+    const relationTargetId = handoff.body['target'] as string;
+    const hostedLink = await call(`/api/projects/${parent}/cards/${handoffSourceId}/link`, {
+      method: 'POST', token: admin,
+      body: JSON.stringify({ target: `project:${childP}#${relationTargetId}`, type: 'parent' }),
+    });
+    assert.equal(hostedLink.status, 200, JSON.stringify(hostedLink.body));
+    assert.equal(hostedLink.body['changed'], true);
+    const hostedLinkReplay = await call(`/api/projects/${parent}/cards/${handoffSourceId}/link`, {
+      method: 'POST', token: admin,
+      body: JSON.stringify({ target: `project:${childP}#${relationTargetId}`, type: 'parent' }),
+    });
+    assert.equal(hostedLinkReplay.status, 200);
+    assert.equal(hostedLinkReplay.body['changed'], false, 'cross-project link replay changes neither half');
+    const linkedSource = (await call(`/api/projects/${parent}/cards/${handoffSourceId}`, { token: admin })).body as {
+      relations: { type: string; target: string }[];
+    };
+    const linkedTarget = (await call(`/api/projects/${childP}/cards/${relationTargetId}`, { token: admin })).body as {
+      relations: { type: string; target: string }[];
+    };
+    assert.ok(linkedSource.relations.some((relation) => relation.type === 'parent' && relation.target === `project:${childP}#${relationTargetId}`));
+    assert.ok(linkedTarget.relations.some((relation) => relation.type === 'subtask' && relation.target === `project:${parent}#${handoffSourceId}`));
+    const linkedChildBoard = (await call(`/api/projects/${childP}/board`, { token: admin })).body as { findings: { rule: string; ref: string }[] };
+    assert.equal(linkedChildBoard.findings.some((finding) => finding.rule === 'dangling-relation' && finding.ref === relationTargetId), false,
+      'authorized inverse relation stays visible as an opaque ancestor endpoint');
+    const inverseUnlink = await call(`/api/projects/${childP}/cards/${relationTargetId}/unlink`, {
+      method: 'POST', token: admin,
+      body: JSON.stringify({ target: `project:${parent}#${handoffSourceId}`, type: 'subtask' }),
+    });
+    assert.equal(inverseUnlink.status, 200, JSON.stringify(inverseUnlink.body));
+    assert.equal(inverseUnlink.body['changed'], true, 'an owner can remove the inverse from either project view');
+    assert.equal(((await call(`/api/projects/${parent}/cards/${handoffSourceId}`, { token: admin })).body as { relations: { type: string }[] }).relations
+      .some((relation) => relation.type === 'parent'), false);
+
     const alarmDue = new Date(Date.now() + 2_000).toISOString();
     const alarmSourceId = (await call(`/api/projects/${parent}/cards`, {
       method: 'POST', token: admin,
@@ -1061,6 +1154,17 @@ vendor:
     const childLogin = await call('/api/login', { method: 'POST', body: JSON.stringify({ username: 'child-writer', password: CHILD_PW }) });
     const childToken = childLogin.body['token'] as string;
     assert.equal((await call(`/api/projects/${parent}/board`, { token: childToken })).status, 403);
+    const realRelationProbe = await call(`/api/projects/${childP}/cards/${relationTargetId}/link`, {
+      method: 'POST', token: childToken,
+      body: JSON.stringify({ target: `project:${parent}#${crossWaiterId}`, type: 'relates' }),
+    });
+    const fakeRelationProbe = await call(`/api/projects/${childP}/cards/${relationTargetId}/link`, {
+      method: 'POST', token: childToken,
+      body: JSON.stringify({ target: 'project:not-a-project#does-not-exist', type: 'relates' }),
+    });
+    assert.equal(realRelationProbe.status, 403);
+    assert.equal(fakeRelationProbe.status, 403);
+    assert.equal(realRelationProbe.body['error'], fakeRelationProbe.body['error'], 'cross-link refusal does not reveal ancestor project/card existence');
     const realAncestorProbe = await call(`/api/projects/${childP}/cards`, {
       method: 'POST', token: childToken,
       body: JSON.stringify({ title: 'real probe', deps: [`project:${parent}#${crossWaiterId}`] }),
@@ -1279,7 +1383,8 @@ vendor:
 
     const exported = (await call('/api/org/export', { token: admin })).body as Record<string, unknown>;
     assert.equal(exported['version'], 4, 'integration configuration is a versioned restore shape');
-    assert.ok(Array.isArray(exported['keys']) && (exported['keys'] as unknown[]).length === 2, 'both of the bot keys exported');
+    assert.ok(Array.isArray(exported['keys']) && (exported['keys'] as unknown[]).length === 4,
+      'active keys and every revoked replacement predecessor are exported for faithful restore');
     const exportedMembers = exported['members'] as { username: string; passHash: string; role: string }[];
     assert.ok(Array.isArray(exportedMembers), 'members exported');
     assert.deepEqual(exportedMembers.map((m) => m.username).sort(), ['alpha-agent', 'child-writer', 'root', 'watcher']);

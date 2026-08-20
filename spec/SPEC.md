@@ -291,7 +291,13 @@ are `relates`, `duplicates`, `supersedes`, `parent`, `subtask`, `copied-from`,
 Conforming link tools SHOULD write the natural inverse when both cards are writable
 (`parent` ↔ `subtask`, `duplicates` ↔ `supersedes`, `copied-from` ↔ `copied-to`,
 `recurs-from` ↔ `recurs-to`; `relates` is symmetric). A self-relation is
-`self-relation`.
+`self-relation`. A link/unlink target MAY be a full card ref. Mutation tools that
+support project trees MUST accept a target on a descendant board, write/remove the
+target's inverse half first, then write/remove the source half. Each half is
+idempotent, so retry after interruption converges without inventing a second edge.
+Sibling, unrelated, and ancestor targets MUST be refused before probing the named
+card. Local refs are rebased for each board; hosted refs use
+`project:<project-id>#<card-id>`.
 
 Dependency edges are presented as active `blocks` relationships while unresolved.
 Once their target is done/archive, presentation degrades them to an ordinary resolved
@@ -306,11 +312,13 @@ disagree by mixing effective and local lane state.
 
 On a hosted manager, state-bearing `project:` references follow the project grant
 direction: a project may resolve itself and descendants, never an ancestor, sibling, or
-unrelated project. The `copied-from` half written by a descendant transfer MAY retain an
-ancestor ref as opaque provenance, but rendering it MUST NOT confirm whether the named
-ancestor card exists or reveal its state. An ancestor dependency or any other ancestor
-relation is unresolved and cannot satisfy readiness. This keeps a credential scoped to
-a child from using hand-authored refs as an ancestor-card existence/state oracle.
+unrelated project. An inverse relation written on a descendant by an authorized
+cross-project operation MAY retain its ancestor endpoint as opaque provenance, but
+rendering it MUST NOT ask the ancestor whether the named card exists or reveal its
+state. An ancestor dependency remains unresolved and cannot satisfy readiness;
+hand-authored ancestor refs are refused before any existence-sensitive lookup. This
+keeps a credential scoped to a child from using refs as an ancestor-card oracle while
+allowing a legitimate inverse edge to remain visible and removable.
 
 ### 5b. Search, mentions, and audiences
 

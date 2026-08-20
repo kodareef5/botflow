@@ -2208,10 +2208,12 @@ function wireCardModal(m,c,tab){
       const r=await api('/api/projects/'+SEL+'/cards/'+c.id+'/promote',{method:'POST',body:JSON.stringify({index:Number(promote.dataset.promote)})});
       await reloadOrg();BOARD=null;openCard(r.promoted,'card');refreshBoard(true);return}
     const unlink=e.target.closest('[data-unlinkcard]');
-    if(unlink){await api('/api/projects/'+SEL+'/cards/'+c.id+'/unlink',{method:'POST',body:JSON.stringify({target:unlink.dataset.unlinkcard,type:unlink.dataset.reltype})});openCard(c.id,'card');refreshBoard(true);return}
+    if(unlink){try{await api('/api/projects/'+SEL+'/cards/'+c.id+'/unlink',{method:'POST',body:JSON.stringify({target:unlink.dataset.unlinkcard,type:unlink.dataset.reltype})});openCard(c.id,'card');refreshBoard(true)}catch(err){toast(err.message)}return}
     if(e.target.closest('[data-linkcard]')){
-      formModal('Link card',[{name:'target',label:'target card id',required:true},{name:'type',label:'relation',type:'select',options:['relates','duplicates','supersedes','parent','subtask','copied-from','copied-to'].map(x=>({value:x,label:x}))}],'link',async d=>{
-        await api('/api/projects/'+SEL+'/cards/'+c.id+'/link',{method:'POST',body:JSON.stringify({target:d.target,type:d.type})});setTimeout(()=>openCard(c.id,'card'),0);refreshBoard(true)});
+      const here=findAny(SEL),projects=[{id:SEL,name:(here&&here.name)||'this project'}].concat(handoffTargets());
+      formModal('Link card',[{name:'project',label:'target project',type:'select',options:projects.map((p,i)=>({value:p.id,label:(i===0?'this project · ':'nested project · ')+p.name}))},{name:'target',label:'target card id',required:true},{name:'type',label:'relation',type:'select',options:['relates','duplicates','supersedes','parent','subtask','copied-from','copied-to','recurs-from','recurs-to'].map(x=>({value:x,label:x}))}],'link',async d=>{
+        const target=d.project===SEL?d.target:'project:'+d.project+'#'+d.target;
+        await api('/api/projects/'+SEL+'/cards/'+c.id+'/link',{method:'POST',body:JSON.stringify({target,type:d.type})});setTimeout(()=>openCard(c.id,'card'),0);refreshBoard(true)});
       return}
     const chk=e.target.closest('[data-check]');
     if(chk){await api('/api/projects/'+SEL+'/cards/'+c.id+'/check',{method:'POST',body:JSON.stringify({index:Number(chk.dataset.check),checked:chk.dataset.on!=='true'})});openCard(c.id,'card');return}
@@ -2386,12 +2388,45 @@ function wireCardModal(m,c,tab){
     openCard(c.id,'chat')};
 }
 // ---- activity + keys + settings ----
-async function refreshActivity(){
-  try{const ev=await api('/api/projects/'+SEL+'/events?limit=200');
-    $('#view').innerHTML=ev.length?'<table class="list"><tr><th>when</th><th>actor</th><th>action</th><th>card</th><th>detail</th></tr>'
-      +ev.map(e=>'<tr><td class="mono">'+esc((e.ts||'').replace('T',' ').slice(0,16))+'</td><td>'+esc(e.actor)+'</td><td>'+esc(e.action)+'</td><td class="mono">'+esc(e.card_id||'')+'</td><td>'+esc(e.detail)+'</td></tr>').join('')+'</table>'
+const PROJECT_EVENT_PAGE_SIZE=50;
+function refreshActivity(){
+  const host=$('#view'),project=SEL,pages=[];
+  let pageIndex=-1,loading=false,failure='';
+  const current=()=>host&&host.isConnected&&VIEW==='activity'&&SEL===project;
+  const paint=()=>{
+    if(!current())return;
+    const page=pages[pageIndex];
+    if(!page){host.innerHTML=loading?'loading…':failure?'<div class="err">'+esc(failure)+'</div>':'<div class="empty">no activity yet</div>';return}
+    const table=page.items.length?'<table class="list"><tr><th>when</th><th>actor</th><th>action</th><th>card</th><th>detail</th></tr>'
+      +page.items.map(e=>'<tr><td class="mono">'+esc((e.ts||'').replace('T',' ').slice(0,16))+'</td><td>'+esc(e.actor)+'</td><td>'+esc(e.action)+'</td><td class="mono">'+esc(e.card_id||'')+'</td><td>'+esc(e.detail)+'</td></tr>').join('')+'</table>'
       :'<div class="empty">no activity yet</div>';
-  }catch(err){$('#view').innerHTML='<div class="err">'+esc(err.message)+'</div>'}
+    const hasNewer=pageIndex>0,hasOlder=pageIndex+1<pages.length||page.hasMore;
+    const pager=hasNewer||hasOlder?'<nav aria-label="Project activity pages" style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px">'
+      +'<button type="button" data-event-prev'+(hasNewer&&!loading?'':' disabled')+'>← newer</button>'
+      +'<span class="setting-note" style="margin:0">page '+(pageIndex+1)+' · '+PROJECT_EVENT_PAGE_SIZE+' per page</span>'
+      +'<button type="button" data-event-next'+(hasOlder&&!loading?'':' disabled')+'>'+(loading?'loading…':'older →')+'</button></nav>':'';
+    host.innerHTML=table+pager+(failure?'<div class="err">'+esc(failure)+'</div>':'');
+    const previous=host.querySelector('[data-event-prev]');
+    if(previous)previous.onclick=()=>{pageIndex--;failure='';paint()};
+    const next=host.querySelector('[data-event-next]');
+    if(next)next.onclick=()=>{
+      if(pageIndex+1<pages.length){pageIndex++;failure='';paint();return}
+      const last=page.items[page.items.length-1];if(last)load(last.seq);
+    };
+  };
+  const load=async before=>{
+    if(loading)return;loading=true;failure='';paint();
+    try{
+      const cursor=before==null?'':'&before='+encodeURIComponent(before);
+      const list=await api('/api/projects/'+project+'/events?limit='+(PROJECT_EVENT_PAGE_SIZE+1)+cursor);
+      if(!current())return;
+      if(!Array.isArray(list))throw new Error('Invalid project activity response.');
+      pages.splice(pageIndex+1);
+      pages.push({items:list.slice(0,PROJECT_EVENT_PAGE_SIZE),hasMore:list.length>PROJECT_EVENT_PAGE_SIZE});pageIndex++;
+    }catch(err){failure=err.message}
+    finally{loading=false;paint()}
+  };
+  load(null);
 }
 // ---- my account: password + my own api keys ----
 // A key label is a note to self ("laptop", "CI"). It is NOT an identity: the
@@ -2409,7 +2444,7 @@ async function renderAccount(host){
     +(keys.length?'<table class="list"><tr><th>name</th><th>id</th><th>created</th><th>last used</th><th></th></tr>'
       +keys.map(k=>'<tr'+(k.revoked?' style="opacity:.5"':'')+'><td>'+esc(k.label)+'</td><td class="mono">'+esc(k.id)+'</td>'
         +'<td class="mono">'+esc(k.created.slice(0,10))+'</td><td class="mono">'+esc(k.lastUsed?k.lastUsed.slice(0,10):'never')+'</td>'
-        +'<td>'+(k.revoked?'revoked':'<button data-renk="'+esc(k.id)+'" data-label="'+esc(k.label)+'">rename</button> <button data-rk="'+esc(k.id)+'">revoke</button>')+'</td></tr>').join('')+'</table>'
+        +'<td>'+(k.revoked?'revoked':'<button data-renk="'+esc(k.id)+'" data-label="'+esc(k.label)+'">rename</button> <button data-repk="'+esc(k.id)+'">replace</button> <button data-rk="'+esc(k.id)+'">revoke</button>')+'</td></tr>').join('')+'</table>'
       :'<div class="empty">no api keys yet</div>');
   $('#chpw').onclick=()=>formModal('Change password',[
     {name:'current',label:'current password',type:'password',required:true},
@@ -2431,6 +2466,10 @@ async function renderAccount(host){
     const rev=e.target.closest('[data-rk]');
     if(rev)return confirmModal('Revoke key','That credential stops working immediately. Anything using it will start getting 401s.','revoke',async()=>{
       await api('/api/keys/'+rev.dataset.rk+'/revoke',{method:'POST'});await renderAccount(host)});
+    const replace=e.target.closest('[data-repk]');
+    if(replace)return confirmModal('Replace key','A new one-time secret will replace this credential. The old key stops working immediately.','replace',async()=>{
+      const r=await api('/api/keys/'+replace.dataset.repk+'/replace',{method:'POST'});await renderAccount(host);
+      host.insertAdjacentHTML('afterbegin','<div class="tokenbox">'+esc(r.token)+'</div><p class="warn">Copy replacement '+esc(r.label)+' now: it is never shown again.</p>')});
   };
 }
 // ---- members: the company directory, owner only ----
@@ -2483,7 +2522,7 @@ function readMemberFields(){
 }
 function memberRow(m){
   const botKey=m.kind==='bot'
-    ?'<button data-keym="'+esc(m.memberId)+'" aria-label="create API key for '+esc(m.username)+'">+ key</button> '
+    ?'<button data-keym="'+esc(m.memberId)+'" aria-label="manage API keys for '+esc(m.username)+'">keys</button> '
     :'';
   return '<tr'+(m.disabled?' style="opacity:.5"':'')+'><td>'+esc(m.display)+'</td><td class="mono">'+esc(m.username)+'</td>'
     +'<td>'+esc(m.kind)+'</td><td>'+esc(m.role)+'</td><td>'+esc(scopeLabel(m))+'</td>'
@@ -2492,30 +2531,60 @@ function memberRow(m){
     +(m.username===ME.username?'':' <button data-delm="'+esc(m.memberId)+'" data-name="'+esc(m.display)+'">remove</button>')+'</td></tr>';
 }
 function provisionBotKey(m,host){
-  const title='New API key for '+m.username;
-  const dlg=overlay('<h3>'+esc(title)+'</h3>'
-    +'<p class="setting-note">This credential acts as <code>'+esc(m.username)+'</code>: '+esc(m.role)+' on '+esc(scopeLabel(m))+'. The bot does not need to log in.</p>'
-    +'<form><div class="field"><label>name<input name="label" placeholder="optional: defaults to api key #N"></label></div>'
-    +'<div class="err" role="alert"></div><div class="actions"><button type="button" class="ghost" data-x>cancel</button><button class="primary" data-mint>mint key</button></div></form>',
-    '',title);
-  $('[data-x]',dlg).onclick=closeOverlay;
-  $('form',dlg).onsubmit=async e=>{e.preventDefault();
-    const submit=$('[data-mint]',dlg);submit.disabled=true;submit.textContent='minting…';
-    try{
-      const label=$('[name="label"]',dlg).value.trim();
-      const r=await api('/api/keys?member='+encodeURIComponent(m.memberId),{method:'POST',body:JSON.stringify(label?{label}:{})});
-      m.keys=Number(m.keys||0)+1;
-      const count=[...host.querySelectorAll('[data-keycount]')].find(x=>x.dataset.keycount===m.memberId);
-      if(count)count.textContent=String(m.keys);
-      dlg.innerHTML='<h3>'+esc(r.label)+' for '+esc(m.username)+'</h3>'
-        +'<div class="tokenbox">'+esc(r.token)+'</div>'
-        +'<p class="warn">Copy this key now. It is never shown again.</p>'
-        +'<div class="actions"><button type="button" class="ghost" data-copykey>copy</button><button type="button" class="primary" data-done>done</button></div>';
-      const copy=$('[data-copykey]',dlg);copy.onclick=async()=>{try{await navigator.clipboard.writeText(r.token);copy.textContent='copied'}catch{copy.textContent='copy failed'}};
-      $('[data-done]',dlg).onclick=closeOverlay;
-    }catch(err){$('.err',dlg).textContent=err.message;submit.disabled=false;submit.textContent='mint key'}
+  const title='API keys for '+m.username;
+  const dlg=overlay('<h3>'+esc(title)+'</h3><p>loading…</p>','wide',title);
+  let keys=[];
+  const endpoint='/api/keys?member='+encodeURIComponent(m.memberId);
+  const syncCount=()=>{
+    m.keys=keys.filter(k=>!k.revoked).length;
+    const count=[...host.querySelectorAll('[data-keycount]')].find(x=>x.dataset.keycount===m.memberId);
+    if(count)count.textContent=String(m.keys);
   };
-  const input=$('[name="label"]',dlg);if(input)input.focus();
+  const noticeHtml=notice=>notice?'<div class="tokenbox">'+esc(notice.token)+'</div>'
+    +'<p class="warn">Copy '+esc(notice.label)+' now. It is never shown again.</p>'
+    +'<p><button type="button" class="ghost" data-copybotkey="'+esc(notice.token)+'">copy key</button></p>':'';
+  const paint=notice=>{
+    syncCount();
+    dlg.innerHTML='<h3>'+esc(title)+'</h3>'
+      +'<p class="setting-note">Each credential acts as <code>'+esc(m.username)+'</code>: '+esc(m.role)+' on '+esc(scopeLabel(m))+'. The bot does not need to log in. Secret material is shown only when minted or replaced.</p>'
+      +noticeHtml(notice)
+      +'<p style="margin:10px 0"><button type="button" class="primary" data-newbotkey>+ API key</button></p>'
+      +(keys.length?'<table class="list"><tr><th>name</th><th>id</th><th>created</th><th>last used</th><th></th></tr>'
+        +keys.map(k=>'<tr'+(k.revoked?' style="opacity:.5"':'')+'><td>'+esc(k.label)+'</td><td class="mono">'+esc(k.id)+'</td>'
+          +'<td class="mono">'+esc((k.created||'').slice(0,10))+'</td><td class="mono">'+esc(k.lastUsed?(k.lastUsed||'').slice(0,10):'never')+'</td><td>'
+          +(k.revoked?'revoked':'<button type="button" data-renbotkey="'+esc(k.id)+'" data-label="'+esc(k.label)+'">rename</button> <button type="button" data-repbotkey="'+esc(k.id)+'">replace</button> <button type="button" data-revbotkey="'+esc(k.id)+'">revoke</button>')+'</td></tr>').join('')+'</table>'
+        :'<div class="empty">no API keys yet</div>')
+      +'<div class="err" role="alert"></div><div class="actions"><button type="button" class="primary" data-closebotkeys>done</button></div>';
+  };
+  const load=async notice=>{
+    keys=await api(endpoint);if(!Array.isArray(keys))throw new Error('Invalid key-list response.');paint(notice);
+  };
+  const actionForm=(heading,value,label,run)=>{
+    dlg.innerHTML='<h3>'+esc(heading)+'</h3><form><div class="field"><label>name<input name="label" value="'+esc(value||'')+'" placeholder="optional: defaults to api key #N"'+(label==='save'?' required':'')+'></label></div>'
+      +'<div class="err" role="alert"></div><div class="actions"><button type="button" class="ghost" data-backbotkeys>cancel</button><button class="primary">'+esc(label)+'</button></div></form>';
+    $('[data-backbotkeys]',dlg).onclick=()=>paint(null);
+    $('form',dlg).onsubmit=async e=>{e.preventDefault();const submit=$('button.primary',dlg);submit.disabled=true;submit.textContent='working…';
+      try{const result=await run($('[name="label"]',dlg).value.trim());await load(result&&result.token?result:null)}
+      catch(err){$('.err',dlg).textContent=err.message;submit.disabled=false;submit.textContent=label}};
+    $('[name="label"]',dlg).focus();
+  };
+  const actionConfirm=(heading,message,label,run)=>{
+    dlg.innerHTML='<h3>'+esc(heading)+'</h3><p style="font-size:13px;color:var(--ink2);line-height:1.55">'+esc(message)+'</p>'
+      +'<div class="err" role="alert"></div><div class="actions"><button type="button" class="ghost" data-backbotkeys>cancel</button><button type="button" class="danger" data-confirmbotkey>'+esc(label)+'</button></div>';
+    $('[data-backbotkeys]',dlg).onclick=()=>paint(null);
+    $('[data-confirmbotkey]',dlg).onclick=async()=>{const submit=$('[data-confirmbotkey]',dlg);submit.disabled=true;submit.textContent='working…';
+      try{const result=await run();await load(result&&result.token?result:null)}
+      catch(err){$('.err',dlg).textContent=err.message;submit.disabled=false;submit.textContent=label}};
+  };
+  dlg.onclick=e=>{
+    const close=e.target.closest('[data-closebotkeys]');if(close){closeOverlay();return}
+    const copy=e.target.closest('[data-copybotkey]');if(copy){navigator.clipboard.writeText(copy.dataset.copybotkey).then(()=>copy.textContent='copied',()=>copy.textContent='copy failed');return}
+    if(e.target.closest('[data-newbotkey]')){actionForm('New API key for '+m.username,'','mint key',label=>api(endpoint,{method:'POST',body:JSON.stringify(label?{label}:{})}));return}
+    const rename=e.target.closest('[data-renbotkey]');if(rename){actionForm('Rename '+m.username+' key',rename.dataset.label,'save',label=>api('/api/keys/'+rename.dataset.renbotkey,{method:'PATCH',body:JSON.stringify({label})}));return}
+    const replace=e.target.closest('[data-repbotkey]');if(replace){actionConfirm('Replace '+m.username+' key','The current credential stops working as soon as its one-time replacement is minted.','replace',()=>api('/api/keys/'+replace.dataset.repbotkey+'/replace',{method:'POST'}));return}
+    const revoke=e.target.closest('[data-revbotkey]');if(revoke)actionConfirm('Revoke '+m.username+' key','This credential stops working immediately.','revoke',()=>api('/api/keys/'+revoke.dataset.revbotkey+'/revoke',{method:'POST'}));
+  };
+  load(null).catch(err=>{dlg.innerHTML='<h3>'+esc(title)+'</h3><div class="err">'+esc(err.message)+'</div><div class="actions"><button type="button" class="primary" data-x>done</button></div>';$('[data-x]',dlg).onclick=closeOverlay});
 }
 async function renderMembers(host,focusId){
   let members=[];
@@ -2651,31 +2720,82 @@ function eventFilterLabel(item){
   const deny=(item.denyEvents||[]).length?' except '+(item.denyEvents||[]).join(', '):'';
   return allow+deny;
 }
-async function webhookDeliveriesModal(hook,before){
-  try{
-    const q='?limit=25'+(before?'&before='+encodeURIComponent(before):'');
-    const page=await api('/api/projects/'+SEL+'/webhooks/'+encodeURIComponent(hook.id)+'/deliveries'+q);
-    const rows=page.deliveries||[];
-    const dlg=overlay('<h3>'+esc(hook.name)+' delivery history</h3>'
+function webhookDeliveriesModal(hook){
+  const project=SEL,pages=[];
+  let pageIndex=-1,loading=false,failure='';
+  const dlg=overlay('<h3>'+esc(hook.name)+' delivery history</h3><p>loading…</p>','wide','Webhook delivery history');
+  const paint=()=>{
+    const page=pages[pageIndex];
+    if(!page){dlg.innerHTML='<h3>'+esc(hook.name)+' delivery history</h3>'+(loading?'<p>loading…</p>':'<div class="err">'+esc(failure)+'</div>');return}
+    const rows=page.deliveries;
+    const hasNewer=pageIndex>0,hasOlder=pageIndex+1<pages.length||page.next!==null;
+    dlg.innerHTML='<h3>'+esc(hook.name)+' delivery history</h3>'
       +'<p class="setting-note">The delivery id is stable across automatic retries; receivers should deduplicate it and reject stale timestamps.</p>'
       +(rows.length?'<table class="list"><tr><th>event</th><th>status</th><th>attempts</th><th>HTTP</th><th>when</th><th></th></tr>'
         +rows.map(d=>'<tr><td>'+esc(d.event)+'</td><td>'+esc(d.status)+(d.error?'<br><span class="err">'+esc(d.error)+'</span>':'')+'</td>'
           +'<td>'+esc(d.attempts)+'</td><td>'+esc(d.responseStatus??'')+'</td><td class="mono">'+esc((d.lastAttempt||d.created||'').replace('T',' ').slice(0,16))+'</td>'
           +'<td><button type="button" data-replaydelivery="'+esc(d.id)+'">replay</button></td></tr>').join('')+'</table>'
         :'<div class="empty">no deliveries yet</div>')
-      +'<div class="actions">'+(page.next?'<button type="button" class="ghost" data-moredeliveries="'+esc(page.next)+'">older</button>':'')
-      +'<button type="button" class="primary" data-x>done</button></div>','','Webhook delivery history');
-    $('[data-x]',dlg).onclick=closeOverlay;
-    dlg.onclick=async e=>{
-      const more=e.target.closest('[data-moredeliveries]');
-      if(more){await webhookDeliveriesModal(hook,Number(more.dataset.moredeliveries));return}
-      const replay=e.target.closest('[data-replaydelivery]');
-      if(replay){
-        try{await api('/api/projects/'+SEL+'/webhooks/'+encodeURIComponent(hook.id)+'/deliveries/'+encodeURIComponent(replay.dataset.replaydelivery)+'/replay',{method:'POST',body:'{}'});toast('Webhook replay queued.');await webhookDeliveriesModal(hook,null)}
-        catch(err){toast(err.message)}
-      }
-    };
-  }catch(err){toast(err.message)}
+      +'<nav aria-label="Webhook delivery pages" class="actions">'
+      +'<button type="button" class="ghost" data-delivery-prev'+(hasNewer&&!loading?'':' disabled')+'>← newer</button>'
+      +'<span class="setting-note" style="margin:0">page '+(pageIndex+1)+'</span>'
+      +'<button type="button" class="ghost" data-delivery-next'+(hasOlder&&!loading?'':' disabled')+'>older →</button>'
+      +'<button type="button" class="primary" data-x>done</button></nav>'+(failure?'<div class="err">'+esc(failure)+'</div>':'');
+  };
+  const load=async before=>{
+    if(loading)return;loading=true;failure='';paint();
+    try{
+      const q='?limit=25'+(before===null?'':'&before='+encodeURIComponent(before));
+      const page=await api('/api/projects/'+project+'/webhooks/'+encodeURIComponent(hook.id)+'/deliveries'+q);
+      if(!page||!Array.isArray(page.deliveries))throw new Error('Invalid webhook delivery response.');
+      pages.splice(pageIndex+1);pages.push({deliveries:page.deliveries,next:page.next??null});pageIndex++;
+    }catch(err){failure=err.message}
+    finally{loading=false;paint()}
+  };
+  dlg.onclick=async e=>{
+    if(e.target.closest('[data-x]')){closeOverlay();return}
+    if(e.target.closest('[data-delivery-prev]')){pageIndex--;failure='';paint();return}
+    if(e.target.closest('[data-delivery-next]')){
+      if(pageIndex+1<pages.length){pageIndex++;failure='';paint();return}
+      const page=pages[pageIndex];if(page&&page.next!==null)load(page.next);return;
+    }
+    const replay=e.target.closest('[data-replaydelivery]');
+    if(replay){
+      try{await api('/api/projects/'+project+'/webhooks/'+encodeURIComponent(hook.id)+'/deliveries/'+encodeURIComponent(replay.dataset.replaydelivery)+'/replay',{method:'POST',body:'{}'});toast('Webhook replay queued.');pages.length=0;pageIndex=-1;await load(null)}
+      catch(err){failure=err.message;paint()}
+    }
+  };
+  load(null);
+}
+function emailOutboxModal(){
+  const project=SEL,pages=[];
+  let pageIndex=-1,loading=false,failure='';
+  const dlg=overlay('<h3>Email outbox history</h3><p>loading…</p>','wide','Email outbox history');
+  const paint=()=>{
+    const page=pages[pageIndex];
+    if(!page){dlg.innerHTML='<h3>Email outbox history</h3>'+(loading?'<p>loading…</p>':'<div class="err">'+esc(failure)+'</div>');return}
+    const rows=page.messages,hasNewer=pageIndex>0,hasOlder=pageIndex+1<pages.length||page.next!==null;
+    dlg.innerHTML='<h3>Email outbox history</h3><p class="setting-note">Newest first. Lease identity and final delivery state remain available after a subscription is revoked.</p>'
+      +(rows.length?'<table class="list"><tr><th>event</th><th>status</th><th>attempts</th><th>bridge</th><th>created</th></tr>'
+        +rows.map(m=>'<tr><td>'+esc(m.event)+'</td><td>'+esc(m.status)+(m.error?'<br><span class="err">'+esc(m.error)+'</span>':'')+'</td><td>'+esc(m.attempts)+'</td><td>'+esc(m.leasedBy||'')+'</td><td class="mono">'+esc((m.created||'').replace('T',' ').slice(0,16))+'</td></tr>').join('')+'</table>'
+        :'<div class="empty">no queued email yet</div>')
+      +'<nav aria-label="Email outbox pages" class="actions"><button type="button" class="ghost" data-outbox-prev'+(hasNewer&&!loading?'':' disabled')+'>← newer</button>'
+      +'<span class="setting-note" style="margin:0">page '+(pageIndex+1)+'</span><button type="button" class="ghost" data-outbox-next'+(hasOlder&&!loading?'':' disabled')+'>older →</button>'
+      +'<button type="button" class="primary" data-x>done</button></nav>'+(failure?'<div class="err">'+esc(failure)+'</div>':'');
+  };
+  const load=async before=>{
+    if(loading)return;loading=true;failure='';paint();
+    try{const cursor=before===null?'':'&before='+encodeURIComponent(before);const page=await api('/api/projects/'+project+'/email/outbox?limit=25'+cursor);
+      if(!page||!Array.isArray(page.messages))throw new Error('Invalid email outbox response.');
+      pages.splice(pageIndex+1);pages.push({messages:page.messages,next:page.next??null});pageIndex++;
+    }catch(err){failure=err.message}finally{loading=false;paint()}
+  };
+  dlg.onclick=e=>{
+    if(e.target.closest('[data-x]')){closeOverlay();return}
+    if(e.target.closest('[data-outbox-prev]')){pageIndex--;failure='';paint();return}
+    if(e.target.closest('[data-outbox-next]')){if(pageIndex+1<pages.length){pageIndex++;failure='';paint();return}const page=pages[pageIndex];if(page&&page.next!==null)load(page.next)}
+  };
+  load(null);
 }
 async function refreshIntegrations(){
   const host=$('#view');if(!host)return;
@@ -2713,6 +2833,7 @@ async function refreshIntegrations(){
       +(outbox.length?'<table class="list"><tr><th>event</th><th>status</th><th>attempts</th><th>bridge</th><th>created</th></tr>'
         +outbox.map(m=>'<tr><td>'+esc(m.event)+'</td><td>'+esc(m.status)+(m.error?'<br><span class="err">'+esc(m.error)+'</span>':'')+'</td><td>'+esc(m.attempts)+'</td><td>'+esc(m.leasedBy||'')+'</td><td class="mono">'+esc((m.created||'').replace('T',' ').slice(0,16))+'</td></tr>').join('')+'</table>'
         :'<div class="empty">no queued email yet</div>')
+      +'<p style="margin-top:10px"><button type="button" data-emailhistory>view outbox history</button></p>'
       +'<p class="setting-note" style="margin-top:12px">Botflow stores no SMTP password and performs no provider-specific signature verification. The bridge owns provider authentication, SPF/DKIM, suppression handling, and final delivery; botflow owns constrained ingress, dedupe, event selection, leases, retries, and audit state.</p>';
 
     $('#mkwebhook').onclick=()=>formModal('New webhook',[
@@ -2752,7 +2873,8 @@ async function refreshIntegrations(){
       if(copy){try{await navigator.clipboard.writeText(copy.dataset.copyintegration);copy.textContent='copied'}catch{copy.textContent='copy failed'}return}
       if(e.target.closest('[data-dismissintegration]')){INTEGRATION_NOTICE=null;refreshIntegrations();return}
       const history=e.target.closest('[data-whdeliveries]');
-      if(history){const hook=hooks.find(h=>h.id===history.dataset.whdeliveries);if(hook)webhookDeliveriesModal(hook,null);return}
+      if(history){const hook=hooks.find(h=>h.id===history.dataset.whdeliveries);if(hook)webhookDeliveriesModal(hook);return}
+      if(e.target.closest('[data-emailhistory]')){emailOutboxModal();return}
       const rotate=e.target.closest('[data-whrotate]');
       if(rotate){confirmModal('Rotate webhook secret','The old signing secret stops working immediately. Pending deliveries use the new secret.','rotate',async()=>{
         const r=await api('/api/projects/'+SEL+'/webhooks/'+encodeURIComponent(rotate.dataset.whrotate)+'/rotate',{method:'POST',body:'{}'});
