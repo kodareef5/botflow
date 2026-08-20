@@ -1767,9 +1767,13 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
   /** Snapshot import (push): replace the board's documents: but preserve
    *  manager-native project cards (`board: project:…`) the snapshot doesn't
    *  carry, so a repo push can't sever hosted sub-projects. */
-  async importDocs(config: string, cards: BoardDocument[], actor: string): Promise<Record<string, unknown>> {
+  async importDocs(config: string, cards: BoardDocument[], actor: string, canReshape: boolean): Promise<Record<string, unknown>> {
     const validation = validateImportDocuments(config, cards);
     if ('error' in validation) return validation;
+    const configChanged = this.configText() !== config;
+    if (configChanged && !canReshape) {
+      return { error: 'admin or owner required to reshape this board', forbidden: true };
+    }
     const docs = validation.docs;
     const current = this.loadBoardDocs();
     if (this.configText() !== null && current.config.mutationBlocked !== null) {
@@ -1818,12 +1822,13 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
         'import',
         null,
         `imported ${parsed.cards.length} cards (snapshot, last-write-wins)` +
+          (configChanged ? '; board config changed' : '') +
           (preserved.length > 0 ? `; preserved ${preserved.length} project card(s)` : '') +
           (reIds.length > 0 ? `; re-id on collision: ${reIds.join(', ')}` : ''),
       );
     });
     this.rescheduleAlarm();
-    return { imported: parsed.cards.length, preserved: preserved.length, reIds, findings: parsed.findings.length };
+    return { imported: parsed.cards.length, preserved: preserved.length, reIds, findings: parsed.findings.length, configChanged };
   }
 
   addCard(opts: Omit<AddOptions, 'actor'>, actor: string): ActionResult {

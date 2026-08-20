@@ -265,7 +265,7 @@ Both are audited.
 *(the button needs this repo public on GitHub; `wrangler deploy` works regardless)*
 
 Visitors get a consumer pitch at `/about`, live public share links can optionally sit on the
-login page (admin-controlled and off by default), and settings offers a one-click **Scoops Empire** demo
+login page (owner-controlled and off by default), and settings offers a one-click **Scoops Empire** demo
 company plus a full **company export** (every space, project, board, and card as one
 restore-grade JSON, including member records with password hashes, api key hashes, and share
 links, plus active webhook and email integration configuration; store it like a credential,
@@ -309,7 +309,7 @@ turn this on rather than it being assumed.
 
 ### Webhooks and email bridges
 
-Project owners can configure signed outbound webhooks and provider-neutral email from
+Company owners can configure signed outbound webhooks and provider-neutral email from
 the project's **Integrations** tab. Webhooks freeze a versioned event body, sign the
 exact bytes with HMAC-SHA256, revalidate every redirect hop against the SSRF policy,
 retry durably with backoff, open a circuit around dead endpoints, and retain paginated
@@ -323,9 +323,10 @@ project-scoped `bfk_` credential (unset is owner-only/fail-closed). The bridgeâ€
 mail provider, signature verification, SPF/DKIM, bounces, and deliverability. The exact
 payloads, receiver verification algorithm, retry behavior, bridge API, and threat models
 are documented in [Hosted integration contracts](docs/integrations.md).
-Company export v4 preserves active integration configuration, including webhook signing
-secrets and inbound route token hashes, while deliberately resetting delivery queues,
-dedupe records, history, retries, and circuit state on restore.
+Company export v5 preserves active integration configuration (introduced in v4), including
+webhook signing secrets and inbound route token hashes, while deliberately resetting delivery
+queues, dedupe records, history, retries, and circuit state on restore. Version 5 also preserves
+scoped `admin` roles.
 The complete card-feature scope, migration decisions, security/accessibility audit, and
 release evidence are in [Card feature release review](docs/card-features-review.md).
 
@@ -337,7 +338,9 @@ model; a bot is just a member with `kind: bot`.
 - **Scope** is where a member can reach: the whole **company**, one **space** (every project
   in it), or one **project** and everything nested beneath it.
 - **Role** is what they can do there: **read** (look, cannot touch), **write** (work the
-  board), or **owner** (run the company: spaces, board shape, members, sharing, `force`).
+  board), **admin** (work and reshape boards inside one project subtree or space), or
+  **owner** (run the company: hierarchy, members, sharing, integrations, recovery, and
+  `force`). Owners are always company-scoped; admins must be space- or project-scoped.
 - **Username is permanent** because it is the actor string written into every card's `## Log`
   and its `assignee`. **Display name is not**: renaming a member updates every board view at
   once, without rewriting a single card. Card history stays byte-stable and git-diff-clean.
@@ -386,7 +389,10 @@ The sync contract: your repo's documents are truth, and sync is a whole-board sn
 created in the manager survive a push even though your repo never carried them. Both
 directions validate the entire snapshot before writing anything, every write is
 crash-safe, and `pull` refuses to overwrite uncommitted board changes unless you pass
-`--force`. An interrupted pull leaves only valid files; re-running it converges.
+`--force`. A write credential may push card changes only while its `board.yaml` bytes match
+the hosted config; changing board policy through either snapshot sync or the board editor
+requires an in-scope admin or owner. A rejected shape change is atomic. An interrupted pull
+leaves only valid files; re-running it converges.
 
 ## What it looks like
 

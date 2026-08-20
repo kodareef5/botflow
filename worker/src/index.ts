@@ -57,7 +57,7 @@ export interface Env {
 const INLINE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'application/pdf', 'text/plain']);
 const MAX_UPLOAD = 10 * 1024 * 1024;
 
-/** App and share pages carry destructive in-page-confirm admin actions, so
+/** App and share pages carry destructive in-page-confirm owner actions, so
  *  they never load inside a frame (clickjacking). */
 const HTML_HEADERS = {
   'content-type': 'text/html; charset=utf-8',
@@ -272,9 +272,10 @@ function remapImportDocuments(
  *  re-keyed api keys from a project to a member, so a v2 payload's `keys`
  *  block is structurally different: it is ignored on restore rather than
  *  rejected, because a board backup should still restore its boards. v4 adds
- *  validated per-project integration configuration, never old delivery state. */
+ *  validated per-project integration configuration, never old delivery state;
+ *  v5 adds the persisted scoped-admin role. */
 function validateOrgImportPayload(value: unknown, allowPrivate = false): string | null {
-  if (!isRecord(value) || ![1, 2, 3, 4].includes(value['version'] as number)) return 'version must be 1, 2, 3 or 4';
+  if (!isRecord(value) || ![1, 2, 3, 4, 5].includes(value['version'] as number)) return 'version must be 1, 2, 3, 4 or 5';
   if (!Array.isArray(value['spaces'])) return 'spaces required';
   const version = value['version'] as number;
   const ids = new Set<string>();
@@ -340,6 +341,7 @@ function validateOrgImportPayload(value: unknown, allowPrivate = false): string 
   if (version >= 3 && value['members'] !== undefined) {
     if (!Array.isArray(value['members'])) return 'members must be a list';
     for (const m of value['members']) {
+      if (version < 5 && isRecord(m) && m['role'] === 'admin') return 'admin role requires version 5';
       if (!isRecord(m) || !validUsername(m['username']) || typeof m['display'] !== 'string' ||
           (m['kind'] !== 'human' && m['kind'] !== 'bot') || !validRole(m['role']) || !validScopeKind(m['scopeKind']) ||
           (m['scopeId'] !== null && typeof m['scopeId'] !== 'string') ||
@@ -347,6 +349,7 @@ function validateOrgImportPayload(value: unknown, allowPrivate = false): string 
           typeof m['disabled'] !== 'boolean' || typeof m['created'] !== 'string') return 'malformed member metadata';
       if (usernames.has(m['username'])) return `duplicate member username: ${m['username']}`;
       if (m['role'] !== 'owner') {
+        if (m['role'] === 'admin' && m['scopeKind'] === 'org') return `member ${m['username']}: admin scope must be a space or project`;
         if (m['scopeKind'] === 'org' && m['scopeId'] !== null) return `member ${m['username']}: org scope must have a null id`;
         if (m['scopeKind'] === 'space' && (typeof m['scopeId'] !== 'string' || !spaceIds.has(m['scopeId']))) {
           return `member ${m['username']}: space scope does not name an exported space`;
@@ -618,13 +621,16 @@ export default {
       if (identity === null) return json({ error: 'unauthorized' }, 401);
       const actor = identity.username;
 
-      /** Company-level policy: shaping boards, spending money, handing out
-       *  access. Deliberately the same set that used to be admin-only. */
+      /** Company-level policy: hierarchy, credentials, integrations, public
+       *  access, recovery, and emergency overrides. */
       const requireOwner = (): Response | null =>
         roleAllows(identity.role, 'owner') ? null : json({ error: 'owner only' }, 403);
       /** Anything that mutates a board. A read member is a spectator. */
       const requireWrite = (): Response | null =>
         roleAllows(identity.role, 'write') ? null : json({ error: 'your access to this board is read-only' }, 403);
+      /** Board workflow policy inside the caller's already-checked scope. */
+      const requireAdmin = (): Response | null =>
+        roleAllows(identity.role, 'admin') ? null : json({ error: 'admin or owner required to reshape this board' }, 403);
 
       // Who am I?: lets a bot handed a bare credential discover its own reach.
       if (req.method === 'GET' && url.pathname === '/api/whoami') {
@@ -756,7 +762,7 @@ export default {
         });
         await registry.audit(actor, 'export', 'company export downloaded');
         return json({
-          version: 4,
+          version: 5,
           name: tree.name,
           theme: await registry.getTheme(),
           prefs: await registry.getPrefs(),
@@ -818,7 +824,7 @@ export default {
             for (const card of checked.board.cards) {
               if (card.type === 'board' && card.boardPath !== null) importedRefs.add(card.boardPath);
             }
-            const res = (await project(created.id).importDocs(remapped.config, remapped.docs, actor)) as { error?: unknown };
+            const res = (await project(created.id).importDocs(remapped.config, remapped.docs, actor, true)) as { error?: unknown };
             if (res.error) throw new Error(String(res.error));
           }
           for (const child of created.children) {
@@ -1197,7 +1203,7 @@ export default {
       if (req.method === 'GET' && rest === '/config') return json(await stub.boardConfig());
       if (req.method === 'PUT' && rest === '/config') {
         // Board shape is workflow policy: admins reshape it, agents work it.
-        const denied = requireOwner();
+        const denied = requireAdmin();
         if (denied) return denied;
         const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
         const res = await stub.editBoardConfig(body, actor);
@@ -1210,9 +1216,11 @@ export default {
         if (denied) return denied;
         const body = (await req.json().catch(() => ({}))) as { config?: string; cards?: BoardDocument[]; actor?: string };
         if (typeof body.config !== 'string' || !Array.isArray(body.cards)) return json({ error: 'config and cards required' }, 400);
-        const res = await stub.importDocs(body.config, body.cards, actor);
-        if (!('error' in res)) drainUnfurls();
-        return 'error' in res ? json(res, 400) : json(res);
+        const res = await stub.importDocs(body.config, body.cards, actor, roleAllows(identity.role, 'admin'));
+        if ('error' in res) return json(res, res['forbidden'] === true ? 403 : 400);
+        if (res['configChanged'] === true) await registry.audit(actor, 'board-edit', `snapshot reshaped board of ${pid}`);
+        drainUnfurls();
+        return json(res);
       }
       if (req.method === 'GET' && rest === '/events') {
         const rawBefore = url.searchParams.get('before');

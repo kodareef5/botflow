@@ -466,7 +466,7 @@ let CAL_MONTH=null,TABLE_SORT='id',TABLE_DESC=false,HILL_DRAG=null;
 const HILL_PENDING=new Map();
 // Role gates, refreshed from /api/org on every boot. RO stays the read-only
 // flag for public share pages; these are about who is logged in.
-let ME=null,CAN_WRITE=false,IS_OWNER=false,DIR=new Map();
+let ME=null,CAN_WRITE=false,CAN_SHAPE=false,IS_OWNER=false,DIR=new Map();
 // Search state lives outside the board DOM. Polling only morphs #view, so a
 // focused query input is never replaced while someone is typing.
 let SEARCH_PROJECT=null,SEARCH_QUERY='',SEARCH_SAVED='',SEARCH_IDS=null,SEARCH_TIMER=null,SEARCH_SEQ=0;
@@ -700,7 +700,8 @@ function spaceOf(pid){for(const s of ORG.spaces)if(findProject(pid,s.projects))r
 function adoptOrg(org){
   ORG=org;UPLOADS=org.uploads===true;
   ME=org.me||null;
-  CAN_WRITE=!!ME&&ME.role!=='read';
+  CAN_WRITE=!!ME&&['write','admin','owner'].includes(ME.role);
+  CAN_SHAPE=!!ME&&['admin','owner'].includes(ME.role);
   IS_OWNER=!!ME&&ME.role==='owner';
   RO=!!PUB||!CAN_WRITE;
   DIR=new Map((org.directory||[]).map(m=>[m.username,m]));
@@ -799,7 +800,7 @@ function renderMain(){
     +(CAN_WRITE?'<span id="boardbuttons"></span><button id="automate" class="ghost" title="run reminders, wake snoozed cards, and sweep completed work">↻ automate</button>':'')
     +(CAN_WRITE?'<button id="newcard" class="ghost" title="add a card to this board">+ card</button>':'')
     +(CAN_WRITE?'<button id="quickcard" class="ghost" title="create several cards with quick-add syntax">+ quick</button><button id="bulkcard" class="ghost" title="move, close, or label several card ids">bulk</button>':'')
-    +(IS_OWNER?'<button id="editboard" class="ghost" title="edit lanes, substates, wip, rollup">✎ edit board</button>':'')
+    +(CAN_SHAPE?'<button id="editboard" class="ghost" title="edit lanes, substates, wip, rollup">✎ edit board</button>':'')
     +(VIEW==='board'?'<div class="viewctl"><select id="boardlayout" aria-label="board view">'
       +[['kanban','board'],['table','table'],['swimlane','swimlanes'],['calendar','calendar'],['timeline','timeline'],['grouped','group by field'],['metrics','metrics'],['hill','hill chart']].map(x=>'<option value="'+x[0]+'"'+(LAYOUT===x[0]?' selected':'')+'>'+x[1]+'</option>').join('')+'</select>'
       +'<select id="axisctl" class="axisctl" aria-label="grouping axis" hidden></select></div>':'')
@@ -2491,9 +2492,9 @@ function scopeLabel(m){
   if(scope.kind==='space'){const sp=ORG.spaces.find(x=>x.id===scope.id);return 'space: '+(sp?sp.name:scope.id)}
   const p=findAny(scope.id);return 'project: '+(p?p.name:scope.id);
 }
-function scopeOptions(sel){
+function scopeOptions(sel,allowOrg=true){
   let out=sel===null?'<option value="" selected disabled>scope unavailable — choose a scope</option>':'';
-  out+='<option value="org"'+(sel==='org'?' selected':'')+'>whole company (all spaces and projects)</option>';
+  if(allowOrg)out+='<option value="org"'+(sel==='org'?' selected':'')+'>whole company (all spaces and projects)</option>';
   for(const sp of ORG.spaces){
     out+='<option value="space:'+esc(sp.id)+'"'+(sel==='space:'+sp.id?' selected':'')+'>space: '+esc(sp.name)+'</option>';
     const walk=(nodes,depth)=>{for(const n of nodes){
@@ -2508,9 +2509,21 @@ function memberFields(m){
   const sel=scope.kind===null?null:scope.kind==='org'?'org':scope.kind+':'+scope.id;
   return '<div class="field"><label>display name<input id="mdisplay" value="'+esc(m?m.display:'')+'" placeholder="what boards show"></label></div>'
     +'<div class="field"><label>role<select id="mrole">'
-    +['read','write','owner'].map(r=>'<option value="'+r+'"'+(m&&m.role===r?' selected':'')+'>'+r+(r==='owner'?' (runs the company)':r==='write'?' (works the board)':' (looks, cannot touch)')+'</option>').join('')
+    +['read','write','admin','owner'].map(r=>'<option value="'+r+'"'+(m&&m.role===r?' selected':'')+'>'+r+(r==='owner'?' (runs the company)':r==='admin'?' (shapes scoped boards)':r==='write'?' (works the board)':' (looks, cannot touch)')+'</option>').join('')
     +'</select></label></div>'
-    +'<div class="field"><label>scope<select id="mscope">'+scopeOptions(sel)+'</select></label></div>';
+    +'<div class="field"><label>scope<select id="mscope">'+scopeOptions(sel,!m||m.role!=='admin')+'</select></label></div>';
+}
+function wireMemberFields(){
+  const role=$('#mrole'),scope=$('#mscope');if(!role||!scope)return;
+  const sync=()=>{
+    const current=scope.value;
+    if(role.value==='owner'){scope.innerHTML=scopeOptions('org',true);scope.disabled=true;return}
+    scope.disabled=false;
+    const first=ORG.spaces.length?'space:'+ORG.spaces[0].id:null;
+    const selected=role.value==='admin'&&current==='org'?first:(current||null);
+    scope.innerHTML=scopeOptions(selected,role.value!=='admin');
+  };
+  role.onchange=sync;sync();
 }
 function readMemberFields(){
   const raw=$('#mscope').value;
@@ -2608,6 +2621,7 @@ async function renderMembers(host,focusId){
       +memberFields(null)
       +'<div class="err" id="merr"></div><div class="actions"><button id="mcancel">cancel</button><button class="primary" id="mok">create</button></div>',
       '','New member');
+    wireMemberFields();
     $('#mcancel').onclick=closeOverlay;
     $('#mok').onclick=async()=>{
       try{
@@ -2628,6 +2642,7 @@ async function renderMembers(host,focusId){
         +'<p class="setting-note">Renaming updates this member everywhere on every board at once. The username stays as it is: card history is not rewritten.</p>'
         +'<div class="err" id="merr"></div><div class="actions"><button id="mcancel">cancel</button><button class="primary" id="mok">save</button></div>',
         '','Edit member');
+      wireMemberFields();
       $('#mcancel').onclick=closeOverlay;
       $('#mok').onclick=async()=>{
         try{

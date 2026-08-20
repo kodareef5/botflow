@@ -17,7 +17,7 @@ export function setupAccess(hostname: string, configured: string | undefined, su
 
 // ---- identity: roles and scopes ----
 
-export type Role = 'owner' | 'write' | 'read';
+export type Role = 'owner' | 'admin' | 'write' | 'read';
 export type ScopeKind = 'org' | 'space' | 'project';
 
 /** One member's reach: the whole company, one space, or one project subtree. */
@@ -33,7 +33,8 @@ export interface ProjectLocation {
   ancestorIds: string[];
 }
 
-const ROLES: Role[] = ['owner', 'write', 'read'];
+const ROLES: Role[] = ['owner', 'admin', 'write', 'read'];
+const ROLE_RANK: Record<Role, number> = { read: 0, write: 1, admin: 2, owner: 3 };
 const SCOPE_KINDS: ScopeKind[] = ['org', 'space', 'project'];
 
 export function validRole(value: unknown): value is Role {
@@ -54,13 +55,11 @@ export function validUsername(value: unknown): value is string {
   return typeof value === 'string' && USERNAME_RE.test(value);
 }
 
-/** Role ordering: owner does everything, write also reads, read only reads.
- *  Anything unrecognized is denied rather than defaulted. */
+/** Role ordering: owner > admin > write > read. Anything unrecognized is
+ *  denied rather than defaulted. */
 export function roleAllows(role: unknown, need: Role): boolean {
-  if (!validRole(role)) return false;
-  if (role === 'owner') return true;
-  if (role === 'write') return need !== 'owner';
-  return need === 'read';
+  if (!validRole(role) || !validRole(need)) return false;
+  return ROLE_RANK[role] >= ROLE_RANK[need];
 }
 
 /** Does `scope` reach the project described by `at`? Org reaches everything;

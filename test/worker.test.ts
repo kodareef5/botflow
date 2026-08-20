@@ -327,6 +327,46 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.equal(mintedKey.body['label'], 'api key #1', 'an unnamed key names itself');
     const key = mintedKey.body['token'] as string;
     assert.ok(key.startsWith('bfk_'));
+
+    // Scoped admins sit between writers and owners: they inherit ordinary
+    // board work and may reshape every board their scope reaches, without
+    // receiving company-wide administration or force overrides.
+    const PROJECT_ADMIN_PW = 'project-admin-password-1';
+    const SPACE_ADMIN_PW = 'space-admin-password-1';
+    const invalidOrgAdmin = await call('/api/members', { method: 'POST', token: admin, body: JSON.stringify({
+      username: 'org-admin', display: 'Too Broad', kind: 'bot', password: PROJECT_ADMIN_PW,
+      role: 'admin', scopeKind: 'org', scopeId: null,
+    }) });
+    assert.equal(invalidOrgAdmin.status, 400, 'admin cannot become a company-wide owner alias');
+    assert.match(String(invalidOrgAdmin.body['error']), /admin.*space or project/i);
+    const projectAdminCreate = await call('/api/members', { method: 'POST', token: admin, body: JSON.stringify({
+      username: 'project-admin', display: 'Project Admin', kind: 'bot', password: PROJECT_ADMIN_PW,
+      role: 'admin', scopeKind: 'project', scopeId: parent,
+    }) });
+    assert.equal(projectAdminCreate.status, 200, JSON.stringify(projectAdminCreate.body));
+    const projectAdminId = projectAdminCreate.body['id'] as string;
+    const projectAdmin = (await call('/api/login', {
+      method: 'POST', body: JSON.stringify({ username: 'project-admin', password: PROJECT_ADMIN_PW }),
+    })).body['token'] as string;
+    const projectAdminKey = (await call(`/api/keys?member=${projectAdminId}`, {
+      method: 'POST', token: admin, body: JSON.stringify({ label: 'shape bot' }),
+    })).body['token'] as string;
+    const projectAdminBasic = `Basic ${Buffer.from(`project-admin:${PROJECT_ADMIN_PW}`).toString('base64')}`;
+    const spaceAdminCreate = await call('/api/members', { method: 'POST', token: admin, body: JSON.stringify({
+      username: 'space-admin', display: 'Space Admin', kind: 'bot', password: SPACE_ADMIN_PW,
+      role: 'admin', scopeKind: 'space', scopeId: space2,
+    }) });
+    assert.equal(spaceAdminCreate.status, 200, JSON.stringify(spaceAdminCreate.body));
+    const spaceAdmin = (await call('/api/login', {
+      method: 'POST', body: JSON.stringify({ username: 'space-admin', password: SPACE_ADMIN_PW }),
+    })).body['token'] as string;
+    assert.deepEqual(
+      (await call('/api/whoami', { token: projectAdmin })).body,
+      {
+        username: 'project-admin', display: 'Project Admin', kind: 'bot', role: 'admin',
+        scope: { kind: 'project', id: parent }, scopeName: 'parent', org: 'testco',
+      },
+    );
     const own = (await call(`/api/projects/${parent}/cards`, { method: 'POST', token: key, body: JSON.stringify({ title: 'Own task', actor: 'admin' }) })).body['id'] as string;
     const claimed = await call(`/api/projects/${parent}/cards/${own}/claim`, { method: 'POST', token: key, body: JSON.stringify({ actor: 'imposter' }) });
     assert.equal(claimed.status, 200, 'ready unassigned card claims fine');
@@ -358,7 +398,122 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
     assert.equal(forcedClaim.status, 200);
     assert.equal(forcedClaim.body['assignee'], 'root', 'force takes the card under the owner username');
     const forceAudit = (await call('/api/org/activity?limit=10', { token: admin })).body as unknown as { action: string }[];
-    assert.ok(forceAudit.some((a) => a.action === 'force-override'), 'admin force use lands in the org audit log');
+    assert.ok(forceAudit.some((a) => a.action === 'force-override'), 'owner force use lands in the org audit log');
+
+    const parentShape = (await call(`/api/projects/${parent}/config`, { token: projectAdmin })).body;
+    assert.equal((await call(`/api/projects/${parent}/config`, {
+      method: 'PUT', token: projectAdmin, body: JSON.stringify({ ...parentShape, name: 'parent shaped by scoped admin' }),
+    })).status, 200, 'a project admin reshapes its project');
+    const childShape = (await call(`/api/projects/${childP}/config`, { token: projectAdmin })).body;
+    assert.equal((await call(`/api/projects/${childP}/config`, {
+      method: 'PUT', token: projectAdmin, body: JSON.stringify({ ...childShape, name: 'child shaped by scoped admin' }),
+    })).status, 200, 'a project admin reshapes descendants');
+    assert.equal((await call(`/api/projects/${stranger}/config`, { token: projectAdmin })).status, 403,
+      'a sibling remains outside project-admin scope');
+
+    for (const pid of [sibA, sibB]) {
+      const shape = (await call(`/api/projects/${pid}/config`, { token: spaceAdmin })).body;
+      assert.equal((await call(`/api/projects/${pid}/config`, {
+        method: 'PUT', token: spaceAdmin, body: JSON.stringify({ ...shape, name: `${String(shape['name'])} shaped` }),
+      })).status, 200, 'a space admin reshapes every board in the space');
+    }
+    assert.equal((await call(`/api/projects/${parent}/config`, { token: spaceAdmin })).status, 403,
+      'a space admin stops at the space boundary');
+    assert.equal((await call(`/api/projects/${parent}/cards`, {
+      method: 'POST', token: projectAdmin, body: JSON.stringify({ title: 'Admin still works cards' }),
+    })).status, 200, 'admin inherits write');
+    assert.equal((await call(`/api/projects/${parent}/cards`, {
+      method: 'POST', token: projectAdmin, body: JSON.stringify({ title: 'No admin force', force: true }),
+    })).status, 403, 'admin does not inherit owner force');
+    for (const [path, body] of [
+      [`/api/projects/${parent}/cards/${own}/claim`, { force: true }],
+      [`/api/projects/${parent}/cards/${own}/move`, { to: 'done', force: true }],
+      [`/api/projects/${parent}/cards/bulk`, { ids: [own], action: { kind: 'close', force: true } }],
+      [`/api/projects/${parent}/buttons/no-such`, { card: own, force: true }],
+    ] as const) {
+      assert.equal((await call(path, { method: 'POST', token: projectAdmin, body: JSON.stringify(body) })).status, 403,
+        `admin force is denied at ${path}`);
+    }
+
+    for (const request of [
+      call('/api/settings', { token: projectAdmin }),
+      call('/api/members', { token: projectAdmin }),
+      call(`/api/keys?member=${botId}`, { token: projectAdmin }),
+      call('/api/org/export', { token: projectAdmin }),
+      call('/api/org/activity', { token: projectAdmin }),
+      call(`/api/projects/${parent}/webhooks`, { token: projectAdmin }),
+      call(`/api/projects/${parent}/shares`, { token: projectAdmin }),
+      call(`/api/projects/${parent}`, { method: 'DELETE', token: projectAdmin }),
+      call('/api/spaces', { method: 'POST', token: projectAdmin, body: JSON.stringify({ name: 'not-admin-owned' }) }),
+      call('/api/projects', { method: 'POST', token: projectAdmin, body: JSON.stringify({ space, name: 'not-a-root' }) }),
+    ]) assert.equal((await request).status, 403, 'company and destructive controls remain owner-only');
+
+    // Role changes are live for an existing session, and an admin can never be
+    // updated into org scope through a different endpoint.
+    assert.equal((await call(`/api/members/${projectAdminId}`, {
+      method: 'PATCH', token: admin, body: JSON.stringify({ scopeKind: 'project', scopeId: childP }),
+    })).status, 200);
+    assert.equal((await call(`/api/projects/${parent}/config`, { token: projectAdminKey })).status, 403,
+      'a project admin cannot reach above its selected project');
+    assert.equal((await call(`/api/projects/${childP}/config`, { token: projectAdminKey })).status, 200,
+      'the same existing key immediately follows the narrower scope');
+    assert.equal((await call(`/api/members/${projectAdminId}`, {
+      method: 'PATCH', token: admin, body: JSON.stringify({ scopeKind: 'project', scopeId: parent }),
+    })).status, 200);
+    assert.equal((await call(`/api/members/${projectAdminId}`, {
+      method: 'PATCH', token: admin, body: JSON.stringify({ role: 'admin', scopeKind: 'org', scopeId: null }),
+    })).status, 400);
+    assert.equal((await call(`/api/members/${projectAdminId}`, {
+      method: 'PATCH', token: admin, body: JSON.stringify({ role: 'write' }),
+    })).status, 200);
+    for (const credential of [
+      { token: projectAdmin },
+      { token: projectAdminKey },
+      { headers: { authorization: projectAdminBasic } },
+    ]) assert.equal((await call(`/api/projects/${parent}/config`, {
+      method: 'PUT', ...credential, body: JSON.stringify(parentShape),
+    })).status, 403, 'demotion takes effect for every existing credential form');
+    assert.equal((await call(`/api/members/${projectAdminId}`, {
+      method: 'PATCH', token: admin, body: JSON.stringify({ role: 'admin' }),
+    })).status, 200);
+    assert.equal((await call(`/api/projects/${parent}/config`, {
+      method: 'PUT', token: projectAdminKey, body: JSON.stringify(parentShape),
+    })).status, 200, 'promotion is immediately live on the existing bot key');
+
+    // Snapshot pushes may still update cards at write level, but changing the
+    // exact board.yaml bytes is a shape change. The decision and replacement
+    // happen inside one ProjectDO call, so denial leaves both files untouched.
+    const snapshot = (await call(`/api/projects/${parent}/export`, { token: admin })).body as {
+      config: string; cards: { path: string; text: string }[];
+    };
+    const unchangedPush = await call(`/api/projects/${parent}/import`, {
+      method: 'PUT', token: key, body: JSON.stringify(snapshot),
+    });
+    assert.equal(unchangedPush.status, 200, JSON.stringify(unchangedPush.body));
+    assert.equal(unchangedPush.body['configChanged'], false);
+    const changedSnapshot = { ...snapshot, config: `${snapshot.config}\n# shaped through snapshot import\n` };
+    const deniedPush = await call(`/api/projects/${parent}/import`, {
+      method: 'PUT', token: key, body: JSON.stringify(changedSnapshot),
+    });
+    assert.equal(deniedPush.status, 403, 'write cannot smuggle a board shape through snapshot import');
+    assert.deepEqual((await call(`/api/projects/${parent}/export`, { token: admin })).body, snapshot,
+      'a denied shape import changes neither config nor cards');
+    const adminPush = await call(`/api/projects/${parent}/import`, {
+      method: 'PUT', token: projectAdmin, body: JSON.stringify(changedSnapshot),
+    });
+    assert.equal(adminPush.status, 200, JSON.stringify(adminPush.body));
+    assert.equal(adminPush.body['configChanged'], true);
+    assert.equal(((await call(`/api/projects/${parent}/export`, { token: admin })).body)['config'], changedSnapshot.config);
+    const importEvents = (await call(`/api/projects/${parent}/events?limit=20`, { token: admin })).body as unknown as {
+      actor: string; action: string; detail: string;
+    }[];
+    assert.ok(importEvents.some((event) => event.actor === 'project-admin' && event.action === 'import' && event.detail.includes('board config changed')),
+      'the project event attributes the shape-changing import');
+    const shapeAudit = (await call('/api/org/activity?limit=30', { token: admin })).body as unknown as {
+      actor: string; action: string; detail: string;
+    }[];
+    assert.ok(shapeAudit.some((event) => event.actor === 'project-admin' && event.action === 'board-edit' && event.detail.includes('snapshot')),
+      'admin snapshot reshapes are visible in the company audit log');
 
     // Company activity is keyset-paginated. The cursor is exclusive so two
     // adjacent pages cannot repeat an event, even as newer rows are appended.
@@ -463,7 +618,7 @@ test('worker api: auth, scoping, restore, aggregation, deletion', { timeout: 180
       rollup: { blockedWhen: 'never', doingWhen: 'any-doing', elseState: 'todo' },
       migrations: { wishlist: 'todo' },
     };
-    assert.equal((await call(`/api/projects/${parent}/config`, { method: 'PUT', token: key, body: JSON.stringify(reshape) })).status, 403, 'non-owners cannot reshape boards');
+    assert.equal((await call(`/api/projects/${parent}/config`, { method: 'PUT', token: key, body: JSON.stringify(reshape) })).status, 403, 'writers cannot reshape boards');
     assert.equal((await call(`/api/projects/${parent}/config`, { method: 'PUT', token: admin, body: JSON.stringify({ name: 'x', lanes: [{ id: 'weird' }] }) })).status, 400, 'custom lane without canonical rejected');
     const withoutArchive = { ...reshape, lanes: reshape.lanes.filter((lane) => lane.id !== 'archive') };
     assert.equal((await call(`/api/projects/${parent}/config`, { method: 'PUT', token: admin, body: JSON.stringify(withoutArchive) })).status, 400,
@@ -1388,16 +1543,35 @@ vendor:
     const restoreSubscription = restoreSubscriptionResult.body['subscription'] as { id: string };
 
     const exported = (await call('/api/org/export', { token: admin })).body as Record<string, unknown>;
-    assert.equal(exported['version'], 4, 'integration configuration is a versioned restore shape');
-    assert.ok(Array.isArray(exported['keys']) && (exported['keys'] as unknown[]).length === 4,
+    assert.equal(exported['version'], 5, 'the persisted admin role advances the restore envelope');
+    assert.ok(Array.isArray(exported['keys']) && (exported['keys'] as unknown[]).length === 5,
       'active keys and every revoked replacement predecessor are exported for faithful restore');
     const exportedMembers = exported['members'] as { username: string; passHash: string; role: string }[];
     assert.ok(Array.isArray(exportedMembers), 'members exported');
-    assert.deepEqual(exportedMembers.map((m) => m.username).sort(), ['alpha-agent', 'child-writer', 'root', 'watcher']);
+    assert.deepEqual(exportedMembers.map((m) => m.username).sort(),
+      ['alpha-agent', 'child-writer', 'project-admin', 'root', 'space-admin', 'watcher']);
+    assert.deepEqual(
+      exportedMembers.filter((m) => m.role === 'admin').map((m) => {
+        const full = m as typeof m & { scopeKind: string; scopeId: string | null };
+        return { username: full.username, scopeKind: full.scopeKind, scopeId: full.scopeId };
+      }).sort((a, b) => a.username.localeCompare(b.username)),
+      [
+        { username: 'project-admin', scopeKind: 'project', scopeId: parent },
+        { username: 'space-admin', scopeKind: 'space', scopeId: space2 },
+      ],
+      'v5 preserves each admin grant without widening it',
+    );
     // Password hashes ride along or a restore locks the owner out of their
     // own company. That is also why the export is a credential.
     assert.match(exportedMembers.find((m) => m.username === 'root')!.passHash, /^pbkdf2\$/);
-    assert.ok((exported['keys'] as { username: string }[]).every((k) => k.username === 'alpha-agent'), 'keys name their member, not a project');
+    assert.deepEqual((exported['keys'] as { username: string }[]).map((k) => k.username).sort(),
+      ['alpha-agent', 'alpha-agent', 'alpha-agent', 'alpha-agent', 'project-admin'],
+      'keys name their member, not a project');
+    const adminInV4 = structuredClone(exported);
+    adminInV4['version'] = 4;
+    const rejectedAdminV4 = await call('/api/org/import', { method: 'PUT', token: admin, body: JSON.stringify(adminInV4) });
+    assert.equal(rejectedAdminV4.status, 400, 'old envelopes cannot silently acquire a new role meaning');
+    assert.match(String(rejectedAdminV4.body['error']), /admin role requires version 5/);
     const exportedCapabilities = exported['shares'] as { token: string; kind?: string; memberUsername?: string; filterId?: string }[];
     const exportedFeed = exportedCapabilities.find((capability) => capability.token === feedToken);
     assert.deepEqual(
@@ -1477,22 +1651,22 @@ vendor:
       assert.deepEqual(afterFailedCredentialExport[field], exported[field], `failed restore preserves registry ${field}`);
     }
 
-    const malformedV4 = structuredClone(exported);
-    const malformedParent = (malformedV4['spaces'] as typeof exportedSpaces)
+    const malformedCurrent = structuredClone(exported);
+    const malformedParent = (malformedCurrent['spaces'] as typeof exportedSpaces)
       .flatMap((item) => item.projects).find((item) => item.id === parent)!;
     malformedParent.integrations.webhooks.find((item) => item.id === restoreWebhook.id)!.secret = 'plaintext';
     const beforeMalformedImport = (await call('/api/org', { token: admin })).body['spaces'];
-    const malformedImport = await call('/api/org/import', { method: 'PUT', token: admin, body: JSON.stringify(malformedV4) });
+    const malformedImport = await call('/api/org/import', { method: 'PUT', token: admin, body: JSON.stringify(malformedCurrent) });
     assert.equal(malformedImport.status, 400);
     assert.match(String(malformedImport.body['error']), /integrations.*secret is invalid/);
     assert.deepEqual((await call('/api/org', { token: admin })).body['spaces'], beforeMalformedImport,
-      'v4 integration validation finishes before any registry row is created');
+      'current integration validation finishes before any registry row is created');
 
-    const semanticV4 = structuredClone(exported);
-    const semanticParent = (semanticV4['spaces'] as typeof exportedSpaces)
+    const semanticCurrent = structuredClone(exported);
+    const semanticParent = (semanticCurrent['spaces'] as typeof exportedSpaces)
       .flatMap((item) => item.projects).find((item) => item.id === parent)!;
     semanticParent.integrations.emailRoutes.find((item) => item.id === restoreRoute.id)!.lane = 'no-such-lane';
-    const semanticImport = await call('/api/org/import', { method: 'PUT', token: admin, body: JSON.stringify(semanticV4) });
+    const semanticImport = await call('/api/org/import', { method: 'PUT', token: admin, body: JSON.stringify(semanticCurrent) });
     assert.equal(semanticImport.status, 400);
     assert.match(String(semanticImport.body['error']), /missing lane or substate/);
     assert.deepEqual((await call('/api/org', { token: admin })).body['spaces'], beforeMalformedImport,
@@ -1518,6 +1692,9 @@ vendor:
     // The space-scoped reader loses access on the same deletion, even though
     // no project it named was individually deleted.
     assert.equal((await call('/api/whoami', { token: reader })).status, 401, 'space-scoped members are disabled with their space');
+    assert.equal((await call('/api/whoami', { token: projectAdmin })).status, 401, 'a project admin dies with its project scope');
+    assert.equal((await call('/api/whoami', { token: projectAdminKey })).status, 401, 'its api key loses access at the same instant');
+    assert.equal((await call('/api/whoami', { token: spaceAdmin })).status, 200, 'an admin in another space is unaffected');
 
     const imported = await call('/api/org/import', { method: 'PUT', token: admin, body: JSON.stringify(exported) });
     assert.equal(imported.status, 200, JSON.stringify(imported.body));
@@ -1560,6 +1737,36 @@ vendor:
     const doingLane = rBoard.lanes.find((l) => l.id === 'doing')!;
     assert.ok(doingLane.cards.some((c) => c.type === 'board' && c.child === restoredChild), 'project card lane preserved through restore');
     assert.equal(childCards[0]!.state, 'done', 'restored child rolls up');
+
+    const restoredMembers = (await call('/api/members', { token: admin })).body as unknown as {
+      username: string; role: string; scopeKind: string; scopeId: string | null;
+    }[];
+    const restoredProjectAdmin = restoredMembers.find((member) => member.username === 'project-admin')!;
+    const restoredSpaceAdmin = restoredMembers.find((member) => member.username === 'space-admin')!;
+    assert.deepEqual(
+      { role: restoredProjectAdmin.role, scopeKind: restoredProjectAdmin.scopeKind, scopeId: restoredProjectAdmin.scopeId },
+      { role: 'admin', scopeKind: 'project', scopeId: restoredParent.id },
+      'project-admin scope remaps to the restored project',
+    );
+    const restoredAdminSpace = org2.spaces.find((item) => item.id === restoredSpaceAdmin.scopeId)!;
+    assert.ok(restoredAdminSpace && restoredAdminSpace.name === 'ops', 'space-admin scope remaps to the restored space');
+    const restoredProjectAdminSession = (await call('/api/login', {
+      method: 'POST', body: JSON.stringify({ username: 'project-admin', password: PROJECT_ADMIN_PW }),
+    })).body['token'] as string;
+    assert.equal((await call('/api/whoami', { token: projectAdminKey })).body['role'], 'admin',
+      'the original scoped-admin key hash survives restore');
+    const restoredSpaceAdminSession = (await call('/api/login', {
+      method: 'POST', body: JSON.stringify({ username: 'space-admin', password: SPACE_ADMIN_PW }),
+    })).body['token'] as string;
+    const restoredParentConfig = (await call(`/api/projects/${restoredParent.id}/config`, { token: restoredProjectAdminSession })).body;
+    assert.equal((await call(`/api/projects/${restoredParent.id}/config`, {
+      method: 'PUT', token: restoredProjectAdminSession, body: JSON.stringify(restoredParentConfig),
+    })).status, 200, 'restored project admin retains board-shape access');
+    const restoredSpaceProject = restoredAdminSpace.projects[0]!;
+    const restoredSpaceConfig = (await call(`/api/projects/${restoredSpaceProject.id}/config`, { token: restoredSpaceAdminSession })).body;
+    assert.equal((await call(`/api/projects/${restoredSpaceProject.id}/config`, {
+      method: 'PUT', token: restoredSpaceAdminSession, body: JSON.stringify(restoredSpaceConfig),
+    })).status, 200, 'restored space admin retains board-shape access');
     const restoredSettings = await call('/api/settings', { token: admin });
     assert.deepEqual(
       { style: restoredSettings.body['style'], accent: restoredSettings.body['accent'], mode: restoredSettings.body['mode'], density: restoredSettings.body['density'] },
@@ -1619,6 +1826,19 @@ vendor:
     }[]).find((item) => item.name === 'v3 space')!.projects.find((item) => item.name === 'v3 project')!;
     assert.deepEqual((await call(`/api/projects/${v3Project.id}/webhooks`, { token: admin })).body['webhooks'], [],
       'pre-v4 extension data is never treated as validated integration configuration');
+
+    const v4Import = await call('/api/org/import', {
+      method: 'PUT', token: admin, body: JSON.stringify({
+        version: 4, name: 'v4 compatible', members: [], keys: [], shares: [],
+        spaces: [{ id: 's-v4', name: 'v4 space', projects: [{
+          id: 'p-v4', name: 'v4 project',
+          board: { config: 'botflow: 0\nname: v4 project\nlanes:\n  - id: todo\n', cards: [] },
+          integrations: { schema: 'botflow.integrations.v1', webhooks: [], emailRoutes: [], emailSubscriptions: [] },
+          children: [],
+        }] }],
+      }),
+    });
+    assert.equal(v4Import.status, 200, `a v4 backup with the old role set still restores: ${JSON.stringify(v4Import.body)}`);
 
     // A restored owner is org-wide by construction: role checks never consult
     // scope, so a row claiming owner+project would gate as owner while the

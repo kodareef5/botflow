@@ -152,12 +152,13 @@ work.
 
 ## Company export and restore
 
-Company export version 4 carries each project's active integration configuration under
-the versioned `botflow.integrations.v1` schema. That includes webhook URLs, filters, and
-signing secrets; inbound email route operation, target, actor, and SHA-256 token hash;
-and outbound email recipients and filters. Revoked configuration is omitted. The export
-already contains member password hashes, API-key hashes, and share capabilities, so this
-is one more reason to encrypt it at rest and restrict it like a credential bundle.
+Company export version 5 carries each project's active integration configuration under
+the versioned `botflow.integrations.v1` schema (the integration block was introduced in
+export v4). That includes webhook URLs, filters, and signing secrets; inbound email route
+operation, target, actor, and SHA-256 token hash; and outbound email recipients and filters.
+Revoked configuration is omitted. The export already contains member password hashes,
+API-key hashes, scoped-admin grants, and share capabilities, so this is one more reason to
+encrypt it at rest and restrict it like a credential bundle.
 
 An inbound route's raw `bfmail_…` bearer token is never recoverable from botflow and is
 not placed in an export. A retained raw token continues to work after restore because

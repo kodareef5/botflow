@@ -487,11 +487,12 @@ test('usernames must survive a markdown log round-trip', () => {
 });
 
 test('roles order strictly and deny anything unrecognized', () => {
-  const table: [unknown, 'read' | 'write' | 'owner', boolean][] = [
-    ['owner', 'read', true], ['owner', 'write', true], ['owner', 'owner', true],
-    ['write', 'read', true], ['write', 'write', true], ['write', 'owner', false],
-    ['read', 'read', true], ['read', 'write', false], ['read', 'owner', false],
-    ['admin', 'read', false], ['', 'read', false], [null, 'read', false], [undefined, 'owner', false],
+  const table: [unknown, 'read' | 'write' | 'admin' | 'owner', boolean][] = [
+    ['owner', 'read', true], ['owner', 'write', true], ['owner', 'admin', true], ['owner', 'owner', true],
+    ['admin', 'read', true], ['admin', 'write', true], ['admin', 'admin', true], ['admin', 'owner', false],
+    ['write', 'read', true], ['write', 'write', true], ['write', 'admin', false], ['write', 'owner', false],
+    ['read', 'read', true], ['read', 'write', false], ['read', 'admin', false], ['read', 'owner', false],
+    ['superuser', 'read', false], ['', 'read', false], [null, 'read', false], [undefined, 'owner', false],
   ];
   for (const [role, need, want] of table) {
     assert.equal(roleAllows(role, need), want, `${JSON.stringify(role)} → ${need}`);

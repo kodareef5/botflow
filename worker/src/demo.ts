@@ -32,7 +32,7 @@ export interface SpaceImport {
 }
 
 export interface OrgImport {
-  version: 1 | 2 | 3 | 4;
+  version: 1 | 2 | 3 | 4 | 5;
   name?: string;
   theme?: Record<string, unknown>;
   prefs?: Record<string, unknown>;

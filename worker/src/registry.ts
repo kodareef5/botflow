@@ -380,7 +380,7 @@ export class RegistryDO extends DurableObject {
       }));
   }
 
-  /** Every share link in the org, with its project name (admin manage view). */
+  /** Every share link in the org, with its project name (owner manage view). */
   listAllShares(): CapabilityRow[] {
     return this.capabilityRows();
   }
@@ -802,11 +802,15 @@ export class RegistryDO extends DurableObject {
 
   private memberById(id: string): Identity | null {
     const row = this.sql.exec('SELECT * FROM members WHERE id = ? AND disabled = 0', id).toArray()[0];
-    return row ? this.toIdentity(row) : null;
+    if (!row) return null;
+    const identity = this.toIdentity(row);
+    if (!validRole(identity.role) || !validScopeKind(identity.scopeKind)) return null;
+    if (identity.role === 'admin' && identity.scopeKind === 'org') return null;
+    return identity;
   }
 
   /** The single insert path for a member, shared by setup, recovery and the
-   *  admin API, so username/scope validation can never be skipped by one of
+   *  member-administration API, so username/scope validation can never be skipped by one of
    *  them. Callers are responsible for authorizing the create. */
   private checkNewMember(username: string, password: string, role: Role, scopeKind: ScopeKind, scopeId: string | null):
     { kind: ScopeKind; id: string | null } | { error: string } {
@@ -846,10 +850,13 @@ export class RegistryDO extends DurableObject {
     return { id: this.insertMemberRow(username, display, kind, role, scope, await hashPassword(password)) };
   }
 
-  /** An owner is org-wide by definition; anything else must name a scope that
-   *  actually exists, or the member would hold a grant over nothing. */
+  /** An owner is org-wide by definition. Admin is deliberately scoped so it
+   *  cannot become an owner alias; read/write may still be company-wide. Any
+   *  named scope must actually exist or the member would hold a grant over
+   *  nothing. */
   private resolveScope(role: Role, kind: ScopeKind, id: string | null): { kind: ScopeKind; id: string | null } | { error: string } {
     if (role === 'owner') return { kind: 'org', id: null };
+    if (role === 'admin' && kind === 'org') return { error: 'admin scope must be a space or project' };
     if (kind === 'org') return { kind: 'org', id: null };
     if (typeof id !== 'string' || id === '') return { error: `a ${kind} scope needs a ${kind} id` };
     if (kind === 'space') {
@@ -864,7 +871,7 @@ export class RegistryDO extends DurableObject {
     username?: unknown; display?: unknown; kind?: unknown; role?: unknown;
     scopeKind?: unknown; scopeId?: unknown; password?: unknown;
   }): Promise<{ id: string } | { error: string }> {
-    if (!validRole(input.role)) return { error: "role must be 'owner', 'write' or 'read'" };
+    if (!validRole(input.role)) return { error: "role must be 'owner', 'admin', 'write' or 'read'" };
     if (!validScopeKind(input.scopeKind)) return { error: "scope must be 'org', 'space' or 'project'" };
     return this.insertMember(
       typeof input.username === 'string' ? input.username : '',
@@ -900,7 +907,7 @@ export class RegistryDO extends DurableObject {
     if (!row) return { error: `no member ${id}` };
     const current = this.toIdentity(row);
     const role = patch.role === undefined ? current.role : patch.role;
-    if (!validRole(role)) return { error: "role must be 'owner', 'write' or 'read'" };
+    if (!validRole(role)) return { error: "role must be 'owner', 'admin', 'write' or 'read'" };
     const scopeKind = patch.scopeKind === undefined ? current.scopeKind : patch.scopeKind;
     if (!validScopeKind(scopeKind)) return { error: "scope must be 'org', 'space' or 'project'" };
     const scopeId = patch.scopeId === undefined ? current.scopeId : (typeof patch.scopeId === 'string' && patch.scopeId !== '' ? patch.scopeId : null);

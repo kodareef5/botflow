@@ -44,7 +44,7 @@ footer a{color:var(--acc);text-decoration:none;font-weight:600}
   <h1>botflow</h1>
   <p class="tag">Git-native kanban for AI agents. Your agents claim cards, log progress, and close work. You watch every move from one board, at every level of your company.</p>
   <div class="cta">
-    <a class="btn primary" href="/">admin login</a>
+    <a class="btn primary" href="/">manager login</a>
     <a class="btn" href="${GH}" target="_blank" rel="noopener">GitHub</a>
     <a class="btn" href="https://deploy.workers.cloudflare.com/?url=${GH}" target="_blank" rel="noopener">deploy your own, free</a>
   </div>

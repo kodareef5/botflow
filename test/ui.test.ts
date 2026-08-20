@@ -296,7 +296,7 @@ test('ui: identity, role flags and the name directory refresh together', () => {
   // rebuild it. Reassigning ORG alone leaves renamed members showing their
   // old name until a full page load.
   assert.match(app, /function adoptOrg\(org\)\{/, 'org adoption lives in one place');
-  for (const derived of ['ME=', 'CAN_WRITE=', 'IS_OWNER=', 'RO=', 'DIR=']) {
+  for (const derived of ['ME=', 'CAN_WRITE=', 'CAN_SHAPE=', 'IS_OWNER=', 'RO=', 'DIR=']) {
     assert.ok(app.slice(app.indexOf('function adoptOrg(')).slice(0, 400).includes(derived),
       `adoptOrg refreshes ${derived}`);
   }
@@ -311,6 +311,12 @@ test('ui: identity, role flags and the name directory refresh together', () => {
   const roles = /\[([^\]]*'owner'[^\]]*)\]\.map\(r=>'<option value="'\+r/.exec(app);
   assert.ok(roles, 'the role select is built from a list');
   assert.ok(!roles[1]!.trimStart().startsWith("'owner'"), 'owner is not the default-selected first option');
+  assert.match(app, /CAN_WRITE=!!ME&&\['write','admin','owner'\]\.includes\(ME\.role\)/,
+    'unknown roles fail closed instead of inheriting write');
+  assert.match(app, /CAN_SHAPE=!!ME&&\['admin','owner'\]\.includes\(ME\.role\)/,
+    'board-shape controls have their own capability');
+  assert.match(app, /CAN_SHAPE\?'<button id="editboard"/,
+    'admins see the board editor without receiving owner settings');
 });
 
 test('ui: an org refresh cannot redraw settings as a board', async () => {
@@ -573,6 +579,10 @@ test('ui: the member directory consumes the flat identity scope contract', () =>
   const fields = memberFields({ display: 'Builder', role: 'write', scopeKind: 'project', scopeId: 'p-build' });
   assert.match(fields, /value="project:p-build" selected/,
     'editing a member selects the scope returned by /api/members');
+  const adminFields = memberFields({ display: 'Shaper', role: 'admin', scopeKind: 'space', scopeId: 's-ops' });
+  assert.match(adminFields, /value="admin" selected/, 'admin is available in the owner-managed role picker');
+  assert.match(adminFields, /value="space:s-ops" selected/);
+  assert.doesNotMatch(adminFields, /value="org"/, 'the UI cannot submit an org-scoped admin');
 
   const common = { display: 'Agent', username: 'agent', role: 'write', scopeKind: 'project', scopeId: 'p-build', keys: 0, disabled: false };
   const bot = memberRow({ ...common, memberId: 'm-bot', kind: 'bot' });
@@ -582,6 +592,10 @@ test('ui: the member directory consumes the flat identity scope contract', () =>
   assert.doesNotMatch(human, /data-keym=/, 'human accounts keep key creation in their own account panel');
 
   const app = scripts.join('\n');
+  assert.match(app, /function wireMemberFields\(\)/, 'member scope options react to role changes');
+  assert.match(app, /role\.value==='admin'/, 'switching to admin removes company scope');
+  assert.ok((app.match(/wireMemberFields\(\)/g) ?? []).length >= 3,
+    'the role/scope invariant is wired for both create and edit forms');
   assert.match(app, /const endpoint='\/api\/keys\?member='\+encodeURIComponent\(m\.memberId\)/);
   assert.match(app, /api\(endpoint,\{method:'POST'/,
     'the bot key flow provisions the selected member, not the logged-in owner');
