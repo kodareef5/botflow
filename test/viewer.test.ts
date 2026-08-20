@@ -12,6 +12,7 @@ import { analyze, loadTree } from '../src/core/index.ts';
 const NESTED = join(import.meta.dirname, 'fixtures', 'nested');
 const PRESENTATION = join(import.meta.dirname, 'fixtures', 'presentation');
 const RELATIONS = join(import.meta.dirname, 'fixtures', 'relations');
+const COLLABORATION = join(import.meta.dirname, 'fixtures', 'collaboration');
 
 test('viewer: serve exposes page and live data', async () => {
   const { server, url } = await serveBoard(NESTED, 0);
@@ -92,6 +93,20 @@ test('viewer: relationships are inspectable and same-board edges draw as SVG con
   for (const needle of ['function drawRelations(b)', "marker.setAttribute('id','viewer-rel-arrow')", "rel.source==='text'", '<h3>relationships</h3>']) {
     assert.ok(html.includes(needle), `viewer relationship surface missing: ${needle}`);
   }
+});
+
+test('viewer: collaboration signals have card-face and detail parity', () => {
+  const tree = loadTree(COLLABORATION);
+  const data = viewerData(tree, analyze(tree));
+  const board = data.boards['.'] as { lanes: { cards: Record<string, unknown>[] }[] };
+  const card = board.lanes.flatMap((lane) => lane.cards).find((candidate) => candidate['id'] === '001')!;
+  assert.deepEqual(card['watchers'], ['lea', 'sam']);
+  assert.deepEqual(card['votes'], ['lea', 'bob']);
+  assert.deepEqual(card['mentions'], ['ops-lead', 'sam']);
+  assert.equal(card['boostCount'], 1);
+  const html = viewerHtml(data, { live: false });
+  for (const needle of ['title="watchers"', 'title="votes"', 'title="boosts"', "['mentions',", "['boosts',c.boostCount"])
+    assert.ok(html.includes(needle), `local viewer collaboration surface missing: ${needle}`);
 });
 
 test('viewer: serve answers only loopback Host headers (DNS-rebinding guard)', async () => {

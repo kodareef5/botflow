@@ -38,7 +38,11 @@ export interface OrgImport {
     scopeKind: string; scopeId: string | null; passHash: string; disabled: boolean; created: string;
   }[];
   keys?: { hash: string; username: string; label: string; created: string; revoked: boolean }[];
-  shares?: { token: string; projectId: string; label: string; created: string; revoked: boolean; cardId?: string | null }[];
+  shares?: {
+    token: string; projectId: string; label: string; created: string; revoked: boolean;
+    cardId?: string | null; kind?: 'page' | 'feed'; memberUsername?: string | null;
+    laneId?: string | null; filterId?: string | null; lastViewed?: string | null;
+  }[];
   spaces: SpaceImport[];
 }
 

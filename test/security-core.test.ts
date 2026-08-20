@@ -36,6 +36,8 @@ function bareCard(over: Partial<Card> = {}): Card {
     labels: [],
     assignee: null,
     delegate: null,
+    watchers: [],
+    votes: [],
     priority: null,
     deps: [],
     relations: [],

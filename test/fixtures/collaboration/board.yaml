@@ -1,0 +1,21 @@
+botflow: 0
+name: collaboration
+features: [search, collaboration]
+lanes:
+  - id: todo
+  - id: doing
+  - id: done
+filters:
+  - id: mine
+    name: My open work
+    query: "assignee:@me -state:done"
+  - id: customer
+    name: Customer work
+    query: field.customer:acme
+subscriptions:
+  - lane: doing
+    watcher: ops-lead
+fields:
+  - id: customer
+    name: Customer
+    type: text

@@ -238,6 +238,9 @@ function badge(c){
   if(c.descriptionPresent)b.push('<span title="description">≡</span>');
   if(c.comments)b.push('<span title="comments">◌ '+c.comments+'</span>');
   if(c.attachments)b.push('<span title="attachments">⌕ '+c.attachments+'</span>');
+  if((c.watchers||[]).length)b.push('<span title="watchers">◉ '+c.watchers.length+'</span>');
+  if(c.voteCount)b.push('<span title="votes">▲ '+c.voteCount+'</span>');
+  if(c.boostCount)b.push('<span title="boosts">✦ '+c.boostCount+'</span>');
   const s=c.metrics&&c.metrics.stagnation;if(s&&s.dots)b.push('<span title="'+s.days+' cumulative days in lane">'+('●'.repeat(s.dots))+'</span>');
   if(READY.has(c.id))b.push('<span class="ready">▶ ready</span>');
   return b.slice(0,10).join('')}
@@ -328,6 +331,8 @@ function openDrawer(c){
   const rows=[['position',c.position],['state',c.state],['assignee',c.assignee],['delegate',c.delegate],['priority',c.priority],
     ['start',c.start],['due',c.due],['estimate',c.estimate],['evergreen',c.evergreen?'yes':null],
     ['labels',(c.labels||[]).join(', ')],['deps',(c.deps||[]).join(', ')],['blocked',c.blocked],
+    ['watchers',(c.watchers||[]).map(x=>'@'+x).join(', ')],['votes',(c.votes||[]).map(x=>'@'+x).join(', ')],
+    ['mentions',(c.mentions||[]).map(x=>'@'+x).join(', ')],['boosts',c.boostCount||null],
     ...(c.fields||[]).map(f=>[f.name,fieldText(f.value)]),
     ['current lane',c.metrics&&c.metrics.currentLaneDays!=null?c.metrics.currentLaneDays+'d':null],
     ['cumulative lane',c.metrics&&c.metrics.cumulativeLaneDays!=null?c.metrics.cumulativeLaneDays+'d':null],

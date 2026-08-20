@@ -8,6 +8,7 @@ import type { BoardNode, Card, Tree } from './model.ts';
 import { boardFlowMetrics, cardFlowMetrics } from './metrics.ts';
 import { cardCustomFields, labelColor, scopedLabel } from './presentation.ts';
 import { textCardReferences } from './refs.ts';
+import { collaborationAudience } from './query.ts';
 
 export function cardJson(card: Card, node: BoardNode, ba: BoardAnalysis, nowValue: number | Date = Date.now()): Record<string, unknown> {
   const parsed = parseBody(card.body);
@@ -47,6 +48,12 @@ export function cardJson(card: Card, node: BoardNode, ba: BoardAnalysis, nowValu
     }),
     assignee: card.assignee,
     delegate: card.delegate,
+    watchers: card.watchers,
+    votes: card.votes,
+    voteCount: card.votes.length,
+    mentions: parsed.mentions,
+    boostCount: parsed.boosts.length,
+    audience: collaborationAudience(card, node.board),
     priority: card.priority,
     deps: card.deps,
     relations: storedRelations,
@@ -102,6 +109,8 @@ export function boardJson(tree: Tree, analysis: Analysis, key = '.', nowValue: n
     templates: node.board.config.templates.map(({ id, name, lane, labels, priority, assignee, delegate, start, due, estimate, evergreen, coverColor, fields, body }) => ({
       id, name, lane, labels, priority, assignee, delegate, start, due, estimate, evergreen, coverColor, fields, body,
     })),
+    filters: node.board.config.savedFilters.map(({ id, name, query }) => ({ id, name, query })),
+    subscriptions: node.board.config.subscriptions.map(({ lane, watcher }) => ({ lane, watcher })),
     cards: node.board.cards.length,
     progress: ba.progress,
     effort: ba.effort,
@@ -114,6 +123,7 @@ export function boardJson(tree: Tree, analysis: Analysis, key = '.', nowValue: n
       substates: lane.substates,
       order: lane.order,
       wip: lane.wip,
+      subscribers: node.board.config.subscriptions.filter((item) => item.lane === lane.id).map((item) => item.watcher),
       estimate: node.board.cards.filter((c) => c.laneId === lane.id).reduce((sum, card) => sum + (card.estimate ?? 0), 0),
       cards: node.board.cards.filter((c) => c.laneId === lane.id).map((c) => cardJson(c, node, ba, nowValue)),
     })),

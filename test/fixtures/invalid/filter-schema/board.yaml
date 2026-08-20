@@ -1,0 +1,6 @@
+botflow: 0
+name: invalid saved filter
+features: [search]
+filters:
+  - id: bad
+    query: imaginary:value

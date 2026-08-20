@@ -721,6 +721,54 @@ vendor:
     const crossClaim = await call(`/api/projects/${parent}/cards/${crossWaiterId}/claim`, { method: 'POST', token: admin, body: '{}' });
     assert.equal(crossClaim.status, 200, JSON.stringify(crossClaim.body));
 
+    // Discovery/collaboration is one contract across hosted APIs and feeds.
+    assert.equal((await call(`/api/projects/${parent}/cards/${crossWaiterId}/watch`, { method: 'POST', token: key, body: '{}' })).status, 200);
+    assert.equal((await call(`/api/projects/${parent}/cards/${crossWaiterId}/vote`, { method: 'POST', token: key, body: '{}' })).status, 200);
+    assert.equal((await call(`/api/projects/${parent}/cards/${crossWaiterId}/boost`, { method: 'POST', token: key, body: JSON.stringify({ text: 'ship it 🚀' }) })).status, 200);
+    assert.equal((await call(`/api/projects/${parent}/cards/${crossWaiterId}/edit`, {
+      method: 'POST', token: key, body: JSON.stringify({ due: '2026-08-21' }),
+    })).status, 200);
+    const savedFilter = await call(`/api/projects/${parent}/filters`, {
+      method: 'POST', token: admin, body: JSON.stringify({ id: 'bot-watch', name: 'Bot watch', query: 'watcher:@me' }),
+    });
+    assert.equal(savedFilter.status, 200, JSON.stringify(savedFilter.body));
+    const searched = await call(`/api/projects/${parent}/search?saved=bot-watch`, { token: key });
+    assert.equal(searched.status, 200);
+    assert.deepEqual((searched.body as unknown as { id: string }[]).map((card) => card.id), [crossWaiterId]);
+    assert.equal((await call(`/api/projects/${parent}/lanes/doing/subscribe`, { method: 'POST', token: key, body: '{}' })).status, 200);
+    const collabCard = (await call(`/api/projects/${parent}/cards/${crossWaiterId}`, { token: admin })).body as unknown as {
+      watchers: string[]; votes: string[]; boostCount: number; audience: string[];
+    };
+    assert.deepEqual(collabCard.watchers, ['alpha-agent']);
+    assert.deepEqual(collabCard.votes, ['alpha-agent']);
+    assert.equal(collabCard.boostCount, 1);
+    assert.ok(collabCard.audience.includes('alpha-agent'));
+
+    const feedCreated = await call(`/api/projects/${parent}/feeds`, {
+      method: 'POST', token: key, body: JSON.stringify({ label: 'bot activity', filter: 'bot-watch' }),
+    });
+    assert.equal(feedCreated.status, 200, JSON.stringify(feedCreated.body));
+    const feedToken = feedCreated.body['token'] as string;
+    for (const [format, contentType, needle] of [
+      ['atom', 'application/atom+xml', '<feed xmlns="http://www.w3.org/2005/Atom">'],
+      ['rss', 'application/rss+xml', '<rss version="2.0">'],
+      ['ics', 'text/calendar', 'BEGIN:VCALENDAR'],
+    ] as const) {
+      const response = await fetch(`${U}/feeds/${feedToken}.${format}`);
+      assert.equal(response.status, 200, `${format} feed`);
+      assert.match(response.headers.get('content-type') ?? '', new RegExp(`^${contentType.replace(/[+]/g, '\\+')}`));
+      const text = await response.text();
+      assert.ok(text.includes(needle), `${format} has its root marker`);
+      if (format === 'ics') assert.ok(text.includes(`X-BOTFLOW-CARD-ID:${crossWaiterId}`), 'calendar includes matching due card');
+    }
+    const feeds = (await call(`/api/projects/${parent}/feeds`, { token: key })).body as unknown as { token: string; filterId: string; memberUsername: string }[];
+    assert.equal(feeds.find((feed) => feed.token === feedToken)?.filterId, 'bot-watch');
+    assert.equal(feeds.find((feed) => feed.token === feedToken)?.memberUsername, 'alpha-agent');
+    const disposableFeed = await call(`/api/projects/${parent}/feeds`, { method: 'POST', token: key, body: JSON.stringify({ label: 'revoke me' }) });
+    const disposableToken = disposableFeed.body['token'] as string;
+    assert.equal((await call(`/api/feeds/${disposableFeed.body['id'] as string}/revoke`, { method: 'POST', token: key, body: '{}' })).status, 200);
+    assert.equal((await fetch(`${U}/feeds/${disposableToken}.rss`)).status, 404, 'revocation is immediate');
+
     // Share link + export/import round trip as a restore.
     const share = (await call(`/api/projects/${parent}/shares`, { method: 'POST', token: admin, body: JSON.stringify({ label: 'peek' }) })).body['token'] as string;
     assert.equal((await call(`/api/public/${share}/board`)).status, 200, 'direct share url remains usable');
@@ -802,6 +850,13 @@ vendor:
     // own company. That is also why the export is a credential.
     assert.match(exportedMembers.find((m) => m.username === 'root')!.passHash, /^pbkdf2\$/);
     assert.ok((exported['keys'] as { username: string }[]).every((k) => k.username === 'alpha-agent'), 'keys name their member, not a project');
+    const exportedCapabilities = exported['shares'] as { token: string; kind?: string; memberUsername?: string; filterId?: string }[];
+    const exportedFeed = exportedCapabilities.find((capability) => capability.token === feedToken);
+    assert.deepEqual(
+      { kind: exportedFeed?.kind, memberUsername: exportedFeed?.memberUsername, filterId: exportedFeed?.filterId },
+      { kind: 'feed', memberUsername: 'alpha-agent', filterId: 'bot-watch' },
+      'feed capability scope and member survive export',
+    );
     const manifest = exported['uploads'] as { key: string }[];
     assert.ok(manifest.some((u) => upUrl === `/files/${u.key}`), 'export manifests uploaded objects');
     await call('/api/settings', {
@@ -811,6 +866,7 @@ vendor:
 
     await call(`/api/spaces/${space}`, { method: 'DELETE', token: admin });
     assert.equal((await call(`/api/public/${share}/board`)).status, 404, 'share died with the space');
+    assert.equal((await fetch(`${U}/feeds/${feedToken}.atom`)).status, 404, 'member-scoped feed died with project scope');
     // Deleting the space took the bot's whole scope with it, so the member is
     // disabled and every credential it holds stops working at once.
     assert.equal((await call(`/api/projects/${parent}/board`, { token: key })).status, 401, 'a member with no scope left cannot authenticate');

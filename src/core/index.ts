@@ -1,7 +1,7 @@
 export * from './model.ts';
 export { parseYaml, YamlError, type YamlValue } from './yaml.ts';
 export { splitFrontmatter, joinFrontmatter, type FrontmatterSplit } from './frontmatter.ts';
-export { emitBoardYaml, parseBoardConfig, parseCustomFields, parseLabelDefinitions, parseTemplates } from './config.ts';
+export { emitBoardYaml, parseBoardConfig, parseCustomFields, parseLabelDefinitions, parseSavedFilters, parseSubscriptions, parseTemplates } from './config.ts';
 export { parseCard } from './card.ts';
 export {
   loadBoard,
@@ -44,6 +44,14 @@ export {
   type ChecklistItem,
   type ParsedBody,
 } from './body.ts';
+export {
+  QueryError,
+  collaborationAudience,
+  queryCards,
+  validateQuery,
+  type QueryMatch,
+  type QueryOptions,
+} from './query.ts';
 export { boardJson as coreBoardJson, cardDetailJson, cardJson as coreCardJson, rollupJson as coreRollupJson } from './json.ts';
 export { emitMap, emitScalar } from './emit.ts';
 export { validCardDate, validEstimate } from './fields.ts';
@@ -79,6 +87,7 @@ export {
   getCard,
   opAdd,
   opBlock,
+  opBoost,
   opClaim,
   opClose,
   opEdit,
@@ -91,8 +100,13 @@ export {
   opBulk,
   opTransferCard,
   opLog,
+  opRemoveFilter,
+  opSaveFilter,
+  opSubscribeLane,
   opMove,
   opUnblock,
+  opVote,
+  opWatch,
   resolvePosition,
   positionLabel,
   validateBoardPath,
@@ -110,6 +124,7 @@ export {
   addCard,
   addLogEntry,
   blockCard,
+  boostCard,
   claimCard,
   closeCard,
   editCard,
@@ -123,6 +138,11 @@ export {
   type TransferResult,
   initBoard,
   moveCard,
+  removeFilter,
+  saveFilter,
+  subscribeLane,
   unblockCard,
+  voteCard,
+  watchCard,
   writeCard,
 } from './mutate.ts';

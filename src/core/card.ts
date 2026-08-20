@@ -75,6 +75,26 @@ export function parseCard(
     }
   }
 
+  const actorList = (key: 'watchers' | 'votes'): string[] => {
+    const raw = m[key];
+    if (raw === undefined) return [];
+    if (!Array.isArray(raw)) {
+      findings.push(finding('schema', id, `${key} must be a list`));
+      return [];
+    }
+    const values: string[] = [];
+    for (const value of raw) {
+      if (typeof value !== 'string' || value === '') {
+        findings.push(finding('schema', id, `${key} must contain non-empty actor names`));
+      } else if (values.includes(value)) {
+        findings.push(finding('schema', id, `${key} contains duplicate actor "${value}"`));
+      } else {
+        values.push(value);
+      }
+    }
+    return values;
+  };
+
   const deps: string[] = [];
   if (m['deps'] !== undefined) {
     if (Array.isArray(m['deps'])) {
@@ -185,6 +205,8 @@ export function parseCard(
     labels,
     assignee: actorField('assignee'),
     delegate: actorField('delegate'),
+    watchers: actorList('watchers'),
+    votes: actorList('votes'),
     priority,
     deps,
     relations,

@@ -7,10 +7,11 @@ import { validCardDate } from './fields.ts';
 
 export const BUILTIN_CARD_KEYS = new Set([
   'id', 'title', 'lane', 'type', 'board', 'labels', 'assignee', 'delegate', 'priority', 'deps', 'relations',
+  'watchers', 'votes',
   'start', 'due', 'estimate', 'evergreen', 'cover', 'cover_color', 'blocked', 'created', 'updated',
 ]);
 
-export const RESERVED_CARD_KEYS = new Set(['spent', 'watchers', 'relates', 'weight']);
+export const RESERVED_CARD_KEYS = new Set(['spent', 'relates', 'weight']);
 
 const COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const PALETTE = ['#2a78d6', '#d03b3b', '#0e8a67', '#8d5bd1', '#c47317', '#b43f8c', '#427a3c', '#5266b8', '#b5512e', '#087d8f'];

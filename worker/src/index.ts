@@ -14,6 +14,7 @@ import { resolvePosition } from '../../src/core/ops.ts';
 import type { BoardDocument } from '../../src/core/docs.ts';
 import { ProjectDO, validateImportDocuments } from './project.ts';
 import { RegistryDO, type Identity, type OrgTree, type ProjectNode } from './registry.ts';
+import { atomFeed, calendarFeed, rssFeed } from './feeds.ts';
 import { ABOUT_HTML } from './about.ts';
 import { DEMO, type OrgImport, type ProjectImport } from './demo.ts';
 import { roleAllows, setupAccess, validRole, validScopeKind, validUsername } from './security.ts';
@@ -306,7 +307,18 @@ function validateOrgImportPayload(value: unknown): string | null {
       if (!isRecord(share) || typeof share['token'] !== 'string' || !/^[a-f0-9]{16,64}$/.test(share['token']) ||
           typeof share['projectId'] !== 'string' || !ids.has(share['projectId']) || typeof share['label'] !== 'string' ||
           typeof share['created'] !== 'string' || typeof share['revoked'] !== 'boolean' ||
-          (share['cardId'] !== undefined && typeof share['cardId'] !== 'string')) return 'malformed share metadata';
+          (share['cardId'] !== undefined && share['cardId'] !== null && typeof share['cardId'] !== 'string') ||
+          (share['kind'] !== undefined && share['kind'] !== 'page' && share['kind'] !== 'feed') ||
+          (share['memberUsername'] !== undefined && share['memberUsername'] !== null && typeof share['memberUsername'] !== 'string') ||
+          (share['laneId'] !== undefined && share['laneId'] !== null && typeof share['laneId'] !== 'string') ||
+          (share['filterId'] !== undefined && share['filterId'] !== null && typeof share['filterId'] !== 'string') ||
+          (share['lastViewed'] !== undefined && share['lastViewed'] !== null && typeof share['lastViewed'] !== 'string')) return 'malformed share metadata';
+      if (share['kind'] === 'feed') {
+        if (typeof share['memberUsername'] !== 'string' || !usernames.has(share['memberUsername'])) return 'feed capability names an unknown member';
+        if ([share['cardId'], share['laneId'], share['filterId']].filter((scope) => typeof scope === 'string' && scope !== '').length > 1) {
+          return 'feed capability has more than one scope';
+        }
+      }
     }
   }
   if (value['theme'] !== undefined && !isRecord(value['theme'])) return 'theme must be an object';
@@ -342,6 +354,37 @@ export default {
       if (req.method === 'GET' && shareMatch) {
         const share = await registry.resolveShare(shareMatch[1]!);
         return new Response(uiHtml(shareMatch[1]!, share?.cardId ?? null), { headers: HTML_HEADERS });
+      }
+      const feedMatch = /^\/feeds\/([a-f0-9]{16,64})\.(atom|rss|ics)$/.exec(url.pathname);
+      if (req.method === 'GET' && feedMatch) {
+        const capability = await registry.resolveShare(feedMatch[1]!, 'feed');
+        if (capability === null) return new Response('feed not found\n', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+        const snapshot = await project(capability.projectId).feedSnapshot({
+          cardId: capability.cardId,
+          laneId: capability.laneId,
+          filterId: capability.filterId,
+        }, capability.memberUsername ?? 'feed');
+        if ('error' in snapshot) return new Response('feed scope is no longer available\n', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+        const generatedAt = new Date().toISOString();
+        const self = `${url.origin}${url.pathname}`;
+        const format = feedMatch[2]!;
+        const body = format === 'atom'
+          ? atomFeed({ ...snapshot, feedUrl: self, generatedAt })
+          : format === 'rss'
+            ? rssFeed({ ...snapshot, feedUrl: self, generatedAt })
+            : calendarFeed({ ...snapshot, generatedAt });
+        const contentType = format === 'atom'
+          ? 'application/atom+xml; charset=utf-8'
+          : format === 'rss'
+            ? 'application/rss+xml; charset=utf-8'
+            : 'text/calendar; charset=utf-8';
+        return new Response(body, {
+          headers: {
+            'content-type': contentType,
+            'cache-control': 'private, max-age=60',
+            'x-content-type-options': 'nosniff',
+          },
+        });
       }
       // Uploaded attachments: the random key segment is the capability, like
       // share tokens; objects render in <img> tags and on public card pages,
@@ -630,6 +673,10 @@ export default {
           shares: (await registry.listAllShares()).map((s) => ({
             token: s.token, projectId: s.projectId, label: s.label, created: s.created, revoked: s.revoked,
             ...(s.cardId ? { cardId: s.cardId } : {}),
+            ...(s.kind === 'feed' ? { kind: 'feed' as const, memberUsername: s.memberUsername } : {}),
+            ...(s.laneId ? { laneId: s.laneId } : {}),
+            ...(s.filterId ? { filterId: s.filterId } : {}),
+            ...(s.lastViewed ? { lastViewed: s.lastViewed } : {}),
           })),
           // Uploaded binaries stay in R2: the export carries a manifest of
           // them, not the bytes. Back the bucket up separately; a restore
@@ -737,7 +784,10 @@ export default {
             }
             for (const s of payload.shares ?? []) {
               const pid = idMap.get(s.projectId);
-              if (pid) await registry.restoreShare(s.token, pid, s.label, s.created, s.revoked, s.cardId ?? null);
+              if (pid) await registry.restoreShare(
+                s.token, pid, s.label, s.created, s.revoked, s.cardId ?? null,
+                s.kind ?? 'page', s.memberUsername ?? null, s.laneId ?? null, s.filterId ?? null, s.lastViewed ?? null,
+              );
             }
             if ((await registry.liveOwners()) === 0) {
               throw new Error('this import would leave the company with no live owner');
@@ -920,6 +970,20 @@ export default {
         await registry.audit(actor, 'delete-share', shareDelete[1]!);
         return json(res);
       }
+      const feedRevoke = /^\/api\/feeds\/([^/]+)\/revoke$/.exec(url.pathname);
+      if (req.method === 'POST' && feedRevoke) {
+        const res = await registry.revokeOwnFeed(feedRevoke[1]!, identity.memberId);
+        if ('error' in res) return json(res, 404);
+        await registry.audit(actor, 'revoke-feed', feedRevoke[1]!);
+        return json(res);
+      }
+      const feedDelete = /^\/api\/feeds\/([^/]+)$/.exec(url.pathname);
+      if (req.method === 'DELETE' && feedDelete) {
+        const res = await registry.deleteOwnFeed(feedDelete[1]!, identity.memberId);
+        if ('error' in res) return json(res, 404);
+        await registry.audit(actor, 'delete-feed', feedDelete[1]!);
+        return json(res);
+      }
       if (req.method === 'GET' && url.pathname === '/api/org/shares') {
         const denied = requireOwner();
         if (denied) return denied;
@@ -1039,6 +1103,51 @@ export default {
         const limit = limitParam(url.searchParams.get('limit'));
         return json(await stub.listEvents(limit));
       }
+      if (req.method === 'GET' && rest === '/search') {
+        const saved = url.searchParams.get('saved');
+        let query = url.searchParams.get('q') ?? '';
+        if (saved !== null) {
+          if (url.searchParams.has('q')) return json({ error: 'use q or saved, not both' }, 400);
+          const config = await stub.boardConfig() as { filters?: { id: string; query: string }[] };
+          const filter = config.filters?.find((candidate) => candidate.id === saved);
+          if (filter === undefined) return json({ error: `no saved filter "${saved}"` }, 404);
+          query = filter.query;
+        }
+        if (query.length > 4_000) return json({ error: 'query exceeds 4000 characters' }, 400);
+        const res = await stub.search(query, actor);
+        return 'error' in res ? json(res, 400) : json(res);
+      }
+      if (rest === '/filters') {
+        if (req.method === 'GET') {
+          const config = await stub.boardConfig() as { filters?: unknown[] };
+          return json(config.filters ?? []);
+        }
+        if (req.method === 'POST') {
+          const denied = requireWrite();
+          if (denied) return denied;
+          const body = (await req.json().catch(() => null)) as { id?: unknown; name?: unknown; query?: unknown } | null;
+          if (body === null || typeof body.id !== 'string' || typeof body.query !== 'string') return json({ error: 'id and query strings required' }, 400);
+          if (body.name !== undefined && typeof body.name !== 'string') return json({ error: 'name must be a string' }, 400);
+          const res = await stub.saveFilter(body.id, body.query, typeof body.name === 'string' ? body.name : null, actor);
+          return 'error' in res ? json(res, 400) : json(res);
+        }
+      }
+      const filterDelete = /^\/filters\/([a-z0-9][a-z0-9-]*)$/.exec(rest);
+      if (req.method === 'DELETE' && filterDelete) {
+        const denied = requireWrite();
+        if (denied) return denied;
+        const res = await stub.removeFilter(filterDelete[1]!, actor);
+        return 'error' in res ? json(res, 404) : json(res);
+      }
+      const laneSubscribe = /^\/lanes\/([a-z0-9][a-z0-9-]*)\/subscribe$/.exec(rest);
+      if (req.method === 'POST' && laneSubscribe) {
+        const denied = requireWrite();
+        if (denied) return denied;
+        const body = (await req.json().catch(() => ({}))) as { active?: unknown };
+        if (body.active !== undefined && typeof body.active !== 'boolean') return json({ error: 'active must be a boolean' }, 400);
+        const res = await stub.subscribeLane(laneSubscribe[1]!, actor, body.active !== false);
+        return 'error' in res ? json(res, 400) : json(res);
+      }
       if (rest === '/shares') {
         const denied = requireOwner();
         if (denied) return denied;
@@ -1056,6 +1165,35 @@ export default {
             await registry.audit(actor, 'create-share', `"${body.label ?? 'public link'}" for ${pid}${cardId ? ` (card ${cardId})` : ''}`);
           }
           return 'error' in res ? json(res, 400) : json(res);
+        }
+      }
+      if (rest === '/feeds') {
+        if (req.method === 'GET') return json(await registry.listFeeds(pid, identity.memberId));
+        if (req.method === 'POST') {
+          const body = (await req.json().catch(() => null)) as { label?: unknown; card?: unknown; lane?: unknown; filter?: unknown } | null;
+          if (body === null) return json({ error: 'invalid JSON body' }, 400);
+          for (const field of ['label', 'card', 'lane', 'filter'] as const) {
+            if (body[field] !== undefined && typeof body[field] !== 'string') return json({ error: `${field} must be a string` }, 400);
+          }
+          const cardId = typeof body.card === 'string' && body.card !== '' ? body.card : null;
+          const laneId = typeof body.lane === 'string' && body.lane !== '' ? body.lane : null;
+          const filterId = typeof body.filter === 'string' && body.filter !== '' ? body.filter : null;
+          if ([cardId, laneId, filterId].filter((value) => value !== null).length > 1) return json({ error: 'choose only one card, lane, or saved filter scope' }, 400);
+          if (cardId !== null && (await stub.card(cardId)) === null) return json({ error: `no card ${cardId}` }, 400);
+          if (laneId !== null || filterId !== null) {
+            const config = await stub.boardConfig() as { lanes?: { id: string }[]; filters?: { id: string }[] };
+            if (laneId !== null && !config.lanes?.some((lane) => lane.id === laneId)) return json({ error: `no lane ${laneId}` }, 400);
+            if (filterId !== null && !config.filters?.some((filter) => filter.id === filterId)) return json({ error: `no saved filter ${filterId}` }, 400);
+          }
+          const res = await registry.createFeed(pid, identity.memberId, typeof body.label === 'string' ? body.label : 'activity feed', cardId, laneId, filterId);
+          if ('error' in res) return json(res, 400);
+          await registry.audit(actor, 'create-feed', `${pid}${cardId ? ` card ${cardId}` : laneId ? ` lane ${laneId}` : filterId ? ` filter ${filterId}` : ''}`);
+          return json({
+            ...res,
+            atom: `${url.origin}/feeds/${res.token}.atom`,
+            rss: `${url.origin}/feeds/${res.token}.rss`,
+            ical: `${url.origin}/feeds/${res.token}.ics`,
+          });
         }
       }
       if (req.method === 'POST' && rest === '/cards') {

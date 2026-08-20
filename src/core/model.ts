@@ -40,6 +40,7 @@ export const RULE_SEVERITY: Record<string, Severity> = {
   'custom-field-value': 'error',
   'dangling-relation': 'error',
   'self-relation': 'error',
+  'boost-value': 'error',
   'unsupported-feature': 'warning',
   'unknown-key': 'info',
   'hosted-ref': 'info',
@@ -122,6 +123,21 @@ export interface CardTemplate {
   extra: Record<string, unknown>;
 }
 
+export interface SavedFilter {
+  id: string;
+  name: string;
+  query: string;
+  /** Unknown filter-map keys, preserved across board.yaml rewrites. */
+  extra: Record<string, unknown>;
+}
+
+export interface LaneSubscription {
+  lane: string;
+  watcher: string;
+  /** Unknown subscription-map keys, preserved across board.yaml rewrites. */
+  extra: Record<string, unknown>;
+}
+
 export interface BoardConfig {
   version: number;
   name: string;
@@ -138,6 +154,8 @@ export interface BoardConfig {
   labelDefinitions: LabelDefinition[];
   customFields: CustomFieldDefinition[];
   templates: CardTemplate[];
+  savedFilters: SavedFilter[];
+  subscriptions: LaneSubscription[];
   rollup: RollupPolicy;
   /** Unknown top-level board.yaml keys, preserved across rewrites. */
   extra: Record<string, unknown>;
@@ -155,6 +173,10 @@ export interface Card {
   assignee: string | null;
   /** Accountable human and executing agent are distinct roles. */
   delegate: string | null;
+  /** Explicit card followers, distinct from accountability or execution. */
+  watchers: string[];
+  /** Actor names with a current lightweight vote on the card. */
+  votes: string[];
   priority: string | null;
   deps: string[];
   relations: CardRelation[];
@@ -220,6 +242,8 @@ export function fallbackConfig(name: string): BoardConfig {
     labelDefinitions: [],
     customFields: [],
     templates: [],
+    savedFilters: [],
+    subscriptions: [],
     rollup: defaultRollup(),
     extra: {},
   };

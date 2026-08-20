@@ -10,6 +10,7 @@ import process from 'node:process';
 
 import type { Card, LoadedBoard } from './model.ts';
 import { analyze } from './analyze.ts';
+import { emitBoardYaml } from './config.ts';
 import { loadBoard, loadTree, resolveBoardRoot } from './load.ts';
 import { logMutation, serializeCard } from './write.ts';
 import { parseCardReference } from './refs.ts';
@@ -25,10 +26,14 @@ import {
   opClaim,
   opClose,
   opComment,
+  opBoost,
   opDescribe,
   opDetach,
   opEdit,
   opLog,
+  opRemoveFilter,
+  opSaveFilter,
+  opSubscribeLane,
   opLink,
   opUnlink,
   opPromote,
@@ -38,6 +43,8 @@ import {
   opTransferCard,
   opMove,
   opUnblock,
+  opVote,
+  opWatch,
   type AddOptions,
   type EditPatch,
   type ClaimMode,
@@ -386,6 +393,58 @@ export function commentCard(root: string, id: string, actor: string, text: strin
     const card = opComment(getCard(board, id), actor, text);
     writeCard(root, card);
     return card;
+  });
+}
+
+export function watchCard(root: string, id: string, actor: string, watching = true): ReturnType<typeof opWatch> {
+  return mutateCard(root, (board) => {
+    const result = opWatch(getCard(board, id), actor, watching);
+    if (result.changed) writeCard(root, result.card);
+    return result;
+  });
+}
+
+export function voteCard(root: string, id: string, actor: string, voting = true): ReturnType<typeof opVote> {
+  return mutateCard(root, (board) => {
+    const result = opVote(getCard(board, id), actor, voting);
+    if (result.changed) writeCard(root, result.card);
+    return result;
+  });
+}
+
+export function boostCard(root: string, id: string, actor: string, text: string): Card {
+  return mutateCard(root, (board) => {
+    const card = opBoost(getCard(board, id), actor, text);
+    writeCard(root, card);
+    return card;
+  });
+}
+
+function writeBoardConfig(root: string, board: LoadedBoard): void {
+  atomicWrite(join(root, 'board.yaml'), emitBoardYaml(board.config));
+}
+
+export function saveFilter(root: string, id: string, query: string, actor: string, name?: string): ReturnType<typeof opSaveFilter> {
+  return mutateCard(root, (board) => {
+    const filter = opSaveFilter(board.config, id, query, name);
+    writeBoardConfig(root, board);
+    return filter;
+  });
+}
+
+export function removeFilter(root: string, id: string, actor: string): ReturnType<typeof opRemoveFilter> {
+  return mutateCard(root, (board) => {
+    const filter = opRemoveFilter(board.config, id);
+    writeBoardConfig(root, board);
+    return filter;
+  });
+}
+
+export function subscribeLane(root: string, lane: string, actor: string, subscribing = true): ReturnType<typeof opSubscribeLane> {
+  return mutateCard(root, (board) => {
+    const result = opSubscribeLane(board.config, lane, actor, subscribing);
+    if (result.changed) writeBoardConfig(root, board);
+    return result;
   });
 }
 

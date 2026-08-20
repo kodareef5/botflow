@@ -153,6 +153,8 @@ function renderCols(readOnly = false): string {
   assert.ok(start !== -1 && end > start, 'column renderer found in page JS');
   const ctx: Record<string, unknown> = {
     RO: readOnly,
+    SEARCH_IDS: null,
+    ME: { username: 'owner' },
     esc: (s: unknown) => String(s),
     cardHtml: () => '<article data-card="001"></article>',
     board: {
@@ -263,7 +265,9 @@ test('ui: each writable lane ends with an add-card footer', () => {
   assert.ok(headingEnd !== -1 && footer > deckEnd, 'the add action follows the deck instead of floating in the heading');
   assert.ok(!html.slice(0, headingEnd).includes('data-addcard'), 'the lane heading has no add-card control');
   assert.match(html, /<button type="button" class="laneadd" data-addcard="todo"/);
-  assert.match(html, />\+ add card<\/button><\/footer>/);
+  assert.match(html, />\+ add card<\/button>/);
+  assert.match(html, /data-lanesub="todo"/);
+  assert.match(html, /aria-pressed="false"/);
   assert.ok(!renderCols(true).includes('lanefoot'), 'read-only boards do not advertise a write action');
 
   // Hover is an enhancement: keyboard focus reveals the same stable footer,
@@ -271,6 +275,36 @@ test('ui: each writable lane ends with an add-card footer', () => {
   assert.match(page, /\.col:hover \.lanefoot,\.col:focus-within \.lanefoot/);
   assert.match(page, /@media \(hover:none\)\{\.lanefoot\{/);
   assert.doesNotMatch(page, /\.lanefoot\{[^}]*display:none/);
+});
+
+test('ui: server search and saved filters do not replace a focused query input', () => {
+  const app = scripts.join('\n');
+  for (const needle of [
+    'role="search"', 'id="cardsearch"', 'id="savedsearch"', 'id="savefilter"', 'id="delfilter"',
+    "'/search?'", "'/filters'", 'function runSearch()', 'function syncSearchControls(b)',
+  ]) assert.ok(app.includes(needle), `search surface missing ${needle}`);
+  assert.match(app, /input\.oninput=.*SEARCH_TIMER=setTimeout\(runSearch,180\)/s, 'typing is debounced');
+  assert.match(app, /if\(e\.key==='Enter'\)\{e\.preventDefault\(\)/, 'enter searches without submitting a surrounding page form');
+  assert.match(app, /function paintBoard\(\)\{\s*const v=\$\('#view'\)/, 'search only redraws the board content');
+  assert.doesNotMatch(app.slice(app.indexOf('function boardHtml('), app.indexOf('async function refreshBoard(')), /cardsearch/,
+    'the polled/morphed board subtree never owns the focused search input');
+  assert.match(app, /SEARCH_IDS=new Set\(cards\.map\(c=>c\.id\)\)/, 'the server is authoritative for result membership');
+});
+
+test('ui: collaboration controls, lane subscriptions, and personal feeds are reachable', () => {
+  const app = scripts.join('\n');
+  for (const hook of [
+    'data-watch', 'data-vote', 'data-boost', 'data-feedcard', 'data-lanesub=',
+    'data-rfeed=', 'data-dfeed=', 'data-copyfeed=', "['atom','Atom']", "['rss','RSS']", "['ics','iCal']",
+  ]) assert.ok(app.includes(hook), `collaboration/feed surface missing ${hook}`);
+  assert.match(app, /cardApi\(c\.id\)\+'\/watch'/);
+  assert.match(app, /cardApi\(c\.id\)\+'\/vote'/);
+  assert.match(app, /cardApi\(c\.id\)\+'\/boost'/);
+  assert.match(app, /\[\.\.\.d\.text\]\.length>12/, 'boosts enforce the Unicode code-point limit before sending');
+  assert.match(app, /\/subscribe'\,\{method:'POST'/, 'lane following reaches the scoped API');
+  assert.match(app, /const tabs=\['board','activity','feeds'\]/, 'feeds are personal and available without owner status');
+  assert.match(app, /Slack can subscribe to RSS; calendar apps use iCal/);
+  assert.match(app, /Revocation is immediate/);
 });
 
 test('ui: a link preview can become cover art without overriding cover: none', () => {

@@ -16,6 +16,9 @@ function cardAnnotations(card: Card, node: BoardNode, ba: BoardAnalysis, readySe
   const metrics = cardFlowMetrics(card, node.board, ba.canonical.get(card.id) ?? 'todo', now);
   if (parsed.checklist.total > 0) parts.push(`✓${parsed.checklist.done}/${parsed.checklist.total}`);
   if (parsed.comments.length > 0) parts.push(`🗨${parsed.comments.length}`);
+  if (card.watchers.length > 0) parts.push(`watchers ${card.watchers.length}`);
+  if (card.votes.length > 0) parts.push(`votes ${card.votes.length}`);
+  if (parsed.boosts.length > 0) parts.push(`boosts ${parsed.boosts.length}`);
   if (card.type === 'board') {
     const child = node.childKeyByCard.get(card.id);
     parts.push(`⇒ ${child ?? card.boardPath ?? '?'}`);
@@ -136,6 +139,11 @@ export function renderCard(card: Card, node: BoardNode, ba: BoardAnalysis): stri
   if (card.start) meta.push(`start ${card.start}`);
   if (card.due) meta.push(`due ${card.due}`);
   if (card.evergreen) meta.push('evergreen');
+  if (card.watchers.length > 0) meta.push(`watchers ${card.watchers.join(',')}`);
+  if (card.votes.length > 0) meta.push(`votes ${card.votes.join(',')}`);
+  const collaboration = parseBody(card.body);
+  if (collaboration.mentions.length > 0) meta.push(`mentions ${collaboration.mentions.join(',')}`);
+  if (collaboration.boosts.length > 0) meta.push(`boosts ${collaboration.boosts.length}`);
   if (card.labels.length > 0) meta.push(`labels ${card.labels.join(',')}`);
   if (card.deps.length > 0) meta.push(`deps ${card.deps.join(',')}`);
   if (card.blocked) meta.push(`BLOCKED: ${card.blocked}`);

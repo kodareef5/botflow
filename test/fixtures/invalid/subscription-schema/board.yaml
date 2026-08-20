@@ -1,0 +1,6 @@
+botflow: 0
+name: invalid lane subscription
+features: [collaboration]
+subscriptions:
+  - lane: nowhere
+    watcher: sam

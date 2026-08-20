@@ -16,7 +16,7 @@ import { parseBody } from '../../src/core/body.ts';
 import type { BoardAnalysis } from '../../src/core/analyze.ts';
 import type { BoardNode, Canonical, Card, Finding, Lane, LoadedBoard } from '../../src/core/model.ts';
 import { SLUG_RE, defaultRollup, isCanonical } from '../../src/core/model.ts';
-import { emitBoardYaml, parseCustomFields, parseLabelDefinitions, parseTemplates } from '../../src/core/config.ts';
+import { emitBoardYaml, parseCustomFields, parseLabelDefinitions, parseSavedFilters, parseSubscriptions, parseTemplates } from '../../src/core/config.ts';
 import type { YamlValue } from '../../src/core/yaml.ts';
 import { validCustomFieldValue } from '../../src/core/presentation.ts';
 import { parseCardReference } from '../../src/core/refs.ts';
@@ -28,6 +28,7 @@ import {
   opAdd,
   opAttach,
   opBlock,
+  opBoost,
   opCheck,
   opChecklistAdd,
   opClaim,
@@ -42,15 +43,21 @@ import {
   opPromote,
   opMergeDuplicates,
   opQuickAdd,
+  opRemoveFilter,
+  opSaveFilter,
+  opSubscribeLane,
   opBulk,
   opTransferCard,
   opMove,
   opUnblock,
+  opVote,
+  opWatch,
   type AddOptions,
   type EditPatch,
 } from '../../src/core/ops.ts';
 import { newHashId, nextSeqId, slugify } from '../../src/core/ids.ts';
 import { logMutation, serializeCard } from '../../src/core/write.ts';
+import { queryCards } from '../../src/core/query.ts';
 
 export interface AuditEvent {
   seq: number;
@@ -383,6 +390,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       substates: lane.substates,
       order: lane.order,
       wip: lane.wip,
+      subscribers: board.config.subscriptions.filter((item) => item.lane === lane.id).map((item) => item.watcher),
       estimate: board.cards.filter((c) => c.laneId === lane.id).reduce((sum, card) => sum + (card.estimate ?? 0), 0),
       cards: board.cards
         .filter((c) => c.laneId === lane.id)
@@ -399,6 +407,69 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     const found = board.cards.find((c) => c.id === id);
     if (!found) return null;
     return this.withPreviews(cardDetailJson(found, node, ba));
+  }
+
+  async search(query: string, actor: string): Promise<Record<string, unknown>[] | { error: string }> {
+    try {
+      const { ba, node } = await this.analyzed();
+      const tree = { rootAbs: '.', boards: new Map([['.', node]]) };
+      const analysis = { boards: new Map([['.', ba]]) };
+      return queryCards(tree, analysis, query, { actor }).map((match) => this.withPreviews(cardDetailJson(match.card, node, ba)));
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  async feedSnapshot(
+    scope: { cardId: string | null; laneId: string | null; filterId: string | null },
+    actor: string,
+  ): Promise<{
+    projectId: string;
+    title: string;
+    events: AuditEvent[];
+    cards: { id: string; title: string; due: string; lane: string; state: string; updated: string | null }[];
+  } | { error: string }> {
+    try {
+      const { board, ba, node } = await this.analyzed();
+      let selected = board.cards;
+      let suffix = '';
+      if (scope.cardId !== null) {
+        const card = board.cards.find((candidate) => candidate.id === scope.cardId);
+        if (card === undefined) return { error: `no card ${scope.cardId}` };
+        selected = [card];
+        suffix = ` · ${card.title}`;
+      } else if (scope.laneId !== null) {
+        const lane = board.config.lanes.find((candidate) => candidate.id === scope.laneId);
+        if (lane === undefined) return { error: `no lane ${scope.laneId}` };
+        selected = board.cards.filter((card) => card.laneId === lane.id);
+        suffix = ` · ${lane.name}`;
+      } else if (scope.filterId !== null) {
+        const filter = board.config.savedFilters.find((candidate) => candidate.id === scope.filterId);
+        if (filter === undefined) return { error: `no saved filter ${scope.filterId}` };
+        const tree = { rootAbs: '.', boards: new Map([['.', node]]) };
+        const analysis = { boards: new Map([['.', ba]]) };
+        selected = queryCards(tree, analysis, filter.query, { actor }).map((match) => match.card);
+        suffix = ` · ${filter.name}`;
+      }
+      const ids = new Set(selected.map((card) => card.id));
+      const scoped = scope.cardId !== null || scope.laneId !== null || scope.filterId !== null;
+      const events = this.listEvents(100).filter((event) => scoped ? event.card_id !== null && ids.has(event.card_id) : true);
+      return {
+        projectId: this.selfId(),
+        title: `${board.config.name}${suffix}`,
+        events,
+        cards: selected.filter((card) => card.due !== null).map((card) => ({
+          id: card.id,
+          title: card.title,
+          due: card.due!,
+          lane: card.substate === null ? card.laneId : `${card.laneId}.${card.substate}`,
+          state: ba.canonical.get(card.id) ?? 'todo',
+          updated: card.updated,
+        })),
+      };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   // ---- link previews ----
@@ -489,6 +560,8 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       templates: c.templates.map(({ id, name, lane, labels, priority, assignee, delegate, start, due, estimate, evergreen, coverColor, fields, body }) => ({
         id, name, lane, labels, priority, assignee, delegate, start, due, estimate, evergreen, cover_color: coverColor, fields, body,
       })),
+      filters: c.savedFilters.map(({ id, name, query }) => ({ id, name, query })),
+      subscriptions: c.subscriptions.map(({ lane, watcher }) => ({ lane, watcher })),
       rollup: { blockedWhen: c.rollup.blockedWhen, doneWhen: c.rollup.doneWhen, doingWhen: c.rollup.doingWhen, elseState: c.rollup.elseState },
     };
   }
@@ -501,7 +574,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     const board = this.loadBoardDocs();
     if (board.config.mutationBlocked !== null) return { error: `board is read-only: ${board.config.mutationBlocked}` };
     if (payload === null || typeof payload !== 'object') return { error: 'malformed config' };
-    const p = payload as { name?: unknown; lanes?: unknown; labels?: unknown; fields?: unknown; templates?: unknown; rollup?: unknown; migrations?: unknown };
+    const p = payload as { name?: unknown; lanes?: unknown; labels?: unknown; fields?: unknown; templates?: unknown; filters?: unknown; subscriptions?: unknown; rollup?: unknown; migrations?: unknown };
     const name = typeof p.name === 'string' && p.name.trim() !== '' ? p.name.trim().replace(/[\r\n]+/g, ' ') : null;
     if (name === null) return { error: 'board name required' };
     if (!Array.isArray(p.lanes) || p.lanes.length === 0) return { error: 'at least one lane required' };
@@ -590,6 +663,27 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       ...template,
       extra: { ...(board.config.templates.find((old) => old.id === template.id)?.extra ?? {}), ...template.extra },
     }));
+    const parsedFilters = p.filters === undefined
+      ? board.config.savedFilters
+      : parseSavedFilters(p.filters as YamlValue, presentationFindings, customFields);
+    const filterError = presentationFindings.find((finding) => finding.severity === 'error');
+    if (filterError !== undefined) return { error: filterError.message };
+    const savedFilters = parsedFilters.map((filter) => ({
+      ...filter,
+      extra: { ...(board.config.savedFilters.find((old) => old.id === filter.id)?.extra ?? {}), ...filter.extra },
+    }));
+    const parsedSubscriptions = p.subscriptions === undefined
+      ? board.config.subscriptions.filter((subscription) => lanes.some((lane) => lane.id === subscription.lane))
+      : parseSubscriptions(p.subscriptions as YamlValue, presentationFindings, lanes);
+    const subscriptionError = presentationFindings.find((finding) => finding.severity === 'error');
+    if (subscriptionError !== undefined) return { error: subscriptionError.message };
+    const subscriptions = parsedSubscriptions.map((subscription) => ({
+      ...subscription,
+      extra: {
+        ...(board.config.subscriptions.find((old) => old.lane === subscription.lane && old.watcher === subscription.watcher)?.extra ?? {}),
+        ...subscription.extra,
+      },
+    }));
     for (const card of board.cards) {
       for (const definition of customFields) {
         const value = card.extra[definition.id];
@@ -629,7 +723,7 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
       moved.push(card);
     }
 
-    const configYaml = emitBoardYaml({ ...board.config, name, lanes, labelDefinitions, customFields, templates, rollup });
+    const configYaml = emitBoardYaml({ ...board.config, name, lanes, labelDefinitions, customFields, templates, savedFilters, subscriptions, rollup });
     this.ctx.storage.transactionSync(() => {
       this.sql.exec("INSERT INTO meta(key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", configYaml);
       for (const card of moved) this.persistCard(card);
@@ -772,6 +866,50 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
     }
   }
 
+  saveFilter(id: string, query: string, name: string | null, actor: string): ActionResult {
+    try {
+      const board = this.loadBoardDocs();
+      if (board.config.mutationBlocked !== null) throw new UsageError(`board is read-only: ${board.config.mutationBlocked}`);
+      const filter = opSaveFilter(board.config, id, query, name ?? undefined);
+      this.sql.exec("INSERT INTO meta(key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", emitBoardYaml(board.config));
+      this.event(actor, 'filter-save', null, `${filter.id}: ${filter.query}`.slice(0, 300));
+      return { id: filter.id, name: filter.name, query: filter.query };
+    } catch (err) {
+      if (err instanceof UsageError) return { error: err.message };
+      throw err;
+    }
+  }
+
+  removeFilter(id: string, actor: string): ActionResult {
+    try {
+      const board = this.loadBoardDocs();
+      if (board.config.mutationBlocked !== null) throw new UsageError(`board is read-only: ${board.config.mutationBlocked}`);
+      const filter = opRemoveFilter(board.config, id);
+      this.sql.exec("INSERT INTO meta(key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", emitBoardYaml(board.config));
+      this.event(actor, 'filter-remove', null, filter.id);
+      return { id: filter.id, removed: true };
+    } catch (err) {
+      if (err instanceof UsageError) return { error: err.message };
+      throw err;
+    }
+  }
+
+  subscribeLane(lane: string, actor: string, active: boolean): ActionResult {
+    try {
+      const board = this.loadBoardDocs();
+      if (board.config.mutationBlocked !== null) throw new UsageError(`board is read-only: ${board.config.mutationBlocked}`);
+      const result = opSubscribeLane(board.config, lane, actor, active);
+      if (result.changed) {
+        this.sql.exec("INSERT INTO meta(key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", emitBoardYaml(board.config));
+        this.event(actor, result.active ? 'lane-subscribe' : 'lane-unsubscribe', null, lane);
+      }
+      return { lane, watcher: actor, subscribed: result.active, changed: result.changed };
+    } catch (err) {
+      if (err instanceof UsageError) return { error: err.message };
+      throw err;
+    }
+  }
+
   async action(kind: string, id: string, args: Record<string, unknown>, actor: string): Promise<ActionResult> {
     try {
       const analyzed = kind === 'claim' ? await this.analyzed() : null;
@@ -821,6 +959,29 @@ export class ProjectDO extends DurableObject<ProjectEnv> {
           this.persistCard(card);
           this.event(actor, 'comment', id, text.slice(0, 200));
           return { id, commented: true };
+        }
+        case 'watch': {
+          const result = opWatch(card, actor, args['active'] !== false);
+          if (result.changed) {
+            this.persistCard(card);
+            this.event(actor, result.active ? 'watch' : 'unwatch', id, '');
+          }
+          return { id, watching: result.active, changed: result.changed };
+        }
+        case 'vote': {
+          const result = opVote(card, actor, args['active'] !== false);
+          if (result.changed) {
+            this.persistCard(card);
+            this.event(actor, result.active ? 'vote' : 'unvote', id, '');
+          }
+          return { id, voted: result.active, changed: result.changed };
+        }
+        case 'boost': {
+          const text = clampLine(args['text'], '').trim();
+          opBoost(card, actor, text);
+          this.persistCard(card);
+          this.event(actor, 'boost', id, text);
+          return { id, boosted: true };
         }
         case 'check': {
           const index = Number(args['index']);

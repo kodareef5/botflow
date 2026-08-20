@@ -2,7 +2,7 @@
 // The CLI's mutate.ts and the hosted ProjectDO both apply moves, claims,
 // closes, blocks, and edits through these, so the rules exist exactly once.
 
-import type { BoardConfig, Card, CardRelation, Lane, LoadedBoard } from './model.ts';
+import type { BoardConfig, Card, CardRelation, Lane, LaneSubscription, LoadedBoard, SavedFilter } from './model.ts';
 import { RELATION_TYPES } from './model.ts';
 import { addAttachmentLine, appendToSection, bodyHasSection, parseBody, removeAttachmentLine, setChecklistItem, setSection } from './body.ts';
 import { emitScalar } from './emit.ts';
@@ -10,6 +10,7 @@ import { validCardDate, validEstimate } from './fields.ts';
 import { newHashId, nextSeqId, slugify } from './ids.ts';
 import { labelGroupConflict, validColor, validCustomFieldValue } from './presentation.ts';
 import { parseCardReference, relationInverse } from './refs.ts';
+import { QueryError, validateQuery } from './query.ts';
 import { logMutation, nowDate, nowDateTime, sanitizeActor, sanitizeBlock, sanitizeInline, sanitizeSectionName, sanitizeUrl } from './write.ts';
 
 /** An error caused by how a tool was invoked: message for the caller, no stack. */
@@ -285,6 +286,8 @@ export function opAdd(board: LoadedBoard, opts: AddOptions): Card {
     labels: checkedLabels(opts.labels ?? template?.labels ?? []),
     assignee: cleanActorField(opts.assignee ?? template?.assignee) ?? null,
     delegate: cleanActorField(opts.delegate ?? template?.delegate) ?? null,
+    watchers: [],
+    votes: [],
     priority: checkedPriority(opts.priority ?? template?.priority) ?? null,
     deps: checkedCardReferences(opts.deps ?? [], 'deps'),
     relations: checkedRelations(opts.relations ?? [], id),
@@ -579,6 +582,90 @@ export function opComment(card: Card, actor: string, text: string): Card {
   card.body = appendToSection(card.body, 'Comments', `- ${nowDateTime()} ${sanitizeActor(actor)}: ${sanitizeInline(text)}`);
   card.updated = nowDate();
   return card;
+}
+
+export interface ToggleResult {
+  card: Card;
+  active: boolean;
+  changed: boolean;
+}
+
+/** Explicit card following. Idempotent toggles do not create merge noise. */
+export function opWatch(card: Card, actor: string, watching = true): ToggleResult {
+  const name = sanitizeActor(actor);
+  if (name === '') throw new UsageError('watcher name required');
+  const has = card.watchers.includes(name);
+  if (has === watching) return { card, active: watching, changed: false };
+  if (watching) card.watchers.push(name);
+  else card.watchers.splice(card.watchers.indexOf(name), 1);
+  logMutation(card, name, watching ? 'watched card' : 'stopped watching card');
+  return { card, active: watching, changed: true };
+}
+
+/** One current vote per actor. The append-only Log retains withdrawn votes. */
+export function opVote(card: Card, actor: string, voting = true): ToggleResult {
+  const name = sanitizeActor(actor);
+  if (name === '') throw new UsageError('voter name required');
+  const has = card.votes.includes(name);
+  if (has === voting) return { card, active: voting, changed: false };
+  if (voting) card.votes.push(name);
+  else card.votes.splice(card.votes.indexOf(name), 1);
+  logMutation(card, name, voting ? 'voted' : 'withdrew vote');
+  return { card, active: voting, changed: true };
+}
+
+/** A tiny append-only endorsement. Array.from counts Unicode code points, so
+ *  an emoji is one character even though UTF-16 represents it with a pair. */
+export function opBoost(card: Card, actor: string, text: string): Card {
+  const name = sanitizeActor(actor);
+  const clean = sanitizeInline(text);
+  if (name === '') throw new UsageError('booster name required');
+  if (clean === '') throw new UsageError('boost text required');
+  if (Array.from(clean).length > 12) throw new UsageError('boost text must be at most 12 characters');
+  card.body = appendToSection(card.body, 'Boosts', `- ${nowDateTime()} ${name}: ${clean}`);
+  card.updated = nowDate();
+  return card;
+}
+
+export function opSaveFilter(config: BoardConfig, id: string, query: string, name?: string): SavedFilter {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) throw new UsageError('filter id must be a lowercase slug');
+  try {
+    validateQuery(query, new Set(config.customFields.map((field) => field.id)));
+  } catch (err) {
+    throw new UsageError((err as QueryError).message);
+  }
+  const title = sanitizeInline(name ?? id);
+  if (title === '') throw new UsageError('filter name required');
+  const existing = config.savedFilters.find((filter) => filter.id === id);
+  if (existing !== undefined) {
+    existing.name = title;
+    existing.query = query;
+    return existing;
+  }
+  const filter: SavedFilter = { id, name: title, query, extra: {} };
+  config.savedFilters.push(filter);
+  return filter;
+}
+
+export function opRemoveFilter(config: BoardConfig, id: string): SavedFilter {
+  const index = config.savedFilters.findIndex((filter) => filter.id === id);
+  if (index === -1) throw new UsageError(`no saved filter "${id}"`);
+  return config.savedFilters.splice(index, 1)[0]!;
+}
+
+export function opSubscribeLane(config: BoardConfig, lane: string, actor: string, subscribing = true): { subscription: LaneSubscription; changed: boolean; active: boolean } {
+  if (!config.lanes.some((candidate) => candidate.id === lane)) throw new UsageError(`no lane "${lane}"`);
+  const watcher = sanitizeActor(actor);
+  if (watcher === '') throw new UsageError('watcher name required');
+  const index = config.subscriptions.findIndex((item) => item.lane === lane && item.watcher === watcher);
+  if (subscribing) {
+    if (index !== -1) return { subscription: config.subscriptions[index]!, changed: false, active: true };
+    const subscription: LaneSubscription = { lane, watcher, extra: {} };
+    config.subscriptions.push(subscription);
+    return { subscription, changed: true, active: true };
+  }
+  if (index === -1) return { subscription: { lane, watcher, extra: {} }, changed: false, active: false };
+  return { subscription: config.subscriptions.splice(index, 1)[0]!, changed: true, active: false };
 }
 
 /** Check/uncheck the Nth task item (global 0-based ordinal across the body). */

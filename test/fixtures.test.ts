@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { analyze, lintBoard, loadTree } from '../src/core/index.ts';
+import { analyze, lintBoard, loadTree, parseBody, queryCards } from '../src/core/index.ts';
 
 const FIXTURES = join(import.meta.dirname, 'fixtures');
 
@@ -28,6 +28,12 @@ interface ExpectedBoard {
     templates: { id: string; name: string; lane: string | null; labels: string[]; priority: string | null; estimate: number | null; fields: Record<string, unknown>; body: string }[];
     relations: Record<string, { deps: string[]; relations: { type: string; target: string }[] }>;
   };
+  collaboration?: {
+    filters: { id: string; name: string; query: string }[];
+    subscriptions: { lane: string; watcher: string }[];
+    cards: Record<string, { watchers: string[]; votes: string[]; mentions: string[]; boosts: { when: string; actor: string; text: string }[] }>;
+    queries: Record<string, string[]>;
+  };
 }
 
 const sortFindings = (list: { rule: string; ref: string }[]) =>
@@ -35,7 +41,7 @@ const sortFindings = (list: { rule: string; ref: string }[]) =>
 
 const round4 = (n: number | null) => (n === null ? null : Math.round(n * 10000) / 10000);
 
-for (const name of ['minimal', 'standard', 'substates', 'nested', 'card-features', 'presentation', 'relations']) {
+for (const name of ['minimal', 'standard', 'substates', 'nested', 'card-features', 'presentation', 'relations', 'collaboration']) {
   test(`fixture: ${name}`, () => {
     const dir = join(FIXTURES, name);
     const expected = JSON.parse(readFileSync(join(dir, 'expected.json'), 'utf8')) as {
@@ -100,6 +106,22 @@ for (const name of ['minimal', 'standard', 'substates', 'nested', 'card-features
             relations: card.relations.map(({ type, target }) => ({ type, target })),
           }];
         })), exp.structure.relations, `${key}: relations`);
+      }
+      if (exp.collaboration) {
+        assert.deepEqual(node.board.config.savedFilters.map(({ id, name, query }) => ({ id, name, query })), exp.collaboration.filters, `${key}: saved filters`);
+        assert.deepEqual(node.board.config.subscriptions.map(({ lane, watcher }) => ({ lane, watcher })), exp.collaboration.subscriptions, `${key}: lane subscriptions`);
+        assert.deepEqual(Object.fromEntries(Object.keys(exp.collaboration.cards).map((id) => {
+          const card = node.board.cards.find((candidate) => candidate.id === id)!;
+          const parsed = parseBody(card.body);
+          return [id, { watchers: card.watchers, votes: card.votes, mentions: parsed.mentions, boosts: parsed.boosts }];
+        })), exp.collaboration.cards, `${key}: collaboration state`);
+        for (const [query, ids] of Object.entries(exp.collaboration.queries)) {
+          assert.deepEqual(
+            queryCards(tree, analysis, query, { actor: 'sam', now: new Date('2026-08-20T12:00:00Z') }).map((match) => match.card.id),
+            ids,
+            `${key}: query ${query}`,
+          );
+        }
       }
     }
   });

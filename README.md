@@ -116,6 +116,38 @@ hosted transfers are replay-safe and target descendant boards only, keeping
 every persisted cross-board reference inside the loaded project tree. In the
 manager, nested boards also appear as “wormhole” drop targets while dragging.
 
+### Search, collaboration, and feeds
+
+Search uses one grammar everywhere: bare terms match card text, quoted phrases stay
+together, `-term` negates, and qualifiers narrow by fields such as `state:`, `lane:`,
+`label:`, `assignee:`, `delegate:`, `watcher:`, `voter:`, `mention:`, `priority:`,
+`due:`, and `field.<id>:`. Identity qualifiers accept `@me`; `is:ready`,
+`is:blocked`, and `is:overdue` are derived from the same analyzed board agents use.
+
+```sh
+botflow query 'state:doing -label:Type/Docs "API repair"'
+botflow query 'watcher:@me -state:done'
+botflow filter save my-watch 'watcher:@me -state:done' --name 'My watch list'
+botflow query --saved my-watch
+botflow lane subscribe doing
+botflow card watch 012
+botflow card vote 012
+botflow card boost 012 'ship it 🚀'
+```
+
+Saved filters and lane subscriptions are portable `board.yaml` data. Card watchers
+and votes are idempotent frontmatter sets; `@mentions` are derived from descriptions
+and comments; boosts are append-only entries capped at 12 Unicode characters. The
+CLI, MCP server, local viewer, manager, public pages, and JSON views expose the same
+collaboration data.
+
+The manager can mint a personal, read-only capability feed for a whole project, one
+lane, one card, or one saved filter. Each capability has Atom, RSS 2.0, and iCalendar
+URLs. Slack's RSS subscriber supplies the first Slack path without OAuth; calendar
+apps can subscribe to iCal. Feed URLs are member-scoped bearer secrets: they stop
+immediately on revocation, lost project access, removed membership, or a deleted
+scope. Calendar refresh cadence is controlled by the calendar provider.
+
 ## Quickstart (template workspace)
 
 ```sh
@@ -160,7 +192,8 @@ links; store it like a credential, because it is one). The demo source ships in
 The first visit creates the **owner** account: a username and a password, and nothing else.
 A company name is optional (settings can rename it later), and the setup-key field only appears
 on a deployment that actually requires one, so loopback development asks for two fields. From
-the UI: create spaces and projects, add members, watch boards and activity live.
+the UI: create spaces and projects, add members, search and filter cards, collaborate,
+subscribe to lanes, create personal feeds, and watch boards and activity live.
 
 > **Upgrading an existing deployment is a deliberate auth reset.** The admin
 > token and every `bfk_` agent key stop working, and a company export taken
@@ -271,7 +304,7 @@ character, color, type, shape, and rhythm change together.
 | `test/fixtures/` | Golden boards; the spec's conformance vectors |
 | `src/core/` | Engine: parse → model → lint → project → rollup, pure ops |
 | `src/cli/` | The `botflow` CLI (incl. push/pull sync) |
-| `src/mcp/` | MCP server (stdio JSON-RPC, 25 tools) |
+| `src/mcp/` | MCP server (stdio JSON-RPC, 33 tools) |
 | `src/viewer/` | Read-only local board UI (`botflow serve`, `board --html`) |
 | `worker/` | Cloudflare manager: registry DO + project DOs + operator UI |
 | `templates/basic/` | Workspace template ("kanban batteries") |

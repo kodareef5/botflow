@@ -9,6 +9,7 @@
 
 import type { BoardNode, Canonical, Card, Distribution, Finding, Lane, LoadedBoard, RollupPolicy, Tree } from './model.ts';
 import { distributionTotal, emptyDistribution, finding } from './model.ts';
+import { parseBody } from './body.ts';
 import { parseCardReference, resolveTreeCardReference } from './refs.ts';
 
 export interface BoardAnalysis {
@@ -78,27 +79,31 @@ export function analyzeBoard(board: LoadedBoard, lookup: ChildLookup, referenceL
 
     if (card.type === 'task') {
       canonical.set(card.id, flagActive ? 'blocked' : laneCanonical);
-      continue;
+    } else {
+      // Board-card: roll up the child board's distribution (SPEC §7).
+      const child = lookup(card);
+      if (child === null) {
+        canonical.set(card.id, flagActive ? 'blocked' : laneCanonical);
+        childProgress.set(card.id, null);
+      } else {
+        childProgress.set(card.id, child.progress);
+        if (flagActive) {
+          canonical.set(card.id, 'blocked');
+        } else {
+          const countable = distributionTotal(child.distribution) - child.distribution.archive;
+          const effective =
+            countable === 0 ? laneCanonical : rollupState(child.distribution, countable, board.config.rollup);
+          canonical.set(card.id, effective);
+          if (effective !== laneCanonical) {
+            findings.push(finding('rollup-drift', card.id, `lane says ${laneCanonical}, child board rolls up to ${effective}`));
+          }
+        }
+      }
     }
-
-    // Board-card: roll up the child board's distribution (SPEC §7).
-    const child = lookup(card);
-    if (child === null) {
-      canonical.set(card.id, flagActive ? 'blocked' : laneCanonical);
-      childProgress.set(card.id, null);
-      continue;
-    }
-    childProgress.set(card.id, child.progress);
-    if (flagActive) {
-      canonical.set(card.id, 'blocked');
-      continue;
-    }
-    const countable = distributionTotal(child.distribution) - child.distribution.archive;
-    const effective =
-      countable === 0 ? laneCanonical : rollupState(child.distribution, countable, board.config.rollup);
-    canonical.set(card.id, effective);
-    if (effective !== laneCanonical) {
-      findings.push(finding('rollup-drift', card.id, `lane says ${laneCanonical}, child board rolls up to ${effective}`));
+    for (const boost of parseBody(card.body).boosts) {
+      if (boost.text.trim() === '' || Array.from(boost.text).length > 12) {
+        findings.push(finding('boost-value', card.id, 'boost text must be 1–12 Unicode characters'));
+      }
     }
   }
 

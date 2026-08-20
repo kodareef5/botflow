@@ -89,6 +89,7 @@ lanes:
     for (const expected of [
       'prime', 'board', 'ready', 'card_add', 'card_claim', 'card_close', 'card_block',
       'card_promote', 'card_link', 'card_unlink', 'card_merge', 'card_quick_add', 'card_bulk', 'card_transfer',
+      'query_cards', 'filters_list', 'filter_save', 'filter_remove', 'lane_subscribe', 'card_watch', 'card_vote', 'card_boost',
     ]) {
       assert.ok(names.includes(expected), `tool ${expected}`);
     }
@@ -101,6 +102,13 @@ lanes:
     assert.equal(added.isError, false);
     const { id } = JSON.parse(added.text) as { id: string };
     assert.equal(id, '001');
+    assert.equal((await callTool('card_watch', { id })).isError, false);
+    assert.equal((await callTool('card_vote', { id })).isError, false);
+    assert.equal((await callTool('card_boost', { id, text: 'ship it 🚀' })).isError, false);
+    assert.equal((await callTool('lane_subscribe', { lane: 'doing' })).isError, false);
+    assert.equal((await callTool('filter_save', { id: 'mine', query: 'watcher:@me', name: 'Watching' })).isError, false);
+    const queried = JSON.parse((await callTool('query_cards', { saved: 'mine' })).text) as { id: string }[];
+    assert.deepEqual(queried.map((card) => card.id), ['001']);
     const scheduled = JSON.parse((await callTool('card_show', { id })).text) as Record<string, unknown>;
     assert.equal(scheduled['start'], '2026-08-20');
     assert.equal(scheduled['due'], '2026-08-24T12:30Z');
@@ -108,6 +116,9 @@ lanes:
     assert.equal(scheduled['evergreen'], true);
     assert.equal(scheduled['coverColor'], '#f0c040');
     assert.deepEqual(Object.fromEntries((scheduled['fields'] as { id: string; value: unknown }[]).map((field) => [field.id, field.value])), { sprint: 14, risk: 'high' });
+    assert.deepEqual(scheduled['watchers'], ['mcp-agent']);
+    assert.deepEqual(scheduled['votes'], ['mcp-agent']);
+    assert.equal(scheduled['boostCount'], 1);
     const editedPresentation = await callTool('card_edit', { id, cover_color: null, fields: { sprint: 15, risk: null } });
     assert.equal(editedPresentation.isError, false);
     const rescheduled = JSON.parse((await callTool('card_show', { id })).text) as Record<string, unknown>;

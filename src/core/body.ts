@@ -37,6 +37,9 @@ export interface ParsedBody {
   /** Attachment urls that look like images (gallery + cover fallback). */
   images: string[];
   comments: BodyEntry[];
+  boosts: BodyEntry[];
+  /** @names derived from Description and Comments, first occurrence wins. */
+  mentions: string[];
   log: BodyEntry[];
 }
 
@@ -44,6 +47,7 @@ const HEADING_RE = /^##\s+(.+?)\s*$/;
 const TASK_RE = /^\s*- \[([ xX])\]\s+(.*)$/;
 const LINK_RE = /^-\s+\[(.*?)\]\((\S+?)\)\s*$/;
 const ENTRY_RE = /^-\s+(\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2})?)\s+(.+?):\s+(.*)$/;
+const MENTION_RE = /(?:^|[^A-Za-z0-9_.-])@([A-Za-z0-9][A-Za-z0-9_.-]{0,63})/g;
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|svg|avif)(\?.*)?$|^data:image\//i;
 const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
 
@@ -102,9 +106,22 @@ export function parseBody(body: string): ParsedBody {
   const checklists = new Map<string, ChecklistItem[]>();
   const attachments: Attachment[] = [];
   const comments: BodyEntry[] = [];
+  const boosts: BodyEntry[] = [];
+  const mentions: string[] = [];
   const log: BodyEntry[] = [];
   let taskIndex = 0;
   let fence: Fence = null;
+
+  const collectMentions = (text: string): void => {
+    MENTION_RE.lastIndex = 0;
+    for (let match = MENTION_RE.exec(text); match !== null; match = MENTION_RE.exec(text)) {
+      // A dot is legal inside a name, but prose normally ends a mention with
+      // sentence punctuation. Keep alice.smith; drop the trailing full stop.
+      const name = match[1]!.replace(/\.+$/, '');
+      if (name === '') continue;
+      if (!mentions.includes(name)) mentions.push(name);
+    }
+  };
 
   for (const line of lines) {
     const fenced = fence !== null || FENCE_OPEN_RE.test(line);
@@ -128,6 +145,7 @@ export function parseBody(body: string): ParsedBody {
     }
     if (section === 'Description') {
       descLines.push(line);
+      collectMentions(line);
       continue;
     }
     if (section === 'Attachments') {
@@ -135,9 +153,16 @@ export function parseBody(body: string): ParsedBody {
       if (link) attachments.push({ label: link[1]! || link[2]!, url: link[2]!, index: attachments.length });
       continue;
     }
-    if (section === 'Comments' || section === 'Log') {
+    if (section === 'Comments' || section === 'Boosts' || section === 'Log') {
       const entry = ENTRY_RE.exec(line.trim());
-      if (entry) (section === 'Comments' ? comments : log).push({ when: entry[1]!, actor: entry[2]!, text: entry[3]! });
+      if (entry) {
+        const parsed = { when: entry[1]!, actor: entry[2]!, text: entry[3]! };
+        if (section === 'Comments') {
+          comments.push(parsed);
+          collectMentions(parsed.text);
+        } else if (section === 'Boosts') boosts.push(parsed);
+        else log.push(parsed);
+      }
     }
   }
 
@@ -149,6 +174,8 @@ export function parseBody(body: string): ParsedBody {
     attachments,
     images: attachments.filter((a) => IMAGE_RE.test(a.url)).map((a) => a.url),
     comments,
+    boosts,
+    mentions,
     log,
   };
 }

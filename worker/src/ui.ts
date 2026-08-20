@@ -95,6 +95,10 @@ aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
 .card{touch-action:pan-y}
 .tabs{display:flex;gap:2px;margin-left:auto}
 .tabs button.on{background:var(--acc);color:var(--acc-ink);border-color:transparent}
+.searchbox{display:flex;align-items:center;gap:5px;min-width:260px}
+.searchbox input{width:min(260px,28vw)}
+.searchbox select{max-width:180px}
+.searchstatus{font-size:11px;color:var(--muted);white-space:nowrap}
 .view{flex:1;overflow:auto;padding:var(--view-pad)}
 .cols{display:flex;gap:var(--col-gap);align-items:flex-start;position:relative}
 .relsvg{position:absolute;inset:0;overflow:visible;pointer-events:none;z-index:4}
@@ -105,9 +109,11 @@ aside h2 button{font-size:11px;padding:1px 7px;margin-left:auto}
 .col h3{font:700 11px/1.25 var(--display);text-transform:uppercase;letter-spacing:.04em;color:var(--ink2);padding:2px 4px 7px;display:flex;gap:6px}
 .col h3 .n{color:var(--muted);font-weight:400}
 .col h3 .wipbad{color:var(--st-blocked)}
-.lanefoot{margin-top:7px;padding-top:7px;border-top:1px dashed transparent;opacity:0;transform:translateY(-2px);pointer-events:none;transition:opacity .12s ease,transform .12s ease,border-color .12s ease}
-.laneadd{width:100%;text-align:left;background:transparent;border-color:transparent;color:var(--muted);padding:4px 7px}
-.laneadd:hover,.laneadd:focus-visible{color:var(--ink);border-color:var(--grid);background:var(--surface2)}
+.lanefoot{display:flex;align-items:center;gap:5px;margin-top:7px;padding-top:7px;border-top:1px dashed transparent;opacity:0;transform:translateY(-2px);pointer-events:none;transition:opacity .12s ease,transform .12s ease,border-color .12s ease}
+.laneadd{flex:1;text-align:left;background:transparent;border-color:transparent;color:var(--muted);padding:4px 7px}
+.lanesub{flex:none;background:transparent;border-color:transparent;color:var(--muted);padding:4px 7px}
+.laneadd:hover,.laneadd:focus-visible,.lanesub:hover,.lanesub:focus-visible{color:var(--ink);border-color:var(--grid);background:var(--surface2)}
+.lanesub[aria-pressed="true"]{color:var(--acc);border-color:color-mix(in srgb,var(--acc) 45%,var(--grid))}
 .col:hover .lanefoot,.col:focus-within .lanefoot{opacity:1;transform:none;pointer-events:auto;border-top-color:var(--grid)}
 .sub-h{font-size:11px;color:var(--muted);padding:5px 4px 2px;border-top:1px dashed var(--grid);margin-top:5px}
 .card{border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);margin:var(--card-gap) 0;background:var(--surface);cursor:pointer;overflow:hidden;transition:transform .14s ease,box-shadow .14s ease,border-color .14s ease}
@@ -149,6 +155,7 @@ table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink2)}
 .err{color:var(--st-blocked);font-size:13px;margin-top:8px}
 .warn{color:#c47317;font-size:12px}
 .tokenbox{font:12px ui-monospace,Menlo,monospace;background:var(--page);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rk);padding:10px;word-break:break-all;margin:10px 0}
+.feedurls{display:grid;gap:4px;min-width:260px}.feedurls a{color:var(--acc);word-break:break-all}.feedurls button{justify-self:start}
 .gate{max-width:430px;margin:10vh auto;background:var(--surface);border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);padding:26px;box-shadow:var(--shadow)}
 .gate h2{margin-bottom:8px;font-family:var(--display)}
 .gate p{color:var(--ink2);font-size:13px;margin:6px 0 14px}
@@ -383,6 +390,7 @@ button.danger{background:var(--st-blocked);color:#fff;border-color:transparent}
   aside{position:fixed;left:0;top:0;bottom:0;z-index:18;transform:translateX(-105%);transition:transform .16s ease;background:var(--page);box-shadow:8px 0 30px rgba(0,0,0,.25);width:min(300px,86vw)}
   aside.open{transform:none}
   .phead{padding:10px 12px;gap:8px}
+  .searchbox{order:4;width:100%;flex-wrap:wrap}.searchbox input{width:auto;flex:1;min-width:160px}.searchbox select{max-width:42vw}
   .tabs{margin-left:0;width:100%}
   .view{padding:10px 12px}
   .cols{scroll-snap-type:x mandatory;overflow-x:auto;margin:0 -12px;padding:0 12px}
@@ -420,6 +428,10 @@ let ORG=null,SEL=null,VIEW='board',BOARD=null,timer=null,MODAL=null,UPLOADS=fals
 // Role gates, refreshed from /api/org on every boot. RO stays the read-only
 // flag for public share pages; these are about who is logged in.
 let ME=null,CAN_WRITE=false,IS_OWNER=false,DIR=new Map();
+// Search state lives outside the board DOM. Polling only morphs #view, so a
+// focused query input is never replaced while someone is typing.
+let SEARCH_PROJECT=null,SEARCH_QUERY='',SEARCH_SAVED='',SEARCH_IDS=null,SEARCH_TIMER=null,SEARCH_SEQ=0;
+let NEW_FEED=null;
 // Usernames are what boards store; display names are what people read. One
 // lookup here is what makes renaming a member update every card at once.
 function who(u){if(!u)return '';const m=DIR.get(u);return m?m.display:u}
@@ -705,11 +717,26 @@ function renderMain(){
     +(IS_OWNER?'Create a space and a project to begin. Bots connect with their own credentials via the REST API or <code>botflow push</code>.'
       :'Nothing here yet. An owner has to give you a space or a project before there is a board to work.')
     +'</div></div>';return}
-  // Keys moved to your own account (they belong to a member, not a project),
-  // and sharing hands out public urls, which stays a company-level decision.
-  const tabs=['board','activity'].concat(IS_OWNER?['sharing']:[]);
+  if(SEARCH_PROJECT!==SEL){
+    if(SEARCH_TIMER)clearTimeout(SEARCH_TIMER);
+    SEARCH_PROJECT=SEL;SEARCH_QUERY='';SEARCH_SAVED='';SEARCH_IDS=null;SEARCH_SEQ++;NEW_FEED=null;
+  }
+  // Feeds are personal member capabilities, while public sharing remains a
+  // company-level decision. Every member can therefore reach feeds; only an
+  // owner gets the public-sharing tab.
+  const tabs=['board','activity','feeds'].concat(IS_OWNER?['sharing']:[]);
   if(!tabs.includes(VIEW))VIEW='board';
+  const filters=(BOARD&&BOARD.filters)||[];
+  const search=VIEW==='board'?'<div class="searchbox" role="search">'
+    +'<input id="cardsearch" value="'+esc(SEARCH_QUERY)+'" placeholder="search cards or use field:value" aria-label="search cards">'
+    +'<select id="savedsearch" aria-label="saved card filter"><option value="">saved filters</option>'
+    +filters.map(f=>'<option value="'+esc(f.id)+'"'+(SEARCH_SAVED===f.id?' selected':'')+'>'+esc(f.name)+'</option>').join('')+'</select>'
+    +(CAN_WRITE?'<button type="button" class="ghost" id="savefilter" title="save this query">save</button>':'')
+    +(CAN_WRITE?'<button type="button" class="ghost" id="delfilter" title="delete selected saved filter"'+(SEARCH_SAVED?'':' disabled')+'>✕</button>':'')
+    +'<button type="button" class="ghost" id="clearsearch" title="clear search"'+(SEARCH_QUERY||SEARCH_SAVED?'':' disabled')+'>clear</button>'
+    +'<span class="searchstatus" id="searchstatus" aria-live="polite"></span></div>':'';
   main.innerHTML='<div class="phead"><h2>'+esc(p.name)+'</h2><span class="pct" id="pinfo"></span>'
+    +search
     +(CAN_WRITE?'<button id="newcard" class="ghost" title="add a card to this board">+ card</button>':'')
     +(CAN_WRITE?'<button id="quickcard" class="ghost" title="create several cards with quick-add syntax">+ quick</button><button id="bulkcard" class="ghost" title="move, close, or label several card ids">bulk</button>':'')
     +(IS_OWNER?'<button id="editboard" class="ghost" title="edit lanes, substates, wip, rollup">✎ edit board</button>':'')
@@ -721,7 +748,79 @@ function renderMain(){
   const nc=$('#newcard');if(nc)nc.onclick=()=>newCard();
   const qc=$('#quickcard');if(qc)qc.onclick=quickCards;
   const bc=$('#bulkcard');if(bc)bc.onclick=bulkCardsUi;
-  if(VIEW==='board')refreshBoard();else if(VIEW==='activity')refreshActivity();else refreshSharing();
+  if(VIEW==='board'){wireSearchControls();refreshBoard()}
+  else if(VIEW==='activity')refreshActivity();
+  else if(VIEW==='feeds')refreshFeeds();
+  else refreshSharing();
+}
+
+function syncSearchControls(b){
+  const select=$('#savedsearch');if(!select)return;
+  const filters=(b&&b.filters)||[];
+  const sig=filters.map(f=>f.id+'\u0000'+f.name+'\u0000'+f.query).join('\u0001');
+  if(select.dataset.sig!==sig){
+    select.innerHTML='<option value="">saved filters</option>'+filters.map(f=>'<option value="'+esc(f.id)+'">'+esc(f.name)+'</option>').join('');
+    select.dataset.sig=sig;
+  }
+  if(SEARCH_SAVED&&!filters.some(f=>f.id===SEARCH_SAVED)){SEARCH_SAVED='';SEARCH_IDS=null}
+  select.value=SEARCH_SAVED;
+  const del=$('#delfilter');if(del)del.disabled=!SEARCH_SAVED;
+  const clear=$('#clearsearch');if(clear)clear.disabled=!(SEARCH_QUERY||SEARCH_SAVED);
+}
+function paintBoard(){
+  const v=$('#view');if(!v||!BOARD)return;
+  patchView(v,boardHtml(BOARD));
+  requestAnimationFrame(()=>drawRelations(BOARD));
+}
+function searchStatus(message){const s=$('#searchstatus');if(s)s.textContent=message||''}
+async function runSearch(){
+  const seq=++SEARCH_SEQ,pid=SEL;
+  const saved=SEARCH_SAVED,query=SEARCH_QUERY.trim();
+  if(!saved&&!query){SEARCH_IDS=null;searchStatus('');syncSearchControls(BOARD);paintBoard();return}
+  searchStatus('searching…');
+  try{
+    const path='/api/projects/'+pid+'/search?'+(saved?'saved='+encodeURIComponent(saved):'q='+encodeURIComponent(query));
+    const cards=await api(path);
+    if(seq!==SEARCH_SEQ||pid!==SEL)return;
+    SEARCH_IDS=new Set(cards.map(c=>c.id));
+    searchStatus(cards.length+' match'+(cards.length===1?'':'es'));
+    syncSearchControls(BOARD);paintBoard();
+  }catch(err){if(seq===SEARCH_SEQ&&pid===SEL)searchStatus(err.message)}
+}
+function wireSearchControls(){
+  const input=$('#cardsearch'),saved=$('#savedsearch');if(!input||!saved)return;
+  input.oninput=()=>{
+    SEARCH_QUERY=input.value;SEARCH_SAVED='';saved.value='';
+    if(SEARCH_TIMER)clearTimeout(SEARCH_TIMER);
+    SEARCH_TIMER=setTimeout(runSearch,180);
+    syncSearchControls(BOARD);
+  };
+  input.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();if(SEARCH_TIMER)clearTimeout(SEARCH_TIMER);runSearch()}};
+  saved.onchange=()=>{SEARCH_SAVED=saved.value;SEARCH_QUERY='';input.value='';runSearch()};
+  const clear=$('#clearsearch');if(clear)clear.onclick=()=>{
+    if(SEARCH_TIMER)clearTimeout(SEARCH_TIMER);
+    SEARCH_QUERY='';SEARCH_SAVED='';SEARCH_IDS=null;input.value='';saved.value='';syncSearchControls(BOARD);paintBoard();input.focus();searchStatus('');
+  };
+  const save=$('#savefilter');if(save)save.onclick=()=>{
+    const current=SEARCH_QUERY.trim();
+    if(!current){toast('Type a query before saving it.');input.focus();return}
+    formModal('Save filter',[
+      {name:'id',label:'id (lowercase letters, numbers, hyphens)',required:true},
+      {name:'name',label:'name',required:true},
+      {name:'query',label:'query',required:true,value:current},
+    ],'save filter',async d=>{
+      await api('/api/projects/'+SEL+'/filters',{method:'POST',body:JSON.stringify({id:d.id,name:d.name,query:d.query})});
+      SEARCH_QUERY='';SEARCH_SAVED=d.id;SEARCH_IDS=null;BOARD=null;
+      await refreshBoard();await runSearch();
+    });
+  };
+  const del=$('#delfilter');if(del)del.onclick=()=>{
+    const id=SEARCH_SAVED;if(!id)return;
+    confirmModal('Delete saved filter','Delete <b>'+esc(id)+'</b>? Existing feed capabilities scoped to it will stop resolving.','delete filter',async()=>{
+      await api('/api/projects/'+SEL+'/filters/'+encodeURIComponent(id),{method:'DELETE'});
+      SEARCH_SAVED='';SEARCH_IDS=null;BOARD=null;await refreshBoard();
+    });
+  };
 }
 // Create a card on the selected board. A lane argument pre-selects the column
 // whose plus was clicked; leaving it undefined lets the board choose its own
@@ -839,6 +938,9 @@ function faceBadges(b,c){
   if(c.descriptionPresent)items.push(badge('≡','description'));
   if(c.comments)items.push(badge(IC.chat,c.comments));
   if(c.attachments)items.push(badge(IC.clip,c.attachments));
+  if((c.watchers||[]).length)items.push(badge('◉',c.watchers.length,'watching'));
+  if(c.voteCount)items.push(badge('▲',c.voteCount,'votes'));
+  if(c.boostCount)items.push(badge('✦',c.boostCount,'boosts'));
   const s=c.metrics&&c.metrics.stagnation;if(s&&s.dots)items.push('<span title="'+s.days+' cumulative days in lane">'+('●'.repeat(s.dots))+'</span>');
   if(ready.has(c.id))items.push('<span class="ready bare">▶ ready</span>');
   return items.slice(0,10).join('');
@@ -860,21 +962,25 @@ function cardHtml(b,c){
 }
 function colsHtml(b){
   return '<div class="cols" style="margin-top:12px">'+b.lanes.map(lane=>{
-    const n=lane.cards.length;
+    const cards=SEARCH_IDS===null?lane.cards:lane.cards.filter(c=>SEARCH_IDS.has(c.id));
+    const n=cards.length;
     const wip=lane.wip!=null?'<span class="'+(n>lane.wip?'wipbad':'n')+'">'+n+'/'+lane.wip+'</span>':'<span class="n">'+n+'</span>';
-    const estimate=lane.estimate?'<span class="n">est '+lane.estimate+'</span>':'';
+    const estimateValue=SEARCH_IDS===null?lane.estimate:cards.reduce((sum,c)=>sum+(c.estimate||0),0);
+    const estimate=estimateValue?'<span class="n">est '+estimateValue+'</span>':'';
     let body='';
     if(lane.substates.length){
       // Every substate gets a group, empty ones included: a strict lane must
       // be entered at its first substate, which is very often the empty one,
       // so hiding it would hide the only legal place to drop.
       for(const sub of lane.substates){
-        const cs=lane.cards.filter(c=>c.substate===sub||(sub===lane.substates[0]&&c.substate==null));
+        const cs=cards.filter(c=>c.substate===sub||(sub===lane.substates[0]&&c.substate==null));
         body+='<div class="subgroup" data-lane="'+esc(lane.id)+'" data-sub="'+esc(sub)+'">'
           +'<div class="sub-h">· '+esc(sub)+'</div>'+cs.map(c=>cardHtml(b,c)).join('')+'</div>';
       }
-    }else body=lane.cards.map(c=>cardHtml(b,c)).join('');
-    const add=!RO?'<footer class="lanefoot"><button type="button" class="laneadd" data-addcard="'+esc(lane.id)+'" title="add a card to '+esc(lane.name)+'" aria-label="add a card to '+esc(lane.name)+'">+ add card</button></footer>':'';
+    }else body=cards.map(c=>cardHtml(b,c)).join('');
+    const subscribed=!!ME&&(lane.subscribers||[]).includes(ME.username);
+    const add=!RO?'<footer class="lanefoot"><button type="button" class="laneadd" data-addcard="'+esc(lane.id)+'" title="add a card to '+esc(lane.name)+'" aria-label="add a card to '+esc(lane.name)+'">+ add card</button>'
+      +'<button type="button" class="lanesub" data-lanesub="'+esc(lane.id)+'" data-on="'+subscribed+'" aria-pressed="'+subscribed+'" title="'+(subscribed?'unsubscribe from':'subscribe to')+' '+esc(lane.name)+'">'+(subscribed?'◉':'○')+' follow</button></footer>':'';
     return '<section class="col" data-lane="'+esc(lane.id)+'"><h3>'+esc(lane.name)+' '+wip+' '+estimate+'</h3>'
       +'<div class="deck" data-lane="'+esc(lane.id)+'">'+(body||'<div class="empty">·</div>')+'</div>'+add+'</section>';
   }).join('')+'</div>';
@@ -1053,6 +1159,14 @@ function boardClicks(e){
   if(Date.now()-DRAG_ENDED<400)return;
   const ac=e.target.closest('[data-addcard]');
   if(ac){newCard(ac.dataset.addcard);e.stopPropagation();return}
+  const sub=e.target.closest('[data-lanesub]');
+  if(sub){
+    e.stopPropagation();
+    const active=sub.dataset.on!=='true';sub.disabled=true;
+    api('/api/projects/'+SEL+'/lanes/'+encodeURIComponent(sub.dataset.lanesub)+'/subscribe',{method:'POST',body:JSON.stringify({active:active})})
+      .then(()=>refreshBoard()).catch(err=>{sub.disabled=false;toast(err.message)});
+    return;
+  }
   const go=e.target.closest('[data-goto]');
   if(go&&!go.disabled){SEL=go.dataset.goto;VIEW='board';BOARD=null;renderSide();renderMain();e.stopPropagation();return}
   const el=e.target.closest('[data-card]');
@@ -1180,11 +1294,13 @@ async function refreshBoard(quiet){
   BOARD=b;
   const pi=$('#pinfo');if(pi){pi.textContent=b.cards+' cards · '+pct(b.progress);pi.title='structural progress: every card is one unit; a sub-board fills its unit by its own fraction'}
   const v=$('#view');if(!v)return;
+  syncSearchControls(b);
   patchView(v,boardHtml(b));
   v.onclick=boardClicks;
   v.onkeydown=boardKeys;
   v.onpointerdown=boardPointerDown;
   requestAnimationFrame(()=>drawRelations(b));
+  if(SEARCH_QUERY.trim()||SEARCH_SAVED)runSearch();
 }
 function drawRelations(b){
   const cols=$('.cols');if(!cols)return;
@@ -1478,16 +1594,22 @@ function cardModalHtml(c,tab){
   if(!RO){
     const mine=ME&&(ME.kind==='bot'?c.delegate:c.assignee)===ME.username;
     const settled=c.state==='done'||c.state==='archive';
+    const watching=!!ME&&(c.watchers||[]).includes(ME.username);
+    const voted=!!ME&&(c.votes||[]).includes(ME.username);
     const acts=[];
     if(!settled&&!(mine&&c.state==='doing'))acts.push('<button class="ghost" data-claim title="take this card and move it into doing">▶ claim</button>');
     if(!settled)acts.push('<button class="ghost" data-close title="close this card">✓ close</button>');
     acts.push(c.blocked
       ?'<button class="ghost" data-unblock title="clear the blocked flag">unblock</button>'
       :'<button class="ghost" data-block title="park this card with a reason">⛔ block</button>');
+    acts.push('<button class="ghost" data-watch data-on="'+watching+'" aria-pressed="'+watching+'" title="'+(watching?'stop watching':'watch this card')+'">'+(watching?'◉ watching':'○ watch')+'</button>');
+    acts.push('<button class="ghost" data-vote data-on="'+voted+'" aria-pressed="'+voted+'" title="'+(voted?'withdraw your vote':'vote for this card')+'">▲ '+(voted?'voted':'vote')+'</button>');
+    acts.push('<button class="ghost" data-boost title="leave a short boost">✦ boost</button>');
     meta.push(acts.join(''));
     meta.push('<button class="ghost" data-editcard title="edit card fields">✎ edit</button>'
       +'<button class="ghost" data-mergecard title="merge this duplicate into another card">merge duplicate</button>'
       +'<button class="ghost" data-transfercard title="copy or move this card to a nested board">⇢ handoff</button>'
+      +'<button class="ghost" data-feedcard title="create a private activity feed for this card">☊ feed</button>'
       +'<button class="ghost" data-sharecard title="public read-only link to just this card">↗ share</button>');
   }
   const tabs=[['card','card'],['chat','chat '+((p.comments||[]).length||'')],['activity','activity']];
@@ -1507,6 +1629,13 @@ function paneCard(c){
   }
   out+='<h4>description'+(RO?'':' <span class="h-act"><button data-desc>'+(p.description?'edit':'write')+'</button></span>')+'</h4>'
     +'<div class="desc">'+(p.description?md(p.description):'<span class="empty">no description</span>')+'</div>';
+  const people=(list,empty)=>(list||[]).length?(list||[]).map(u=>'@'+esc(who(u))).join(', '):empty;
+  out+='<h4>collaboration</h4><div class="kv">'
+    +'<span><b>watching</b> '+people(c.watchers,'nobody')+'</span>'
+    +'<span><b>votes</b> '+people(c.votes,'none')+'</span>'
+    +'<span><b>mentioned</b> '+people(c.mentions,'nobody')+'</span></div>';
+  const boosts=p.boosts||[];
+  if(boosts.length)out+='<div class="chat" aria-label="boosts">'+boosts.map(b=>'<div class="msg"><div class="who"><b>'+esc(who(b.actor))+'</b> · '+esc(b.when)+'</div>✦ '+esc(b.text)+'</div>').join('')+'</div>';
   if((p.checklists||[]).length===0&&!RO){
     out+='<h4>checklist <span class="h-act"><button data-additem="Checklist">+ task</button></span></h4><div class="empty">no tasks yet</div>';
   }
@@ -1585,6 +1714,31 @@ function wireCardModal(m,c,tab){
     if(go&&!go.disabled){closeOverlay();SEL=go.dataset.goto2;VIEW='board';BOARD=null;renderSide();renderMain();return}
     const open=e.target.closest('[data-opencard]');
     if(open){const target=open.dataset.opencard;if(!target.includes('#'))openCard(target,'card');return}
+    const watch=e.target.closest('[data-watch]');
+    if(watch){
+      await api(cardApi(c.id)+'/watch',{method:'POST',body:JSON.stringify({active:watch.dataset.on!=='true'})});
+      await openCard(c.id,tab);refreshBoard(true);return;
+    }
+    const vote=e.target.closest('[data-vote]');
+    if(vote){
+      await api(cardApi(c.id)+'/vote',{method:'POST',body:JSON.stringify({active:vote.dataset.on!=='true'})});
+      await openCard(c.id,tab);refreshBoard(true);return;
+    }
+    if(e.target.closest('[data-boost]')){
+      formModal('Boost '+c.id,[{name:'text',label:'short support (12 characters max)',required:true,placeholder:'ship it 🚀'}],'boost',async d=>{
+        if([...d.text].length>12)throw new Error('a boost may be at most 12 characters');
+        await api(cardApi(c.id)+'/boost',{method:'POST',body:JSON.stringify({text:d.text})});
+        refreshBoard(true);setTimeout(()=>openCard(c.id,tab),0);
+      });
+      return;
+    }
+    if(e.target.closest('[data-feedcard]')){
+      formModal('Feed for '+c.id,[{name:'label',label:'private feed name',required:true,value:c.id+' '+c.title}],'create feed',async d=>{
+        NEW_FEED=await api('/api/projects/'+SEL+'/feeds',{method:'POST',body:JSON.stringify({label:d.label,card:c.id})});
+        VIEW='feeds';renderMain();
+      });
+      return;
+    }
     const promote=e.target.closest('[data-promote]');
     if(promote){
       const r=await api('/api/projects/'+SEL+'/cards/'+c.id+'/promote',{method:'POST',body:JSON.stringify({index:Number(promote.dataset.promote)})});
@@ -1913,6 +2067,71 @@ async function renderMembers(host){
       await api('/api/members/'+del.dataset.delm,{method:'DELETE'});await renderMembers(host);await reloadOrg()});
   };
 }
+function feedScope(f,b){
+  if(f.cardId)return 'card '+f.cardId;
+  if(f.laneId){const lane=(b.lanes||[]).find(l=>l.id===f.laneId);return 'lane '+(lane?lane.name:f.laneId)}
+  if(f.filterId){const filter=(b.filters||[]).find(x=>x.id===f.filterId);return 'filter '+(filter?filter.name:f.filterId)}
+  return 'whole board';
+}
+function feedUrl(token,format){return location.origin+'/feeds/'+token+'.'+format}
+function feedLinks(feed){
+  return '<div class="feedurls">'+[
+    ['atom','Atom'],['rss','RSS'],['ics','iCal'],
+  ].map(x=>'<span><a href="'+esc(feedUrl(feed.token,x[0]))+'" target="_blank" rel="noopener">'+x[1]+'</a> '
+    +'<button type="button" class="ghost" data-copyfeed="'+esc(feedUrl(feed.token,x[0]))+'">copy URL</button></span>').join('')+'</div>';
+}
+async function refreshFeeds(){
+  const host=$('#view');if(!host)return;
+  try{
+    const [feeds,b]=await Promise.all([
+      api('/api/projects/'+SEL+'/feeds'),
+      BOARD?Promise.resolve(BOARD):api('/api/projects/'+SEL+'/board'),
+    ]);
+    if(!host.isConnected||VIEW!=='feeds')return;
+    BOARD=b;
+    const scopeOptions=[{value:'board',label:'whole board'}]
+      .concat((b.lanes||[]).map(l=>({value:'lane:'+l.id,label:'lane: '+l.name})))
+      .concat((b.filters||[]).map(f=>({value:'filter:'+f.id,label:'saved filter: '+f.name})))
+      .concat([{value:'card',label:'one card (enter its id)'}]);
+    const fresh=NEW_FEED?'<div class="tokenbox"><b>'+esc(NEW_FEED.label||'Feed created')+'</b><br>Copy these private capability URLs now or later from the list.'+feedLinks(NEW_FEED)
+      +'<button type="button" class="ghost" data-dismissfeed>dismiss</button></div>':'';
+    host.innerHTML=fresh
+      +'<p style="margin-bottom:10px"><button type="button" class="primary" id="mkfeed">+ private feed</button> '
+      +'<span class="setting-note">Member-scoped and read only. Slack can subscribe to RSS; calendar apps use iCal.</span></p>'
+      +(feeds.length?'<table class="list"><tr><th>name</th><th>scope</th><th>formats</th><th>created</th><th>last fetched</th><th></th></tr>'
+        +feeds.map(f=>'<tr'+(f.revoked?' style="opacity:.5"':'')+'><td>'+esc(f.label)+'</td><td>'+esc(feedScope(f,b))+'</td>'
+          +'<td>'+(f.revoked?'revoked':feedLinks(f))+'</td><td class="mono">'+esc((f.created||'').slice(0,10))+'</td>'
+          +'<td class="mono">'+esc(f.lastViewed?(f.lastViewed||'').slice(0,10):'never')+'</td><td>'
+          +(f.revoked?'':'<button type="button" data-rfeed="'+esc(f.id)+'">revoke</button> ')+'<button type="button" data-dfeed="'+esc(f.id)+'">delete</button></td></tr>').join('')+'</table>'
+        :'<div class="empty">no private feeds yet</div>')
+      +'<p class="setting-note" style="margin-top:12px">A feed URL is a secret bearer capability. Revocation is immediate. It also stops working if your account loses this project, or if its card, lane, or saved filter scope disappears. External calendar refresh timing is controlled by the calendar provider.</p>';
+    $('#mkfeed').onclick=()=>formModal('New private feed',[
+      {name:'label',label:'name',required:true,value:'activity feed'},
+      {name:'scope',label:'scope',type:'select',options:scopeOptions},
+      {name:'card',label:'card id (only for one-card scope)'},
+    ],'create feed',async d=>{
+      const body={label:d.label};
+      if(d.scope==='card'){
+        if(!d.card)throw new Error('card id required for one-card scope');
+        body.card=d.card;
+      }else if(d.scope.startsWith('lane:'))body.lane=d.scope.slice(5);
+      else if(d.scope.startsWith('filter:'))body.filter=d.scope.slice(7);
+      NEW_FEED=await api('/api/projects/'+SEL+'/feeds',{method:'POST',body:JSON.stringify(body)});
+      NEW_FEED.label=d.label;await refreshFeeds();
+    });
+    host.onclick=async e=>{
+      const copy=e.target.closest('[data-copyfeed]');
+      if(copy){try{await navigator.clipboard.writeText(copy.dataset.copyfeed);copy.textContent='copied'}catch{copy.textContent='copy failed'}return}
+      if(e.target.closest('[data-dismissfeed]')){NEW_FEED=null;refreshFeeds();return}
+      const revoke=e.target.closest('[data-rfeed]');
+      if(revoke){confirmModal('Revoke feed','Every Atom, RSS, and iCal URL for this feed stops working immediately.','revoke',async()=>{
+        await api('/api/feeds/'+revoke.dataset.rfeed+'/revoke',{method:'POST'});NEW_FEED=null;refreshFeeds()});return}
+      const del=e.target.closest('[data-dfeed]');
+      if(del){confirmModal('Delete feed','Delete this capability record? Its URLs will never work again.','delete',async()=>{
+        await api('/api/feeds/'+del.dataset.dfeed,{method:'DELETE'});NEW_FEED=null;refreshFeeds()});return}
+    };
+  }catch(err){if(host.isConnected)host.innerHTML='<div class="err">'+esc(err.message)+'</div>'}
+}
 async function refreshSharing(){
   try{
     const shares=await api('/api/projects/'+SEL+'/shares');
@@ -2041,11 +2260,11 @@ function renderSettings(main){
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">company data</h4>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button id="orgexp">download company export</button>'
     +'<button id="demoload">load the Scoops Empire demo</button></div>'
-    +'<p style="color:var(--muted);font-size:12px;margin-top:6px">The export is restore-grade JSON: every space, project, board, card, member (password hashes included), api key hash, and share link. Store it like a credential: it is one. Uploaded files are NOT inside it: they live in the R2 bucket (the export lists their keys), so back the bucket up separately before any deletion. File urls are permanent bearer links: anyone holding one can fetch that file, and revoking a share does not revoke it. The demo adds a sample ice cream company as a new space.</p>'
+    +'<p style="color:var(--muted);font-size:12px;margin-top:6px">The export is restore-grade JSON: every space, project, board, card, member (password hashes included), api key hash, public share, and private feed capability. Store it like a credential: it is one. Uploaded files are NOT inside it: they live in the R2 bucket (the export lists their keys), so back the bucket up separately before any deletion. File urls are permanent bearer links: anyone holding one can fetch that file, and revoking a share does not revoke it. The demo adds a sample ice cream company as a new space.</p>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">manage: spaces and projects</h4>'
     +'<div id="mtree" style="max-width:560px"></div>'
-    +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">manage: share links</h4>'
-    +'<div id="mshares" style="max-width:720px">loading…</div>'
+    +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">manage: capabilities</h4>'
+    +'<div id="mshares" style="max-width:900px">loading…</div>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">company activity</h4>'
     +'<div id="maudit" style="max-width:720px">loading…</div>'
     +'<div class="err" id="serr"></div></div>';
@@ -2061,11 +2280,12 @@ function renderSettings(main){
     :'<div class="empty">no spaces yet</div>';
   api('/api/org/shares').then(list=>{
     const el=$('#mshares');if(!el)return;
-    el.innerHTML=list.length?'<table class="list"><tr><th>project</th><th>label</th><th>url</th><th>created</th><th></th></tr>'
-      +list.map(s=>'<tr'+(s.revoked?' style="opacity:.5"':'')+'><td>'+esc(s.projectName)+'</td><td>'+esc(s.label)+'</td>'
-        +'<td class="mono"><a href="/s/'+esc(s.token)+'" target="_blank" style="color:var(--acc)">/s/'+esc(s.token.slice(0,10))+'…</a></td>'
-        +'<td class="mono">'+esc(s.created.slice(0,10))+'</td><td><button data-delsh="'+esc(s.id)+'">delete</button></td></tr>').join('')+'</table>'
-      :'<div class="empty">no share links</div>';
+    el.innerHTML=list.length?'<table class="list"><tr><th>project</th><th>kind</th><th>member / scope</th><th>label</th><th>url</th><th>created</th><th></th></tr>'
+      +list.map(s=>{const feed=s.kind==='feed';const scope=s.cardId?'card '+s.cardId:s.laneId?'lane '+s.laneId:s.filterId?'filter '+s.filterId:'board';const href=feed?'/feeds/'+s.token+'.rss':'/s/'+s.token;
+        return '<tr'+(s.revoked?' style="opacity:.5"':'')+'><td>'+esc(s.projectName)+'</td><td>'+esc(s.kind)+'</td><td>'+esc((feed?(s.memberUsername||'removed member')+' · ':'')+scope)+'</td><td>'+esc(s.label)+'</td>'
+        +'<td class="mono"><a href="'+esc(href)+'" target="_blank" style="color:var(--acc)">'+esc(href.slice(0,18))+'…</a></td>'
+        +'<td class="mono">'+esc(s.created.slice(0,10))+'</td><td><button data-delsh="'+esc(s.id)+'">delete</button></td></tr>';}).join('')+'</table>'
+      :'<div class="empty">no capabilities</div>';
   }).catch(()=>{});
   const save=async next=>{
     try{const saved=await api('/api/settings',{method:'POST',body:JSON.stringify(next)});applyTheme(saved);renderSettings(main)}

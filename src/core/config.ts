@@ -3,12 +3,13 @@
 // edit board shape, like the hosted board editor.
 
 import type { YamlValue } from './yaml.ts';
-import type { BoardConfig, CardTemplate, CustomFieldDefinition, Finding, LabelDefinition, Lane, RollupPolicy, Canonical } from './model.ts';
+import type { BoardConfig, CardTemplate, CustomFieldDefinition, Finding, LabelDefinition, Lane, LaneSubscription, RollupPolicy, SavedFilter, Canonical } from './model.ts';
 import { CUSTOM_FIELD_TYPES, SLUG_RE, defaultLanes, defaultRollup, finding, isCanonical } from './model.ts';
 import { bodyHasSection } from './body.ts';
 import { emitMap, emitScalar } from './emit.ts';
 import { validCardDate, validEstimate } from './fields.ts';
 import { BUILTIN_CARD_KEYS, RESERVED_CARD_KEYS, labelGroupConflict, validColor, validCustomFieldValue } from './presentation.ts';
+import { QueryError, validateQuery } from './query.ts';
 
 /** Capability names understood by this reader. Later feature phases add to
  *  this registry as their semantics become real; declarations are optional,
@@ -16,11 +17,12 @@ import { BUILTIN_CARD_KEYS, RESERVED_CARD_KEYS, labelGroupConflict, validColor, 
 export const SUPPORTED_BOARD_FEATURES = new Set([
   'dates', 'estimates', 'delegation', 'aging', 'scoped-labels', 'custom-fields', 'cover-colors',
   'relations', 'cross-board-deps', 'templates',
+  'search', 'collaboration',
 ]);
 
 /** Serialize a BoardConfig back to board.yaml text. Defaults are omitted so
  *  the file stays as small as a hand-written one; parse(emit(c)) === c. */
-export function emitBoardYaml(config: Pick<BoardConfig, 'version' | 'name' | 'ids' | 'features' | 'lanes' | 'labelDefinitions' | 'customFields' | 'templates' | 'rollup' | 'extra'>): string {
+export function emitBoardYaml(config: Pick<BoardConfig, 'version' | 'name' | 'ids' | 'features' | 'lanes' | 'labelDefinitions' | 'customFields' | 'templates' | 'savedFilters' | 'subscriptions' | 'rollup' | 'extra'>): string {
   const lines = [`botflow: ${config.version}`, `name: ${emitScalar(config.name)}`];
   if (config.ids === 'hash') lines.push('ids: hash');
   if (config.features.length > 0) lines.push(`features: [${config.features.map(emitScalar).join(', ')}]`);
@@ -74,6 +76,25 @@ export function emitBoardYaml(config: Pick<BoardConfig, 'version' | 'name' | 'id
       if (Object.keys(template.fields).length > 0) lines.push(emitMap({ fields: template.fields }, 4));
       if (template.body !== '') lines.push(`    body: ${emitScalar(template.body)}`);
       const extra = emitMap(template.extra, 4);
+      if (extra !== '') lines.push(extra);
+    }
+  }
+  if (config.savedFilters.length > 0) {
+    lines.push('filters:');
+    for (const filter of config.savedFilters) {
+      lines.push(`  - id: ${filter.id}`);
+      if (filter.name !== filter.id) lines.push(`    name: ${emitScalar(filter.name)}`);
+      lines.push(`    query: ${emitScalar(filter.query)}`);
+      const extra = emitMap(filter.extra, 4);
+      if (extra !== '') lines.push(extra);
+    }
+  }
+  if (config.subscriptions.length > 0) {
+    lines.push('subscriptions:');
+    for (const subscription of config.subscriptions) {
+      lines.push(`  - lane: ${subscription.lane}`);
+      lines.push(`    watcher: ${emitScalar(subscription.watcher)}`);
+      const extra = emitMap(subscription.extra, 4);
       if (extra !== '') lines.push(extra);
     }
   }
@@ -162,8 +183,10 @@ export function parseBoardConfig(value: YamlValue, findings: Finding[]): BoardCo
   const labelDefinitions = parseLabelDefinitions(map['labels'], findings);
   const customFields = parseCustomFields(map['fields'], findings);
   const templates = parseTemplates(map['templates'], findings, lanes, customFields);
+  const savedFilters = parseSavedFilters(map['filters'], findings, customFields);
+  const subscriptions = parseSubscriptions(map['subscriptions'], findings, lanes);
 
-  const known = new Set(['botflow', 'name', 'ids', 'features', 'lanes', 'labels', 'fields', 'templates', 'rollup']);
+  const known = new Set(['botflow', 'name', 'ids', 'features', 'lanes', 'labels', 'fields', 'templates', 'filters', 'subscriptions', 'rollup']);
   const extra: Record<string, unknown> = {};
   for (const key of Object.keys(map)) {
     if (!known.has(key)) {
@@ -172,7 +195,99 @@ export function parseBoardConfig(value: YamlValue, findings: Finding[]): BoardCo
     }
   }
 
-  return { version, name, ids, features, unsupportedFeatures, mutationBlocked, lanes, lanesDefaulted, labelDefinitions, customFields, templates, rollup, extra };
+  return { version, name, ids, features, unsupportedFeatures, mutationBlocked, lanes, lanesDefaulted, labelDefinitions, customFields, templates, savedFilters, subscriptions, rollup, extra };
+}
+
+export function parseSavedFilters(
+  value: YamlValue | undefined,
+  findings: Finding[],
+  customFields: CustomFieldDefinition[],
+): SavedFilter[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    findings.push(finding('schema', REF, 'filters must be a list of filter maps'));
+    return [];
+  }
+  const out: SavedFilter[] = [];
+  const seen = new Set<string>();
+  const fieldIds = new Set(customFields.map((field) => field.id));
+  for (const raw of value) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      findings.push(finding('schema', REF, 'each saved filter must be a mapping'));
+      continue;
+    }
+    const map = raw as Record<string, YamlValue>;
+    const id = typeof map['id'] === 'string' && SLUG_RE.test(map['id']) ? map['id'] : null;
+    if (id === null) {
+      findings.push(finding('schema', REF, 'saved filter id must be a lowercase slug'));
+      continue;
+    }
+    if (seen.has(id)) {
+      findings.push(finding('schema', REF, `duplicate saved filter id "${id}"`));
+      continue;
+    }
+    seen.add(id);
+    const name = typeof map['name'] === 'string' && map['name'] !== '' ? map['name'] : id;
+    if (map['name'] !== undefined && name === id && map['name'] !== id) {
+      findings.push(finding('schema', REF, `saved filter "${id}": name must be a non-empty string`));
+    }
+    const query = typeof map['query'] === 'string' ? map['query'] : null;
+    if (query === null) {
+      findings.push(finding('schema', REF, `saved filter "${id}": query must be a string`));
+      continue;
+    }
+    try {
+      validateQuery(query, fieldIds);
+    } catch (err) {
+      findings.push(finding('schema', REF, `saved filter "${id}": ${(err as QueryError).message}`));
+    }
+    const extra: Record<string, unknown> = {};
+    for (const key of Object.keys(map)) {
+      if (key !== 'id' && key !== 'name' && key !== 'query') {
+        extra[key] = map[key];
+        findings.push(finding('unknown-key', REF, `saved filter "${id}": unknown key "${key}" (preserved)`));
+      }
+    }
+    out.push({ id, name, query, extra });
+  }
+  return out;
+}
+
+export function parseSubscriptions(value: YamlValue | undefined, findings: Finding[], lanes: Lane[]): LaneSubscription[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    findings.push(finding('schema', REF, 'subscriptions must be a list of subscription maps'));
+    return [];
+  }
+  const out: LaneSubscription[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      findings.push(finding('schema', REF, 'each lane subscription must be a mapping'));
+      continue;
+    }
+    const map = raw as Record<string, YamlValue>;
+    const lane = typeof map['lane'] === 'string' && lanes.some((candidate) => candidate.id === map['lane']) ? map['lane'] : null;
+    const watcher = typeof map['watcher'] === 'string' && map['watcher'] !== '' ? map['watcher'] : null;
+    if (lane === null) findings.push(finding('schema', REF, `lane subscription has unknown lane ${JSON.stringify(map['lane'] ?? null)}`));
+    if (watcher === null) findings.push(finding('schema', REF, 'lane subscription watcher must be a non-empty string'));
+    if (lane === null || watcher === null) continue;
+    const pair = `${lane}\u0000${watcher}`;
+    if (seen.has(pair)) {
+      findings.push(finding('schema', REF, `duplicate subscription for "${watcher}" on lane "${lane}"`));
+      continue;
+    }
+    seen.add(pair);
+    const extra: Record<string, unknown> = {};
+    for (const key of Object.keys(map)) {
+      if (key !== 'lane' && key !== 'watcher') {
+        extra[key] = map[key];
+        findings.push(finding('unknown-key', REF, `subscription for "${watcher}" on "${lane}": unknown key "${key}" (preserved)`));
+      }
+    }
+    out.push({ lane, watcher, extra });
+  }
+  return out;
 }
 
 export function parseLabelDefinitions(value: YamlValue | undefined, findings: Finding[]): LabelDefinition[] {
@@ -532,6 +647,8 @@ function fallback(name: string): BoardConfig {
     labelDefinitions: [],
     customFields: [],
     templates: [],
+    savedFilters: [],
+    subscriptions: [],
     rollup: defaultRollup(),
     extra: {},
   };

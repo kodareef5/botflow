@@ -14,6 +14,7 @@ import {
   addLogEntry,
   attachCard,
   blockCard,
+  boostCard,
   checkCard,
   claimCard,
   closeCard,
@@ -29,11 +30,17 @@ import {
   bulkCards,
   transferCard,
   moveCard,
+  removeFilter,
+  saveFilter,
+  subscribeLane,
   unblockCard,
+  voteCard,
+  watchCard,
   type EditPatch,
 } from '../core/mutate.ts';
 import { boardJson, cardJson, renderPrime, rollupJson } from '../cli/render.ts';
 import { cardDetailJson } from '../core/json.ts';
+import { queryCards } from '../core/query.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_INFO = { name: 'botflow', version: '0.1.0' };
@@ -131,6 +138,58 @@ function buildTools(root: string, defaultActor: string): Tool[] {
         const node = tree.boards.get('.')!;
         const ba = analysis.boards.get('.')!;
         return ba.ready.map((id) => cardJson(node.board.cards.find((c) => c.id === id)!, node, ba));
+      },
+    },
+    {
+      name: 'query_cards',
+      description: 'Search the board tree with botflow query syntax, or run one portable saved filter.',
+      inputSchema: schema([], { query: str, saved: str, actor: str }),
+      run: (args) => {
+        const { tree, analysis } = view();
+        if (args['query'] !== undefined && args['saved'] !== undefined) throw new UsageError('use query or saved, not both');
+        const saved = opt(args['saved']);
+        const expression = saved === undefined
+          ? (args['query'] === undefined ? '' : strOf(args['query'], 'query'))
+          : tree.boards.get('.')!.board.config.savedFilters.find((filter) => filter.id === saved)?.query;
+        if (expression === undefined) throw new UsageError(`no saved filter "${saved}"`);
+        try {
+          return queryCards(tree, analysis, expression, { actor: actorOf(args) }).map((match) => {
+            const node = tree.boards.get(match.board)!;
+            return { board: match.board, ...cardJson(match.card, node, analysis.boards.get(match.board)!) };
+          });
+        } catch (err) {
+          throw new UsageError((err as Error).message);
+        }
+      },
+    },
+    {
+      name: 'filters_list',
+      description: 'List portable saved card filters from board.yaml.',
+      inputSchema: schema([], {}),
+      run: () => view().tree.boards.get('.')!.board.config.savedFilters.map(({ id, name, query }) => ({ id, name, query })),
+    },
+    {
+      name: 'filter_save',
+      description: 'Create or replace a portable saved card filter.',
+      inputSchema: schema(['id', 'query'], { id: str, query: str, name: str, actor: str }),
+      run: (args) => {
+        const filter = saveFilter(root, strOf(args['id'], 'id'), strOf(args['query'], 'query'), actorOf(args), opt(args['name']));
+        return { id: filter.id, name: filter.name, query: filter.query };
+      },
+    },
+    {
+      name: 'filter_remove',
+      description: 'Remove a portable saved card filter.',
+      inputSchema: schema(['id'], { id: str, actor: str }),
+      run: (args) => ({ id: removeFilter(root, strOf(args['id'], 'id'), actorOf(args)).id, removed: true }),
+    },
+    {
+      name: 'lane_subscribe',
+      description: 'Follow or unfollow every card currently in one lane.',
+      inputSchema: schema(['lane'], { lane: str, subscribed: bool, actor: str }),
+      run: (args) => {
+        const result = subscribeLane(root, strOf(args['lane'], 'lane'), actorOf(args), args['subscribed'] !== false);
+        return { lane: result.subscription.lane, watcher: result.subscription.watcher, subscribed: result.active, changed: result.changed };
       },
     },
     {
@@ -366,6 +425,30 @@ function buildTools(root: string, defaultActor: string): Tool[] {
         const card = commentCard(root, strOf(args['id'], 'id'), actorOf(args), strOf(args['message'], 'message'));
         return { id: card.id, commented: true };
       },
+    },
+    {
+      name: 'card_watch',
+      description: 'Follow or unfollow one card. Idempotent; followers do not alter assignment.',
+      inputSchema: schema(['id'], { id: str, watching: bool, actor: str }),
+      run: (args) => {
+        const result = watchCard(root, strOf(args['id'], 'id'), actorOf(args), args['watching'] !== false);
+        return { id: result.card.id, watching: result.active, changed: result.changed };
+      },
+    },
+    {
+      name: 'card_vote',
+      description: 'Add or withdraw the actor’s one current vote on a card.',
+      inputSchema: schema(['id'], { id: str, voting: bool, actor: str }),
+      run: (args) => {
+        const result = voteCard(root, strOf(args['id'], 'id'), actorOf(args), args['voting'] !== false);
+        return { id: result.card.id, voted: result.active, changed: result.changed };
+      },
+    },
+    {
+      name: 'card_boost',
+      description: 'Append a 1–12 Unicode-character boost to a card.',
+      inputSchema: schema(['id', 'text'], { id: str, text: str, actor: str }),
+      run: (args) => ({ id: boostCard(root, strOf(args['id'], 'id'), actorOf(args), strOf(args['text'], 'text')).id, boosted: true }),
     },
     {
       name: 'card_describe',

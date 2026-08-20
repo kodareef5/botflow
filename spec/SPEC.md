@@ -56,6 +56,8 @@ Written in the strict YAML subset (§9). Top-level keys:
 | `labels` | list of label maps | no | Optional colors for card labels. Scoped single-select groups are derived from `Group/Value` names below. |
 | `fields` | list of field maps | no | Typed declarations for board-specific card frontmatter fields. |
 | `templates` | list of template maps | no | Reusable defaults for creating cards; templates never appear as live work. |
+| `filters` | list of filter maps | no | Named, portable card queries (§5b). |
+| `subscriptions` | list of subscription maps | no | Members watching every card in a lane (§5b). |
 | `rollup` | map | no | Rollup policy (§7); defaults below. |
 
 An implementation that encounters an unsupported `botflow` major MAY inspect and
@@ -131,7 +133,21 @@ merges over template fields. Instantiation copies values into an ordinary card a
 its normal Log. The resulting card has no live link to the template. Unknown keys inside
 a template map are preserved like other board configuration maps.
 
-Unknown keys in the top-level board mapping, lane, label, custom-field, template, or `rollup`
+Saved-filter map keys:
+
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `id` | slug | yes | Stable identifier, unique within the board. |
+| `name` | string | no | Display name; defaults to `id`. |
+| `query` | string | yes | Query expression using §5b syntax. An empty expression matches every card. |
+
+Lane-subscription maps contain `lane` (an existing lane id) and `watcher` (a non-empty
+actor name). The pair is unique; order is presentation order. A subscription follows
+activity on cards currently in that lane without copying the watcher onto each card.
+Moving a card out of the lane changes that derived audience. Unknown keys inside filter
+and subscription maps are preserved like the other board registries.
+
+Unknown keys in the top-level board mapping, lane, label, custom-field, template, saved-filter, subscription, or `rollup`
 mappings are lint `info` (`unknown-key`) and MUST be preserved semantically by any tool that
 rewrites `board.yaml`, under the same normalization allowance as unknown card keys
 (§5). This makes additive board capabilities safe across routine edits.
@@ -162,6 +178,8 @@ Frontmatter keys:
 | `labels` | list of strings | no | |
 | `assignee` | string | no | Accountable human/owner. A normal claim (§12) sets it. Existing v0 cards that used this as the executing actor remain valid. |
 | `delegate` | string | no | Agent currently executing the card. A delegate-mode claim (§12) sets it without replacing the accountable assignee. |
+| `watchers` | list of strings | no | Unique actor names explicitly following this card, in subscription order. |
+| `votes` | list of strings | no | Unique actor names supporting or prioritizing this card, in vote order. A member has at most one vote. |
 | `priority` | `p0`–`p3` | no | |
 | `deps` | list of card refs | no | Gating dependencies. A **task** card is **ready** when its effective canonical state (§6) is `todo` and every resolved dep's effective state is `done` or `archive`. Board-cards are containers, not worker tasks: they are never ready and never appear in the work queue, which keeps `ready` and claimability (§12) consistent even when a board-card's lane drifts from its rollup. |
 | `relations` | list of relation maps | no | Non-gating typed links (§5a). |
@@ -200,6 +218,7 @@ Further conventional body sections, all optional and all plain markdown:
 - **Checklists**: every GFM task item (`- [ ]` / `- [x]`) anywhere in the body belongs to the card's checklist aggregate; items group under the `##` section they appear in (`Checklist` when unnamed). Tools address items by their **global 0-based ordinal** in body order, and surface the aggregate (`done/total`) on card faces.
 - **`## Comments`**: discourse between operators and agents, append-only like the Log, same entry shape (`- <date-or-datetime> <actor>: <text>`). Comments are conversation; the Log is audit: tools MUST NOT merge them.
 - **`## Attachments`**: one markdown link per line (`- [label](url)`). Attachments whose urls are images form the card's gallery (and the default cover, §5 `cover`). Attachments are urls; binary upload storage is a hosted-manager concern, not part of the format.
+- **`## Boosts`**: lightweight support more expressive than a vote, append-only in the same entry shape. Text MUST be non-empty, single-line, and no longer than 12 Unicode code points. A card may have multiple boosts from one actor; history is never rewritten when a vote or watcher is toggled.
 
 ### 5a. Card references and relations
 
@@ -222,6 +241,37 @@ Once their target is done/archive, presentation degrades them to an ordinary res
 relation; the raw `deps` entry is deliberately retained as history. Text may opt into a
 derived relation with `[[card-ref]]` in Description or Comments. Derived text relations
 are a view and are never written to frontmatter.
+
+### 5b. Search, mentions, and audiences
+
+A mention is derived from `@name` in Description or Comment prose, excluding fenced
+code. `name` begins with an ASCII letter or digit and continues with up to 63 ASCII
+letters, digits, `_`, `-`, or `.`. Tools de-duplicate mentions in first-occurrence
+order; trailing full stops are sentence punctuation, not part of the name. They MUST
+NOT write a derived `mentions:` key. A card's current collaboration
+audience is the union of its accountable assignee, delegate, explicit watchers,
+mentions, and subscriptions for its current lane. Votes and boosts are signals, not
+subscriptions.
+
+The v0 query language is whitespace-separated and implicitly ANDed. Double or single
+quotes preserve whitespace; a leading `-` negates one term. A bare term performs a
+case-insensitive substring search over id, title, full markdown body, labels, actors,
+and declared custom-field values. Qualifiers use `name:value`:
+
+- `id`, `title`, `board`, `lane`, `state`, `label`, `assignee`, `delegate`, `watcher`,
+  `voter`, `mention`, `priority`, and `type` match the named projection. Identity
+  qualifiers accept `@me`, resolved from the invoking actor; without an actor it cannot
+  match.
+- `field.<id>` matches the string form of one declared custom-field value.
+- `is:` accepts `ready`, `blocked`, `overdue`, `stalled`, `evergreen`, `unassigned`,
+  and `watched`. `due:` accepts `none`, `overdue`, `today`, and `future`.
+
+Qualifier names and enum-like values are case-insensitive; stored identity, label,
+field, id, title, and board values use case-insensitive substring matching. Invalid
+quoting, an unknown qualifier, an unknown `is:`/`due:` predicate, or a query that names
+an undeclared custom field is a query error rather than an empty result. Results are
+deterministic in board traversal and card-file order. Search is a derived projection:
+indexes MAY exist but MUST be rebuildable from board documents.
 
 ## 6. Projection
 
@@ -336,6 +386,7 @@ Not supported (parse error): anchors/aliases (`&`, `*`), tags (`!`), block scala
 | `custom-field-value` | error | A declared custom-field value violates its type/options. |
 | `dangling-relation` | error | A relation target does not resolve. |
 | `self-relation` | error | A card relates to itself. |
+| `boost-value` | error | A Boost entry is empty or longer than 12 Unicode code points. |
 | `unknown-key` | info | Unrecognized frontmatter key (preserved). |
 | `unsupported-feature` | warning | `board.yaml` declares a feature this reader does not implement; the board is read-only. |
 | `hosted-ref` | info | Board-card uses a `project:` reference; resolvable only on a manager. |
@@ -353,6 +404,7 @@ Each directory under `test/fixtures/` is a board (or, for `invalid/`, a set of b
 - `card-features/`: scheduling, estimate, Evergreen, and accountable-assignee / executing-delegate fields. → `expected.json`
 - `presentation/`: scoped/colored labels, typed custom fields, face flags, description/checklist previews, and cover color. → `expected.json`
 - `relations/`: templates, typed relations, and a resolved cross-board dependency. → `expected.json`
+- `collaboration/`: saved filters, lane subscriptions, watchers, votes, boosts, mentions, and query results. → `expected.json`
 - `invalid/`: one board per error class. → `expected.json` (lint findings)
 
 Expected files record, per board: lint findings (rule ids + card ids), per-card canonical states, lane distributions, ready sets, and (where relevant) effective states and progress. A conforming engine must reproduce them exactly.
@@ -360,7 +412,7 @@ Expected files record, per board: lint findings (rule ids + card ids), per-card 
 ## 12. Conventions for tools
 
 - **Claim is a coordination primitive, not a shortcut.** A claim MUST succeed only when the card is claimable by the actor: its local canonical state (lane canonical, or `blocked` when the flag is set) is `todo`, every dep resolves to a card whose local canonical state is `done` or `archive`, and the selected holder field is empty or already the actor. A normal (human/accountability) claim selects `assignee`; an explicit delegate-mode claim selects `delegate` and leaves `assignee` intact. Success sets the selected field and moves the card to a `doing`-canonical lane (first substate if any), appending a Log entry: one atomic rewrite. A claim by the actor already named in the selected field while the card is `doing` is an idempotent no-op. Two actors racing for the same selected role get exactly one winner; assignee and delegate are different roles and may coexist. Anything else MUST fail with a conflict that names the reason (`assigned`, `blocked`, `not-ready`, `deps`) and MUST NOT modify the card. Tools MAY offer an explicit force override for human operators; hosted APIs MUST restrict that override to admin identities and record its use. A forced normal claim clears an existing delegate because the human is taking execution back; a forced delegate claim replaces only the delegate. Board-cards never appear in `ready` (§5); claiming one explicitly is judged by its own lane, because rollup state is a view, not a lock.
-- Every mutation appends a Log line; never rewrite existing Log lines. Comments append to `## Comments` and bump `updated` without a Log line (discourse isn't audit); checklist toggles and attachment changes DO log.
+- Every workflow mutation appends a Log line; never rewrite existing Log lines. Comments append to `## Comments` and Boosts append to `## Boosts`; both bump `updated` without a redundant Log line because their append-only sections are already the record. Checklist toggles and attachment changes DO log.
 - Promoting a checklist item creates a normal card, checks the source item, and writes inverse `parent`/`subtask` relations in the same atomic mutation. The promoted card inherits labels, accountable/delegated actors, due date, and estimate unless the caller overrides them.
 - Duplicate merge never deletes history: it transfers unique attachments to the canonical card, rewires same-board inbound references, writes `duplicates`/`supersedes`, and archives the duplicate. Both cards are logged.
 - Bulk mutations validate the complete batch before writing any card. A failed member leaves every card unchanged. Cross-board transfer likewise creates a valid target before retiring or removing a source; recovery or replay MUST converge rather than lose the only copy. A transfer target MUST be a descendant in the source project's loaded tree, so the source can retain a non-escaping `copied-to` reference; hosted managers enforce the same rule against their project hierarchy.
@@ -369,6 +421,8 @@ Expected files record, per board: lint findings (rule ids + card ids), per-card 
 - Section-aware body edits (set/append section, checklist toggles, attachment removal) MUST ignore lines inside fenced code blocks: a literal `## ` or `- [ ]` inside a fence is content, not structure.
 - **Same-tree concurrency.** git covers branch races (§8); two processes in one worktree are the tool's job. A mutating tool MUST serialize its load-mutate-write cycle against other processes (e.g. a short-lived `board.lock` file with stale-owner reaping), MUST allocate seq ids inside that critical section, and SHOULD write files crash-safely (temp file + rename). Lock files are derived state: never committed, safe to delete when their owner is gone.
 - Preserve unknown card-frontmatter and `board.yaml` keys and all body content outside the section being edited.
+- Watching and voting are idempotent set mutations. Boosts append and never edit history. A saved-filter or lane-subscription edit is a board mutation and follows the same locking/read-only rules as every other `board.yaml` rewrite.
+- A hosted RSS/Atom or iCalendar URL MUST be an unguessable, revocable capability scoped to one member and project, optionally narrowed to one card, lane, or saved filter. Resolution MUST fail when the capability is revoked, the member is disabled/removed, or that member no longer reaches the project. Retrieval updates only hosted access metadata, never board documents. RSS/Atom contains bounded project activity; iCalendar is read-only and contains only matching cards with due dates. These pull feeds perform no outbound request; Slack may consume the RSS URL without a botflow Slack credential.
 - Only bump `updated` on meaningful change.
 - `prime`: every conforming CLI SHOULD offer a command that prints the board's shape, rules, ready work, and the tool's own usage, so an agent can be taught with one line in AGENTS.md.
 - Derived stores (indexes, caches) MUST be rebuildable from files alone and MUST NOT be committed.
@@ -377,7 +431,7 @@ Expected files record, per board: lint findings (rule ids + card ids), per-card 
 
 ## 13. Future (non-normative)
 
-The card-frontmatter names `spent`, `watchers`, `relates`, and `weight` are reserved for future botflow semantics. Implementations
+The card-frontmatter names `spent`, `relates`, and `weight` are reserved for future botflow semantics. Implementations
 MUST preserve them as unknown keys today and SHOULD warn before assigning unrelated
 local meanings to them.
 

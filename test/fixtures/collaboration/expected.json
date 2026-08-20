@@ -1,0 +1,40 @@
+{
+  "boards": {
+    ".": {
+      "lint": [],
+      "cards": { "001": "doing", "002": "done", "003": "todo" },
+      "distribution": { "wishlist": 0, "todo": 1, "doing": 1, "blocked": 0, "done": 1, "archive": 0 },
+      "ready": ["003"],
+      "progress": 0.3333,
+      "collaboration": {
+        "filters": [
+          { "id": "mine", "name": "My open work", "query": "assignee:@me -state:done" },
+          { "id": "customer", "name": "Customer work", "query": "field.customer:acme" }
+        ],
+        "subscriptions": [{ "lane": "doing", "watcher": "ops-lead" }],
+        "cards": {
+          "001": {
+            "watchers": ["lea", "sam"],
+            "votes": ["lea", "bob"],
+            "mentions": ["ops-lead", "sam"],
+            "boosts": [{ "when": "2026-08-18 10:00", "actor": "lea", "text": "ship it 🚀" }]
+          },
+          "002": { "watchers": [], "votes": ["lea"], "mentions": [], "boosts": [] },
+          "003": { "watchers": ["bob"], "votes": [], "mentions": ["lea"], "boosts": [] }
+        },
+        "queries": {
+          "api repair": ["001"],
+          "assignee:@me -state:done": ["001"],
+          "mention:ops-lead": ["001"],
+          "is:overdue": ["003"],
+          "due:today": ["001"],
+          "watcher:lea voter:bob": ["001"],
+          "is:watched": ["001", "002"],
+          "field.customer:acme": ["001", "003"],
+          "is:ready": ["003"],
+          "-label:Type/Docs state:todo": ["003"]
+        }
+      }
+    }
+  }
+}

@@ -1,5 +1,29 @@
 {
   "cases": {
+    "boost-value": [
+      {
+        "rule": "boost-value",
+        "ref": "001"
+      }
+    ],
+    "collaboration-card-schema": [
+      {
+        "rule": "schema",
+        "ref": "001"
+      }
+    ],
+    "filter-schema": [
+      {
+        "rule": "schema",
+        "ref": "board.yaml"
+      }
+    ],
+    "subscription-schema": [
+      {
+        "rule": "schema",
+        "ref": "board.yaml"
+      }
+    ],
     "cover-color": [
       {
         "rule": "schema",

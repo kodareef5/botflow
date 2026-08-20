@@ -312,6 +312,42 @@ lanes:
   assert.equal(rootLint.code, 0, rootLint.stderr || rootLint.stdout);
 });
 
+test('cli: search, saved filters, watching, voting, boosts, and lane subscriptions compose', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'botflow-collab-cli-'));
+  ok(dir, 'init', '--name', 'collab');
+  ok(dir, 'card', 'add', 'Repair API', '--labels', 'Type/Bug');
+  ok(dir, 'card', 'add', 'Write guide', '--labels', 'Type/Docs');
+
+  ok(dir, 'card', 'watch', '001');
+  ok(dir, 'card', 'vote', '001');
+  ok(dir, 'card', 'boost', '001', 'ship it 🚀');
+  ok(dir, 'lane', 'subscribe', 'doing');
+  ok(dir, 'filter', 'save', 'mine', 'watcher:@me', '--name', 'Watching');
+
+  const matches = JSON.parse(ok(dir, 'query', '--saved', 'mine', '--json')) as { id: string }[];
+  assert.deepEqual(matches.map((card) => card.id), ['001']);
+  const docs = JSON.parse(ok(dir, 'query', 'label:Type/Docs', '--json')) as { id: string }[];
+  assert.deepEqual(docs.map((card) => card.id), ['002']);
+  const shown = JSON.parse(ok(dir, 'card', 'show', '001', '--json')) as {
+    watchers: string[]; votes: string[]; boostCount: number; parsed: { boosts: { text: string }[] };
+  };
+  assert.deepEqual(shown.watchers, ['test-agent']);
+  assert.deepEqual(shown.votes, ['test-agent']);
+  assert.equal(shown.boostCount, 1);
+  assert.equal(shown.parsed.boosts[0]?.text, 'ship it 🚀');
+
+  ok(dir, 'card', 'watch', '001', '--off');
+  ok(dir, 'card', 'vote', '001', '--off');
+  ok(dir, 'lane', 'subscribe', 'doing', '--off');
+  ok(dir, 'filter', 'rm', 'mine');
+  const board = JSON.parse(ok(dir, 'board', '--json')) as { filters: unknown[]; subscriptions: unknown[] };
+  assert.deepEqual(board.filters, []);
+  assert.deepEqual(board.subscriptions, []);
+  const tooLong = bf(dir, 'card', 'boost', '001', 'this is much too long');
+  assert.equal(tooLong.code, 1);
+  assert.match(tooLong.stderr, /at most 12/);
+});
+
 test('cli: bin shim runs (js importing native ts)', () => {
   const res = spawnSync(process.execPath, [BIN, '--version'], { encoding: 'utf8' });
   assert.equal(res.status, 0, res.stderr);

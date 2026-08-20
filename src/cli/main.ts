@@ -11,6 +11,7 @@ import { startMcpServer } from '../mcp/server.ts';
 import { instantiate, setupAgentFiles } from '../core/template.ts';
 import { cardDetailJson } from '../core/json.ts';
 import { parseCustomFieldText } from '../core/presentation.ts';
+import { queryCards } from '../core/query.ts';
 import { loadRemote, pull, push, remoteAdd } from './remote.ts';
 
 import { analyze, lintBoard } from '../core/analyze.ts';
@@ -22,6 +23,7 @@ import {
   addLogEntry,
   attachCard,
   blockCard,
+  boostCard,
   checkCard,
   claimCard,
   closeCard,
@@ -39,7 +41,12 @@ import {
   transferCard,
   initBoard,
   moveCard,
+  removeFilter,
+  saveFilter,
+  subscribeLane,
   unblockCard,
+  voteCard,
+  watchCard,
   type EditPatch,
 } from '../core/mutate.ts';
 import {
@@ -72,6 +79,11 @@ usage: botflow <command> [args]
                                         pull refuses over uncommitted board
                                         changes unless --force
   ready [--json]                        unblocked todo cards
+  query <expression> | --saved <id>     search this board tree; qualifiers include
+                                        state:, lane:, assignee:, label:, is:
+  filter list | save <id> <query>       list or maintain portable saved filters
+  filter rm <id>
+  lane subscribe <lane> [--off]         follow/unfollow activity in a lane
   lint [--json]                         check the board; exit 1 on errors
   card add <title> [--template id] [--lane l] [--labels a,b] [--priority p0-p3] [--deps 1,2]
            [--type board --board-path <dir>] [--assignee name] [--delegate agent]
@@ -93,6 +105,9 @@ usage: botflow <command> [args]
            [--cover <url>|none|auto] [--cover-color #RRGGBB|none]
            [--field id=value ...]              empty value clears a custom field
   card comment <id> <text…>             append to the Comments section
+  card watch <id> [--off]               follow/unfollow a card
+  card vote <id> [--off]                add/withdraw your vote
+  card boost <id> <text>                append a 1–12 character boost
   card describe <id> <text…>            set the Description (empty clears)
   card item <id> <text…> [--section s]  add an unchecked checklist task
   card check <id> <n> [--off]           check/uncheck checklist item n (1-based)
@@ -261,6 +276,66 @@ export function run(argv: string[]): number {
       if (values['json']) emitJson(cards.map((c) => cardJson(c, node, ba)));
       else if (cards.length === 0) out('nothing ready · `botflow board` for the full picture');
       else out(cards.map((c) => `${c.id}  ${c.title}${c.priority ? ` (${c.priority})` : ''}`).join('\n'));
+      return 0;
+    }
+    case 'query': {
+      const { values, positionals } = parse(rest, { ...COMMON, saved: { type: 'string' } });
+      const root = getRoot(values);
+      const tree = loadTree(root);
+      const analysis = analyze(tree);
+      const saved = values['saved'] as string | undefined;
+      if (saved !== undefined && positionals.length > 0) throw new UsageError('use either a query expression or --saved, not both');
+      const expression = saved === undefined
+        ? positionals.join(' ')
+        : tree.boards.get('.')!.board.config.savedFilters.find((filter) => filter.id === saved)?.query;
+      if (expression === undefined) throw new UsageError(`no saved filter "${saved}"`);
+      let matches: ReturnType<typeof queryCards>;
+      try {
+        matches = queryCards(tree, analysis, expression, { actor: getActor(values) });
+      } catch (err) {
+        throw new UsageError((err as Error).message);
+      }
+      if (values['json']) {
+        emitJson(matches.map((match) => {
+          const node = tree.boards.get(match.board)!;
+          return { board: match.board, ...cardJson(match.card, node, analysis.boards.get(match.board)!) };
+        }));
+      } else if (matches.length === 0) {
+        out('no matching cards');
+      } else {
+        out(matches.map((match) => `${match.board === '.' ? match.card.id : `${match.board}#${match.card.id}`}  ${match.state.padEnd(7)}  ${match.card.title}`).join('\n'));
+      }
+      return 0;
+    }
+    case 'filter': {
+      const { values, positionals } = parse(rest, { ...COMMON, name: { type: 'string' } });
+      const [sub, id, ...queryWords] = positionals;
+      const root = getRoot(values);
+      if (sub === 'list') {
+        const filters = loadTree(root).boards.get('.')!.board.config.savedFilters;
+        values['json'] ? emitJson(filters.map(({ id: filterId, name, query }) => ({ id: filterId, name, query }))) : out(filters.length === 0 ? 'no saved filters' : filters.map((filter) => `${filter.id}  ${filter.name}  ${filter.query}`).join('\n'));
+        return 0;
+      }
+      if (sub === 'save' && id) {
+        const filter = saveFilter(root, id, queryWords.join(' '), getActor(values), values['name'] as string | undefined);
+        values['json'] ? emitJson({ id: filter.id, name: filter.name, query: filter.query }) : out(`✓ filter ${filter.id} saved`);
+        return 0;
+      }
+      if ((sub === 'rm' || sub === 'remove') && id) {
+        const filter = removeFilter(root, id, getActor(values));
+        values['json'] ? emitJson({ id: filter.id, removed: true }) : out(`✓ filter ${filter.id} removed`);
+        return 0;
+      }
+      throw new UsageError('usage: botflow filter list | save <id> <query…> [--name n] | rm <id>');
+    }
+    case 'lane': {
+      const { values, positionals } = parse(rest, { ...COMMON, off: { type: 'boolean', default: false } });
+      const [sub, lane] = positionals;
+      if (sub !== 'subscribe' || !lane) throw new UsageError('usage: botflow lane subscribe <lane> [--off]');
+      const result = subscribeLane(getRoot(values), lane, getActor(values), values['off'] !== true);
+      values['json']
+        ? emitJson({ lane, watcher: result.subscription.watcher, subscribed: result.active, changed: result.changed })
+        : out(`${result.changed ? '✓' : '='} @${result.subscription.watcher} ${result.active ? 'subscribed to' : 'unsubscribed from'} ${lane}`);
       return 0;
     }
     case 'lint': {
@@ -537,6 +612,28 @@ function runCard(argv: string[]): number {
       if (!id || words.length === 0) throw new UsageError('usage: botflow card comment <id> <text…>');
       const card = commentCard(getRoot(values), id, getActor(values), words.join(' '));
       values['json'] ? emitJson({ id: card.id, commented: true }) : out(`✓ ${card.id} commented`);
+      return 0;
+    }
+    case 'watch':
+    case 'vote': {
+      const { values, positionals } = parse(rest, { ...COMMON, off: { type: 'boolean', default: false } });
+      const id = positionals[0];
+      if (!id) throw new UsageError(`usage: botflow card ${sub} <id> [--off]`);
+      const active = values['off'] !== true;
+      const result = sub === 'watch'
+        ? watchCard(getRoot(values), id, getActor(values), active)
+        : voteCard(getRoot(values), id, getActor(values), active);
+      values['json']
+        ? emitJson({ id, [sub === 'watch' ? 'watching' : 'voted']: result.active, changed: result.changed })
+        : out(`${result.changed ? '✓' : '='} ${id} ${sub === 'watch' ? (active ? 'watched' : 'unwatched') : (active ? 'voted' : 'vote withdrawn')}`);
+      return 0;
+    }
+    case 'boost': {
+      const { values, positionals } = parse(rest, COMMON);
+      const [id, ...words] = positionals;
+      if (!id || words.length === 0) throw new UsageError('usage: botflow card boost <id> <text>');
+      const card = boostCard(getRoot(values), id, getActor(values), words.join(' '));
+      values['json'] ? emitJson({ id: card.id, boosted: words.join(' ') }) : out(`✓ ${card.id} boosted ${words.join(' ')}`);
       return 0;
     }
     case 'describe': {

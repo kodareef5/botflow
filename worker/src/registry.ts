@@ -67,6 +67,33 @@ export interface DirectoryEntry {
   kind: 'human' | 'bot';
 }
 
+export interface CapabilityRow {
+  id: string;
+  token: string;
+  label: string;
+  created: string;
+  revoked: boolean;
+  kind: 'page' | 'feed';
+  projectId: string;
+  projectName: string;
+  cardId: string | null;
+  laneId: string | null;
+  filterId: string | null;
+  memberUsername: string | null;
+  lastViewed: string | null;
+}
+
+export interface ResolvedCapability {
+  projectId: string;
+  name: string;
+  kind: 'page' | 'feed';
+  cardId: string | null;
+  laneId: string | null;
+  filterId: string | null;
+  memberId: string | null;
+  memberUsername: string | null;
+}
+
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** How long a verified basic-auth credential stays cached in DO memory. A bot
  *  polling a board would otherwise pay a full PBKDF2 derivation every request. */
@@ -124,7 +151,7 @@ export class RegistryDO extends DurableObject {
       CREATE TABLE IF NOT EXISTS sessions(hash TEXT PRIMARY KEY, member_id TEXT NOT NULL, created TEXT NOT NULL, expires TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS auth_attempts(key TEXT PRIMARY KEY, fails INTEGER NOT NULL, since TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS shares(id TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, label TEXT NOT NULL, created TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, card_id TEXT);
+      CREATE TABLE IF NOT EXISTS shares(id TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, label TEXT NOT NULL, created TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, card_id TEXT, kind TEXT NOT NULL DEFAULT 'page', member_id TEXT, lane_id TEXT, filter_id TEXT, last_viewed TEXT);
       CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL);
     `);
     try {
@@ -132,6 +159,19 @@ export class RegistryDO extends DurableObject {
       this.sql.exec('ALTER TABLE shares ADD COLUMN card_id TEXT');
     } catch {
       // Column already exists (fresh DDL above or a prior upgrade).
+    }
+    for (const migration of [
+      "ALTER TABLE shares ADD COLUMN kind TEXT NOT NULL DEFAULT 'page'",
+      'ALTER TABLE shares ADD COLUMN member_id TEXT',
+      'ALTER TABLE shares ADD COLUMN lane_id TEXT',
+      'ALTER TABLE shares ADD COLUMN filter_id TEXT',
+      'ALTER TABLE shares ADD COLUMN last_viewed TEXT',
+    ]) {
+      try {
+        this.sql.exec(migration);
+      } catch {
+        // Column already exists.
+      }
     }
     // The members model replaced the admin token and per-project agent keys
     // outright. An instance carrying the old table reports uninitialized (see
@@ -189,13 +229,34 @@ export class RegistryDO extends DurableObject {
     if (this.projectName(projectId) === null) return { error: `no project ${projectId}` };
     const token = randomToken('bfs').slice(4); // bare hex; the url is the capability
     const id = `sh-${shortId()}`;
-    this.sql.exec('INSERT INTO shares(id, token, project_id, label, created, card_id) VALUES (?, ?, ?, ?, ?, ?)', id, token, projectId, cleanName(label, 'public link'), new Date().toISOString(), cardId);
+    this.sql.exec("INSERT INTO shares(id, token, project_id, label, created, card_id, kind) VALUES (?, ?, ?, ?, ?, ?, 'page')", id, token, projectId, cleanName(label, 'public link'), new Date().toISOString(), cardId);
+    return { id, token };
+  }
+
+  createFeed(
+    projectId: string,
+    memberId: string,
+    label: string,
+    cardId: string | null = null,
+    laneId: string | null = null,
+    filterId: string | null = null,
+  ): { id: string; token: string } | { error: string } {
+    if (this.projectName(projectId) === null) return { error: `no project ${projectId}` };
+    const identity = this.memberById(memberId);
+    if (identity === null || !this.reaches(identity, projectId)) return { error: 'member no longer reaches this project' };
+    if ([cardId, laneId, filterId].filter((value) => value !== null).length > 1) return { error: 'a feed may have only one card, lane, or filter scope' };
+    const token = randomToken('bfs').slice(4);
+    const id = `sh-${shortId()}`;
+    this.sql.exec(
+      "INSERT INTO shares(id, token, project_id, label, created, card_id, kind, member_id, lane_id, filter_id) VALUES (?, ?, ?, ?, ?, ?, 'feed', ?, ?, ?)",
+      id, token, projectId, cleanName(label, 'activity feed'), new Date().toISOString(), cardId, memberId, laneId, filterId,
+    );
     return { id, token };
   }
 
   listShares(projectId: string): { id: string; token: string; label: string; created: string; revoked: boolean; cardId: string | null }[] {
     return this.sql
-      .exec('SELECT id, token, label, created, revoked, card_id FROM shares WHERE project_id = ? ORDER BY created', projectId)
+      .exec("SELECT id, token, label, created, revoked, card_id FROM shares WHERE project_id = ? AND kind = 'page' ORDER BY created", projectId)
       .toArray()
       .map((r) => ({ id: r['id'] as string, token: r['token'] as string, label: r['label'] as string, created: r['created'] as string, revoked: r['revoked'] === 1, cardId: (r['card_id'] as string | null) ?? null }));
   }
@@ -205,7 +266,7 @@ export class RegistryDO extends DurableObject {
   listGateShares(): { token: string; name: string }[] {
     if (!this.getPrefs().gateShares) return [];
     return this.sql
-      .exec('SELECT s.token AS token, p.name AS name FROM shares s JOIN projects p ON p.id = s.project_id WHERE s.revoked = 0 AND s.card_id IS NULL ORDER BY s.created')
+      .exec("SELECT s.token AS token, p.name AS name FROM shares s JOIN projects p ON p.id = s.project_id WHERE s.revoked = 0 AND s.kind = 'page' AND s.card_id IS NULL ORDER BY s.created")
       .toArray()
       .map((r) => ({ token: r['token'] as string, name: r['name'] as string }));
   }
@@ -220,10 +281,35 @@ export class RegistryDO extends DurableObject {
     return { ok: true };
   }
 
-  /** Every share link in the org, with its project name (admin manage view). */
-  listAllShares(): { id: string; token: string; label: string; created: string; revoked: boolean; projectId: string; projectName: string; cardId: string | null }[] {
+  listFeeds(projectId: string, memberId: string): CapabilityRow[] {
+    return this.capabilityRows("WHERE s.project_id = ? AND s.kind = 'feed' AND s.member_id = ?", projectId, memberId);
+  }
+
+  revokeOwnFeed(id: string, memberId: string): { ok: boolean } | { error: string } {
+    const row = this.sql.exec("SELECT id FROM shares WHERE id = ? AND kind = 'feed' AND member_id = ?", id, memberId).toArray()[0];
+    if (!row) return { error: `no feed ${id}` };
+    this.sql.exec('UPDATE shares SET revoked = 1 WHERE id = ?', id);
+    return { ok: true };
+  }
+
+  deleteOwnFeed(id: string, memberId: string): { ok: boolean } | { error: string } {
+    const row = this.sql.exec("SELECT id FROM shares WHERE id = ? AND kind = 'feed' AND member_id = ?", id, memberId).toArray()[0];
+    if (!row) return { error: `no feed ${id}` };
+    this.sql.exec('DELETE FROM shares WHERE id = ?', id);
+    return { ok: true };
+  }
+
+  private capabilityRows(where = '', ...args: unknown[]): CapabilityRow[] {
     return this.sql
-      .exec('SELECT s.id AS id, s.token AS token, s.label AS label, s.created AS created, s.revoked AS revoked, s.project_id AS pid, p.name AS pname, s.card_id AS cid FROM shares s JOIN projects p ON p.id = s.project_id ORDER BY s.created')
+      .exec(
+        `SELECT s.id AS id, s.token AS token, s.label AS label, s.created AS created,
+                s.revoked AS revoked, s.kind AS kind, s.project_id AS pid, p.name AS pname,
+                s.card_id AS cid, s.lane_id AS lid, s.filter_id AS fid, s.last_viewed AS viewed,
+                m.username AS username
+         FROM shares s JOIN projects p ON p.id = s.project_id
+         LEFT JOIN members m ON m.id = s.member_id ${where} ORDER BY s.created`,
+        ...args,
+      )
       .toArray()
       .map((r) => ({
         id: r['id'] as string,
@@ -231,10 +317,20 @@ export class RegistryDO extends DurableObject {
         label: r['label'] as string,
         created: r['created'] as string,
         revoked: r['revoked'] === 1,
+        kind: r['kind'] === 'feed' ? 'feed' : 'page',
         projectId: r['pid'] as string,
         projectName: r['pname'] as string,
         cardId: (r['cid'] as string | null) ?? null,
+        laneId: (r['lid'] as string | null) ?? null,
+        filterId: (r['fid'] as string | null) ?? null,
+        memberUsername: (r['username'] as string | null) ?? null,
+        lastViewed: (r['viewed'] as string | null) ?? null,
       }));
+  }
+
+  /** Every share link in the org, with its project name (admin manage view). */
+  listAllShares(): CapabilityRow[] {
+    return this.capabilityRows();
   }
 
   // ---- deletion (hard; the export tool is the parachute) ----
@@ -398,19 +494,52 @@ export class RegistryDO extends DurableObject {
     return { ok: true };
   }
 
-  restoreShare(token: string, projectId: string, label: string, created: string, revoked: boolean, cardId: string | null = null): { ok: boolean } {
+  restoreShare(
+    token: string,
+    projectId: string,
+    label: string,
+    created: string,
+    revoked: boolean,
+    cardId: string | null = null,
+    kind: 'page' | 'feed' = 'page',
+    memberUsername: string | null = null,
+    laneId: string | null = null,
+    filterId: string | null = null,
+    lastViewed: string | null = null,
+  ): { ok: boolean } {
+    const member = memberUsername === null ? null : this.sql.exec('SELECT id FROM members WHERE username = ?', memberUsername).toArray()[0];
+    if (kind === 'feed' && !member) return { ok: false };
     this.sql.exec(
-      'INSERT OR IGNORE INTO shares(id, token, project_id, label, created, revoked, card_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      `sh-${shortId()}`, token, projectId, cleanName(label, 'public link'), created, revoked ? 1 : 0, cardId,
+      'INSERT OR IGNORE INTO shares(id, token, project_id, label, created, revoked, card_id, kind, member_id, lane_id, filter_id, last_viewed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      `sh-${shortId()}`, token, projectId, cleanName(label, kind === 'feed' ? 'activity feed' : 'public link'), created, revoked ? 1 : 0,
+      cardId, kind, member?.['id'] ?? null, laneId, filterId, lastViewed,
     );
     return { ok: true };
   }
 
-  resolveShare(token: string): { projectId: string; name: string; cardId: string | null } | null {
+  resolveShare(token: string, expectedKind: 'page' | 'feed' = 'page'): ResolvedCapability | null {
     const row = this.sql
-      .exec('SELECT s.project_id AS pid, p.name AS name, s.card_id AS cid FROM shares s JOIN projects p ON p.id = s.project_id WHERE s.token = ? AND s.revoked = 0', token)
+      .exec('SELECT s.id AS id, s.project_id AS pid, p.name AS name, s.card_id AS cid, s.kind AS kind, s.member_id AS mid, s.lane_id AS lid, s.filter_id AS fid FROM shares s JOIN projects p ON p.id = s.project_id WHERE s.token = ? AND s.revoked = 0 AND s.kind = ?', token, expectedKind)
       .toArray()[0];
-    return row ? { projectId: row['pid'] as string, name: row['name'] as string, cardId: (row['cid'] as string | null) ?? null } : null;
+    if (!row) return null;
+    const memberId = (row['mid'] as string | null) ?? null;
+    let memberUsername: string | null = null;
+    if (memberId !== null) {
+      const identity = this.memberById(memberId);
+      if (identity === null || !this.reaches(identity, row['pid'] as string)) return null;
+      memberUsername = identity.username;
+    }
+    this.sql.exec('UPDATE shares SET last_viewed = ? WHERE id = ?', new Date().toISOString(), row['id']);
+    return {
+      projectId: row['pid'] as string,
+      name: row['name'] as string,
+      kind: row['kind'] === 'feed' ? 'feed' : 'page',
+      cardId: (row['cid'] as string | null) ?? null,
+      laneId: (row['lid'] as string | null) ?? null,
+      filterId: (row['fid'] as string | null) ?? null,
+      memberId,
+      memberUsername,
+    };
   }
 
   getTheme(): ThemeChoice {
