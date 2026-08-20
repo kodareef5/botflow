@@ -161,7 +161,7 @@ table.list th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color
 table.list td.mono{font:12px ui-monospace,Menlo,monospace;color:var(--ink2)}
 .cardtable{overflow:auto;margin-top:12px;border:var(--bw) var(--bs) var(--grid);border-radius:var(--rc);background:var(--surface)}
 .cardtable table{min-width:1000px}
-.cardtable tr[data-card]{cursor:pointer}.cardtable tr[data-card]:hover{background:var(--surface2)}
+.cardtable tr[data-card]{cursor:pointer}.cardtable tr[data-card]:hover{background:var(--surface2)}.cardtable tr[data-card]:focus-visible{outline:2px solid var(--acc);outline-offset:-2px;background:var(--surface2)}
 .cardtable th button{border:0;background:none;padding:0;color:inherit;text-transform:inherit;letter-spacing:inherit;font:inherit}
 .cardtable .titlecell{font-weight:600;min-width:220px}.cardtable .labels-cell{max-width:250px;color:var(--ink2)}
 .axiscols{display:flex;gap:var(--col-gap);align-items:flex-start;margin-top:12px;min-height:160px}
@@ -463,6 +463,7 @@ if(!['kanban','table','swimlane','calendar','timeline','grouped','metrics','hill
 let GROUP_AXIS=localStorage.getItem('bf_group_axis')||'assignee';
 let SWIM_AXIS=localStorage.getItem('bf_swim_axis')||'assignee';
 let CAL_MONTH=null,TABLE_SORT='id',TABLE_DESC=false,HILL_DRAG=null;
+const HILL_PENDING=new Map();
 // Role gates, refreshed from /api/org on every boot. RO stays the read-only
 // flag for public share pages; these are about who is logged in.
 let ME=null,CAN_WRITE=false,IS_OWNER=false,DIR=new Map();
@@ -545,21 +546,22 @@ function closeOverlay(){
   if(o){const back=o._restoreFocus;o.remove();if(back&&back.focus&&document.contains(back))back.focus()}
   MODAL=null;
 }
+function trapDialogTab(e,root){
+  if(e.key!=='Tab')return;
+  const f=[...root.querySelectorAll('button,[href],input,textarea,select,[tabindex]:not([tabindex="-1"])')]
+    .filter(x=>!x.disabled&&x.offsetParent!==null);
+  if(!f.length)return;
+  const first=f[0],last=f[f.length-1];
+  if(e.shiftKey&&document.activeElement===first){last.focus();e.preventDefault()}
+  else if(!e.shiftKey&&(document.activeElement===last||!root.contains(document.activeElement))){first.focus();e.preventDefault()}
+}
 function overlay(html,cls,label){
   closeOverlay();
   const opener=document.activeElement;
   const o=document.createElement('div');o.className='overlay';
   o.innerHTML='<div class="modal '+(cls||'')+'" role="dialog" aria-modal="true" tabindex="-1"'+(label?' aria-label="'+esc(label)+'"':'')+'>'+html+'</div>';
   o.addEventListener('mousedown',e=>{if(e.target===o)closeOverlay()});
-  o.addEventListener('keydown',e=>{
-    if(e.key!=='Tab')return;
-    const f=[...o.querySelectorAll('button,[href],input,textarea,select,[tabindex]:not([tabindex="-1"])')]
-      .filter(x=>!x.disabled&&x.offsetParent!==null);
-    if(!f.length)return;
-    const first=f[0],last=f[f.length-1];
-    if(e.shiftKey&&document.activeElement===first){last.focus();e.preventDefault()}
-    else if(!e.shiftKey&&(document.activeElement===last||!o.contains(document.activeElement))){first.focus();e.preventDefault()}
-  });
+  o.addEventListener('keydown',e=>trapDialogTab(e,o));
   o._restoreFocus=opener&&opener!==document.body?opener:null;
   document.body.appendChild(o);
   const m=o.firstElementChild;
@@ -590,6 +592,21 @@ function confirmModal(title,message,confirmLabel,onConfirm){
   $('[data-go]',m).onclick=async()=>{
     const b=$('[data-go]',m);b.disabled=true;b.textContent='working…';
     try{await onConfirm();closeOverlay()}catch(err){$('.err',m).textContent=err.message;b.disabled=false;b.textContent=confirmLabel}
+  };
+}
+function wireTablist(host,attribute,activate){
+  if(!host)return;
+  const selector='['+attribute+']';
+  const tabs=()=>[...host.querySelectorAll(selector)];
+  const sync=()=>{for(const tab of tabs())tab.tabIndex=tab.getAttribute('aria-selected')==='true'?0:-1};
+  sync();
+  host.onclick=e=>{const tab=e.target.closest(selector);if(tab&&host.contains(tab))activate(tab)};
+  host.onkeydown=e=>{
+    if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;
+    const all=tabs(),at=all.indexOf(e.target.closest(selector));if(at<0||!all.length)return;
+    e.preventDefault();
+    const next=e.key==='Home'?all[0]:e.key==='End'?all[all.length-1]:all[(at+(e.key==='ArrowRight'?1:-1)+all.length)%all.length];
+    next.focus();
   };
 }
 // ---- boot ----
@@ -669,7 +686,7 @@ async function start(){
     return gate('setup',{setup:cfg});
   }
   adoptOrg(org);
-  if(SEL&&SEL!=='::settings'&&!findAny(SEL))SEL=null;
+  if(SEL&&!findAny(SEL))SEL=null;
   if(!SEL){const first=firstProject(ORG);SEL=first?first.id:null}
   layout();
 }
@@ -691,7 +708,10 @@ function adoptOrg(org){
 // Awaits the board too: callers that await this expect the deck to be current
 // when it resolves, or anything touching the re-rendered DOM afterwards (like
 // putting keyboard focus back on a card that just moved) acts on the old one.
-async function reloadOrg(){adoptOrg(await api('/api/org'));renderSide();renderHeader();if(VIEW==='board'&&BOARD){BOARD=null;await refreshBoard()}}
+async function reloadOrg(){
+  let org;try{org=await api('/api/org')}catch(err){if(err.status===401){TOKEN='';localStorage.removeItem('bf_token');gate('token','session expired');return}throw err}
+  adoptOrg(org);renderSide();renderHeader();if(VIEW==='board'&&BOARD){BOARD=null;await refreshBoard()}
+}
 function renderHeader(){
   const agg=ORG.aggregate;
   const name=$('#horg');if(name)name.textContent=ORG.name;
@@ -708,14 +728,14 @@ function layout(){
   $('#logout').onclick=async()=>{
     try{await api('/api/logout',{method:'POST'})}catch{}
     localStorage.removeItem('bf_token');TOKEN='';gate('token')};
-  $('#setbtn').onclick=()=>{SEL='::settings';renderSide();renderMain()};
+  $('#setbtn').onclick=()=>{VIEW='settings';renderSide();renderMain()};
   $('#burger').onclick=()=>$('#side').classList.toggle('open');
   renderHeader();renderSide();renderMain();
-  timer=setInterval(()=>{if(VIEW==='board'&&SEL&&SEL!=='::settings'&&!MODAL&&!DRAG&&!PRESS&&!HILL_DRAG)refreshBoard(true)},3000);
+  timer=setInterval(()=>{if(VIEW==='board'&&SEL&&!MODAL&&!DRAG&&!PRESS&&!HILL_DRAG)refreshBoard(true)},3000);
 }
 function projRow(n){
   const a=n.aggregate;
-  return '<div class="row '+(n.id===SEL?'sel':'')+'" data-proj="'+n.id+'" tabindex="0" role="button" aria-label="'+esc(n.name)+'">'
+  return '<div class="row '+(VIEW!=='settings'&&n.id===SEL?'sel':'')+'" data-proj="'+n.id+'" tabindex="0" role="button" aria-label="'+esc(n.name)+'">'
     +esc(n.name)+(CAN_WRITE?'<button class="add" data-addsub="'+n.id+'" title="add sub-project">+</button>':'')
     +'<span class="pct">'+pct(a.progress)+'</span>'+statechip(a.state)+'</div>'
     +(n.children.length?'<div class="kids">'+n.children.map(projRow).join('')+'</div>':'');
@@ -727,9 +747,9 @@ function renderSide(){
     +(s.projects.length?s.projects.map(projRow).join(''):'<div class="empty">no projects</div>')
     +'</div>').join('')
     +(IS_OWNER?'<h2>company <button id="addspace">+ space</button></h2>':'')
-    +'<div class="sidefoot"><div class="row '+(SEL==='::settings'?'sel':'')+'" id="setrow" tabindex="0" role="button">'+IC.gear+' settings</div></div>';
+    +'<div class="sidefoot"><div class="row '+(VIEW==='settings'?'sel':'')+'" id="setrow" tabindex="0" role="button">'+IC.gear+' settings</div></div>';
   $('#side').onclick=async e=>{
-    if(e.target.closest('#setrow')){SEL='::settings';renderSide();renderMain();return}
+    if(e.target.closest('#setrow')){VIEW='settings';renderSide();renderMain();return}
     const add=e.target.closest('[data-addproj]');
     if(add){formModal('New project',[{name:'name',label:'project name',required:true}],'create',async d=>{
       await api('/api/projects',{method:'POST',body:JSON.stringify({space:add.dataset.addproj,name:d.name})});await reloadOrg()});return}
@@ -750,7 +770,7 @@ function renderSide(){
 }
 function renderMain(){
   const main=$('#main');
-  if(SEL==='::settings')return renderSettings(main);
+  if(VIEW==='settings')return renderSettings(main);
   const p=SEL?findAny(SEL):null;
   if(!p){main.innerHTML='<div class="view"><div class="empty">'
     +(IS_OWNER?'Create a space and a project to begin. Bots connect with their own credentials via the REST API or <code>botflow push</code>.'
@@ -786,7 +806,7 @@ function renderMain(){
     +'<div class="tabs" role="tablist">'+tabs.map(t=>
       '<button data-tab="'+t+'" role="tab" aria-selected="'+(VIEW===t)+'" class="'+(VIEW===t?'on':'')+'">'+t+'</button>').join('')+'</div></div>'
     +'<div class="view" id="view">loading…</div>';
-  main.querySelector('.tabs').onclick=e=>{const b=e.target.closest('[data-tab]');if(b){VIEW=b.dataset.tab;renderMain()}};
+  wireTablist(main.querySelector('.tabs'),'data-tab',b=>{VIEW=b.dataset.tab;renderMain()});
   const eb=$('#editboard');if(eb)eb.onclick=boardEditor;
   const nc=$('#newcard');if(nc)nc.onclick=()=>newCard();
   const qc=$('#quickcard');if(qc)qc.onclick=quickCards;
@@ -814,8 +834,12 @@ function renderMain(){
 function renderBoardButtons(){
   const host=$('#boardbuttons');if(!host)return;
   const buttons=((BOARD&&BOARD.buttons)||[]).filter(b=>b.scope==='board');
-  host.innerHTML=buttons.map(b=>'<button class="ghost" data-boardbutton="'+esc(b.id)+'" title="'+esc(b.action+(b.value?' '+b.value:''))+'">'+esc(b.name)+'</button>').join('');
-  host.onclick=e=>{const b=e.target.closest('[data-boardbutton]');if(b)invokeButton(b.dataset.boardbutton,null)};
+  const sig=buttons.map(b=>[b.id,b.name,b.action,b.value||''].join('\u0000')).join('\u0001');
+  if(host.dataset.sig!==sig){
+    patchView(host,buttons.map(b=>'<button class="ghost" data-morph-key="board-button:'+esc(b.id)+'" data-boardbutton="'+esc(b.id)+'" title="'+esc(b.action+(b.value?' '+b.value:''))+'">'+esc(b.name)+'</button>').join(''));
+    host.dataset.sig=sig;
+  }
+  host.onclick=async e=>{const b=e.target.closest('[data-boardbutton]');if(b)try{await invokeButton(b.dataset.boardbutton,null)}catch(err){toast(err.body&&err.body.error||err.message)}};
 }
 
 async function invokeButton(id,cardId,args){
@@ -1058,7 +1082,7 @@ function faceBadges(b,c){
 function cardHtml(b,c){
   const board=c.type==='board';
   const age=c.metrics&&c.metrics.agingLevel||0;
-  return '<div class="card '+(c.blocked?'blocked ':'')+(c.blocker?'namedblocked ':'')+(c.coverColor?'has-color ':'')+(age?'age-'+age:'')+'"'+(c.coverColor?' style="--cover-color:'+esc(c.coverColor)+'"':'')+' data-card="'+esc(c.id)+'" tabindex="0" role="button" aria-label="'+esc(c.id+' '+c.title)+'"'
+  return '<div class="card '+(c.blocked?'blocked ':'')+(c.blocker?'namedblocked ':'')+(c.coverColor?'has-color ':'')+(age?'age-'+age:'')+'"'+(c.coverColor?' style="--cover-color:'+esc(c.coverColor)+'"':'')+' data-card="'+esc(c.id)+'" tabindex="0" role="button"'
     +(RO?'':' aria-keyshortcuts="Shift+ArrowLeft Shift+ArrowRight Shift+ArrowUp Shift+ArrowDown"')+'>'
     +((cov=>cov?'<img class="art" src="'+esc(cov)+'" alt="" loading="lazy">':'')(coverOf(c)))
     +'<div class="inner"><div class="cid">'+esc(c.id)+'</div><div class="t">'+esc(c.title)+'</div>'
@@ -1071,9 +1095,9 @@ function cardHtml(b,c){
     +'</div></div>';
 }
 function colsHtml(b){
-  return '<div class="cols" style="margin-top:12px">'+b.lanes.map(lane=>{
+  return '<div class="cols" style="margin-top:12px"><svg id="relation-overlay" class="relsvg" aria-hidden="true"></svg>'+b.lanes.map(lane=>{
     const cards=SEARCH_IDS===null?lane.cards:lane.cards.filter(c=>SEARCH_IDS.has(c.id));
-    const n=cards.length;
+    const n=lane.cards.length;
     const wip=lane.wip!=null?'<span class="'+(n>lane.wip?'wipbad':'n')+'">'+n+'/'+lane.wip+'</span><span class="wipmode">'+esc(lane.wipMode||'allow')+'</span>':'<span class="n">'+n+'</span>';
     const estimateValue=SEARCH_IDS===null?lane.estimate:cards.reduce((sum,c)=>sum+(c.estimate||0),0);
     const estimate=estimateValue?'<span class="n">est '+estimateValue+'</span>':'';
@@ -1139,7 +1163,9 @@ function syncViewControls(b){
   const axes=axisDefs(b),wanted=LAYOUT==='grouped'?GROUP_AXIS:SWIM_AXIS;
   const selected=axes.some(a=>a.id===wanted)?wanted:(LAYOUT==='grouped'?'assignee':'assignee');
   if(LAYOUT==='grouped')GROUP_AXIS=selected;else SWIM_AXIS=selected;
-  ctl.innerHTML=axes.map(a=>'<option value="'+esc(a.id)+'"'+(a.id===selected?' selected':'')+'>'+esc(a.label)+'</option>').join('');
+  const sig=axes.map(a=>a.id+'\u0000'+a.label).join('\u0001');
+  if(ctl.dataset.sig!==sig){ctl.innerHTML=axes.map(a=>'<option value="'+esc(a.id)+'">'+esc(a.label)+'</option>').join('');ctl.dataset.sig=sig}
+  ctl.value=selected;
 }
 function tableValue(c,key){
   if(key==='title')return c.title||'';if(key==='state')return c.state||'';if(key==='lane')return c.position||c.lane||'';
@@ -1151,7 +1177,7 @@ function tableHtml(b){
   const th=(key,label)=>'<th><button data-sort="'+key+'" aria-label="sort by '+label+'">'+label+(TABLE_SORT===key?(TABLE_DESC?' ↓':' ↑'):'')+'</button></th>';
   return '<div class="cardtable"><table class="list"><thead><tr>'+th('id','id')+th('title','title')+th('state','state')+th('lane','position')+th('assignee','assignee')
     +'<th>delegate</th><th>priority</th>'+th('due','due')+th('estimate','estimate')+th('hill','hill')+'<th>labels</th><th>idle</th></tr></thead><tbody>'
-    +(cards.length?cards.map(c=>'<tr data-card="'+esc(c.id)+'" tabindex="0"><td class="mono">'+esc(c.id)+'</td><td class="titlecell">'+esc(c.title)+'</td><td>'+statechip(c.state)+'</td><td class="mono">'+esc(c.position)+'</td>'
+    +(cards.length?cards.map(c=>'<tr data-card="'+esc(c.id)+'" tabindex="0" role="button"><td class="mono">'+esc(c.id)+'</td><td class="titlecell">'+esc(c.title)+'</td><td>'+statechip(c.state)+'</td><td class="mono">'+esc(c.position)+'</td>'
       +'<td>'+esc(c.assignee?who(c.assignee):'—')+'</td><td>'+esc(c.delegate?who(c.delegate):'—')+'</td><td>'+esc(c.priority||'—')+'</td><td class="mono">'+esc(c.due||'—')+'</td><td>'+esc(c.estimate??'—')+'</td><td>'+esc(c.hill??'—')+'</td>'
       +'<td class="labels-cell">'+(c.labelDetails||[]).map(l=>'#'+esc(l.value)).join(' ')+'</td><td>'+esc(c.metrics&&c.metrics.idleDays!=null?c.metrics.idleDays+'d':'—')+'</td></tr>').join('')
       :'<tr><td colspan="12" class="empty">no matching cards</td></tr>')+'</tbody></table></div>';
@@ -1216,9 +1242,9 @@ function metricsHtml(b){
   const last7=throughput.slice(-7).reduce((n,x)=>n+x.count,0),last30=throughput.reduce((n,x)=>n+x.count,0),wip=(b.lanes||[]).filter(l=>l.wip!=null&&l.cards.length>l.wip).length;
   const metric=(value,label)=>'<div class="metric"><b>'+esc(value)+'</b><span>'+esc(label)+'</span></div>';
   const max=Math.max(1,...throughput.map(x=>x.count));
-  const bars='<div class="bars" aria-label="daily throughput">'+throughput.map(x=>'<i style="height:'+(x.count/max*100)+'%" title="'+esc(x.date+': '+x.count)+'"></i>').join('')+'</div>';
+  const bars='<div class="bars" role="img" aria-label="'+esc('Daily throughput: '+(throughput.length?throughput.map(x=>x.date+' '+x.count).join(', '):'no completions'))+'">'+throughput.map(x=>'<i style="height:'+(x.count/max*100)+'%" title="'+esc(x.date+': '+x.count)+'"></i>').join('')+'</div>';
   const flow=(b.flow&&b.flow.cumulativeFlow)||[],flowMax=Math.max(1,...flow.map(x=>ORDER.reduce((n,s)=>n+(x.distribution[s]||0),0)));
-  const cfbars='<div class="cfbars" aria-label="cumulative flow">'+flow.map(x=>'<div class="cfbar" title="'+esc(x.date)+'">'+ORDER.map(s=>{const n=x.distribution[s]||0;return n?'<i style="height:'+(n/flowMax*100)+'%;background:var(--st-'+s+')"></i>':''}).join('')+'</div>').join('')+'</div>';
+  const cfbars='<div class="cfbars" role="img" aria-label="'+esc('Cumulative flow by state for '+flow.length+' day'+(flow.length===1?'':'s'))+'">'+flow.map(x=>'<div class="cfbar" title="'+esc(x.date)+'">'+ORDER.map(s=>{const n=x.distribution[s]||0;return n?'<i style="height:'+(n/flowMax*100)+'%;background:var(--st-'+s+')"></i>':''}).join('')+'</div>').join('')+'</div>';
   const blockerTotals={};
   if(filtered){for(const c of cards)for(const [id,days] of Object.entries(c.metrics&&c.metrics.blockerDays||{}))blockerTotals[id]=(blockerTotals[id]||0)+days}
   else Object.assign(blockerTotals,(b.flow&&b.flow.blockerDays)||{});
@@ -1236,7 +1262,9 @@ function hillHtml(b){
   const cards=visibleCards(b).filter(c=>c.type!=='board'&&!['done','archive'].includes(c.state)),plotted=cards.filter(c=>c.hill!=null);
   return '<div class="hillview"><p class="hillnote">Manual uncertainty, not automatic progress. Drag uphill while the approach is being figured out; cross the crest only when execution is understood.</p><div class="hillplot" data-hillplot>'
     +'<svg viewBox="0 0 1000 200" preserveAspectRatio="none" aria-hidden="true"><path d="M 0 180 Q 250 20 500 20 Q 750 20 1000 180"></path></svg><i class="crest" aria-hidden="true"></i><span class="hillphase up">figuring it out · uphill</span><span class="hillphase down">making it happen · downhill</span>'
-    +plotted.map(c=>'<button class="hilldot" data-hill="'+esc(c.id)+'" style="'+hillDotStyle(c)+'" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="'+c.hill+'" aria-label="'+esc(c.id+' '+c.title+', hill position '+c.hill)+'" title="'+esc(c.id+' '+c.title+' · '+c.hill)+'"></button>').join('')+'</div>'
+    +plotted.map(c=>RO
+      ?'<span class="hilldot" style="'+hillDotStyle(c)+'" role="img" aria-label="'+esc(c.id+' '+c.title+', hill position '+c.hill)+'" title="'+esc(c.id+' '+c.title+' · '+c.hill)+'"></span>'
+      :'<button class="hilldot" data-hill="'+esc(c.id)+'" style="'+hillDotStyle(c)+'" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="'+c.hill+'" aria-label="'+esc(c.id+' '+c.title+', hill position '+c.hill)+'" title="'+esc(c.id+' '+c.title+' · '+c.hill)+'"></button>').join('')+'</div>'
     +'<div class="hilllegend">'+cards.map(c=>'<div class="hillitem" style="--state-color:var(--st-'+esc(c.state)+')"><i></i><button data-card="'+esc(c.id)+'">'+esc(c.id+' '+c.title)+'</button>'+(c.hill==null?(RO?'<code>unplotted</code>':'<button class="hillset" data-hill-init="'+esc(c.id)+'">plot at 0</button>'):'<code>'+c.hill+'</code>')+'</div>').join('')+'</div>'+(cards.length?'':'<div class="empty">no active task cards</div>')+'</div>';
 }
 function handoffTargets(){
@@ -1535,7 +1563,7 @@ function boardKeys(e){
   const hill=e.target.closest('[data-hill]');
   if(hill&&['ArrowLeft','ArrowRight','PageDown','PageUp','Home','End'].includes(e.key)){
     e.preventDefault();const card=visibleCards(BOARD).find(c=>c.id===hill.dataset.hill);if(!card||RO)return;
-    let value=card.hill??0;if(e.key==='Home')value=0;else if(e.key==='End')value=100;else value=Math.max(0,Math.min(100,value+((e.key==='ArrowRight'?1:e.key==='PageUp'?10:e.key==='PageDown'?-10:-1))));
+    let value=HILL_PENDING.get(SEL+'\u0000'+card.id)?.value??card.hill??0;if(e.key==='Home')value=0;else if(e.key==='End')value=100;else value=Math.max(0,Math.min(100,value+((e.key==='ArrowRight'?1:e.key==='PageUp'?10:e.key==='PageDown'?-10:-1))));
     saveHill(card,value);return;
   }
   const cur=e.target.closest('[data-card]');if(!cur)return;
@@ -1565,7 +1593,7 @@ function boardKeys(e){
 // Patch-don't-replace rendering: reconcile the live DOM against fresh HTML so
 // a background poll never resets scroll positions or steals focus. Nodes are
 // matched by key (data-card / id) or by position+tag, then updated in place.
-function nodeKey(n){return n.nodeType===1?(n.dataset&&n.dataset.card?'card:'+n.dataset.card:n.id?'#'+n.id:null):null}
+function nodeKey(n){return n.nodeType===1?(n.dataset&&n.dataset.morphKey?'key:'+n.dataset.morphKey:n.dataset&&n.dataset.card?'card:'+n.dataset.card:n.id?'#'+n.id:null):null}
 function morphChildren(live,next){
   const want=[...next.childNodes];
   const byKey=new Map();
@@ -1625,7 +1653,9 @@ async function refreshBoard(quiet){
 }
 function drawRelations(b){
   const cols=$('.cols');if(!cols)return;
-  const old=$('.relsvg',cols);if(old)old.remove();
+  const svg=$('#relation-overlay',cols);if(!svg)return;
+  while(svg.firstChild)svg.removeChild(svg.firstChild);
+  svg.setAttribute('width',String(cols.scrollWidth));svg.setAttribute('height',String(cols.scrollHeight));
   const nodes=new Map([...cols.querySelectorAll('[data-card]')].map(el=>[el.dataset.card,el]));
   const edges=[],seen=new Set();
   for(const lane of b.lanes||[])for(const card of lane.cards||[])for(const rel of card.relationships||[]){
@@ -1636,8 +1666,7 @@ function drawRelations(b){
     if(seen.has(key))continue;seen.add(key);edges.push({from:card.id,to:rel.target,resolved:rel.active===false});
   }
   if(!edges.length)return;
-  const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg');svg.classList.add('relsvg');
-  svg.setAttribute('width',String(cols.scrollWidth));svg.setAttribute('height',String(cols.scrollHeight));svg.setAttribute('aria-hidden','true');
+  const ns='http://www.w3.org/2000/svg';
   const defs=document.createElementNS(ns,'defs'),marker=document.createElementNS(ns,'marker');
   marker.setAttribute('id','rel-arrow');marker.setAttribute('viewBox','0 0 10 10');marker.setAttribute('refX','9');marker.setAttribute('refY','5');marker.setAttribute('markerWidth','5');marker.setAttribute('markerHeight','5');marker.setAttribute('orient','auto-start-reverse');
   const arrow=document.createElementNS(ns,'path');arrow.setAttribute('d','M 0 0 L 10 5 L 0 10 z');arrow.setAttribute('fill','var(--st-blocked)');marker.appendChild(arrow);defs.appendChild(marker);svg.appendChild(defs);
@@ -1649,14 +1678,29 @@ function drawRelations(b){
     const path=document.createElementNS(ns,'path');path.setAttribute('d','M '+x1+' '+y1+' C '+(x1+(left?curve:-curve))+' '+y1+', '+(x2+(left?-curve:curve))+' '+y2+', '+x2+' '+y2);
     path.setAttribute('marker-end','url(#rel-arrow)');if(edge.resolved)path.classList.add('resolved');svg.appendChild(path);
   }
-  cols.prepend(svg);
 }
 window.addEventListener('resize',()=>{if(BOARD&&VIEW==='board'&&LAYOUT==='kanban')drawRelations(BOARD)});
 function hillAt(ev,plot){const r=plot.getBoundingClientRect();return Math.max(0,Math.min(100,Math.round((ev.clientX-r.left-r.width*.04)/(r.width*.92)*100)))}
-function paintHillDot(dot,value){dot.style.left=(4+value*.92)+'%';dot.style.top=hillY(value)+'px';dot.setAttribute('aria-valuenow',String(value));dot.classList.remove('unset')}
-async function saveHill(card,value){
-  if(card.hill===value)return;
-  try{await api('/api/projects/'+SEL+'/cards/'+card.id+'/edit',{method:'POST',body:JSON.stringify({hill:value})});await reloadOrg();toast(card.id+' hill → '+value)}catch(err){toast(err.message);refreshBoard(true)}
+function paintHillDot(dot,value){dot.style.left=(4+value*.92)+'%';dot.style.top=hillY(value)+'px';dot.setAttribute('aria-valuenow',String(value));dot.setAttribute('aria-label',(dot.getAttribute('aria-label')||'hill position '+value).replace(/hill position \d+$/,'hill position '+value));dot.classList.remove('unset')}
+function saveHill(card,value){
+  const key=SEL+'\u0000'+card.id,current=HILL_PENDING.get(key);
+  if(!current&&card.hill===value)return;
+  const state=current||{project:SEL,card:card,value:value,timer:null,running:false};
+  state.card=card;state.value=value;HILL_PENDING.set(key,state);
+  const dot=[...document.querySelectorAll('[data-hill]')].find(x=>x.dataset.hill===card.id);if(dot)paintHillDot(dot,value);
+  if(state.running)return;
+  if(state.timer)clearTimeout(state.timer);
+  state.timer=setTimeout(()=>flushHill(key),90);
+}
+async function flushHill(key){
+  const state=HILL_PENDING.get(key);if(!state||state.running)return;
+  state.timer=null;state.running=true;const value=state.value;
+  try{
+    await api('/api/projects/'+state.project+'/cards/'+state.card.id+'/edit',{method:'POST',body:JSON.stringify({hill:value})});
+    state.card.hill=value;state.running=false;
+    if(state.value!==value){state.timer=setTimeout(()=>flushHill(key),90);return}
+    HILL_PENDING.delete(key);if(SEL===state.project&&VIEW==='board')await refreshBoard(true);toast(state.card.id+' hill → '+value);
+  }catch(err){HILL_PENDING.delete(key);toast(err.message);if(SEL===state.project&&VIEW==='board')refreshBoard(true)}
 }
 // A press on a card is only a drag once it has proved itself: a mouse has to
 // travel past the slop threshold, and a finger has to stay put long enough
@@ -1942,7 +1986,7 @@ function renderPublicCard(c){
   $('#pctitle').innerHTML=esc(c.id)+' <span class="sub">shared card · read only</span>';
   const box=$('#pcbox');
   box.innerHTML=cardModalHtml(c,PUBTAB);
-  box.querySelector('.tabbar').onclick=e=>{const b=e.target.closest('[data-ctab]');if(b){PUBTAB=b.dataset.ctab;renderPublicCard(c)}};
+  wireTablist(box.querySelector('.tabbar'),'data-ctab',b=>{PUBTAB=b.dataset.ctab;renderPublicCard(c)});
 }
 function renderPublic(b){
   const fresh=!BOARD;
@@ -2119,9 +2163,13 @@ function maybeWipPrompt(card,canonical,verb,run){
   ],denied?'override and '+verb.toLowerCase():verb.toLowerCase(),d=>run({wipReason:d.reason,...(denied?{force:true}:{})}));
   return true;
 }
+function checklistKeyTarget(target){
+  if(target.closest('button,a,input,textarea,select'))return null;
+  return target.closest('[data-check]');
+}
 function wireCardModal(m,c,tab){
   $('[data-x]',m).onclick=()=>{closeOverlay();if(!PUB)refreshBoard(true)};
-  m.querySelector('.tabbar').onclick=e=>{const b=e.target.closest('[data-ctab]');if(b)openCard(c.id,b.dataset.ctab)};
+  wireTablist(m.querySelector('.tabbar'),'data-ctab',b=>openCard(c.id,b.dataset.ctab));
   m.addEventListener('click',async e=>{
     if(RO)return;
     const go=e.target.closest('[data-goto2]');
@@ -2326,7 +2374,7 @@ function wireCardModal(m,c,tab){
   });
   m.addEventListener('keydown',async e=>{
     if(RO||(e.key!=='Enter'&&e.key!==' '))return;
-    const chk=e.target.closest('[data-check]');
+    const chk=checklistKeyTarget(e.target);
     if(chk){e.preventDefault();
       await api('/api/projects/'+SEL+'/cards/'+c.id+'/check',{method:'POST',body:JSON.stringify({index:Number(chk.dataset.check),checked:chk.dataset.on!=='true'})});
       openCard(c.id,'card')}
@@ -2387,16 +2435,24 @@ async function renderAccount(host){
 }
 // ---- members: the company directory, owner only ----
 // /api/members returns Registry Identity rows: scopeKind/scopeId are flat.
-// /api/org.me and /api/whoami deliberately expose a nested scope object, but
-// that presentation shape is not the member-management contract.
+// Accept the old nested presentation shape too, and quarantine malformed rows
+// instead of letting one bad member make the entire directory disappear.
+function memberScope(m){
+  const nested=m&&m.scope&&typeof m.scope==='object'?m.scope:null;
+  const kind=['org','space','project'].includes(m&&m.scopeKind)?m.scopeKind:['org','space','project'].includes(nested&&nested.kind)?nested.kind:null;
+  const raw=m&&m.scopeId!==undefined?m.scopeId:nested&&nested.id;
+  const id=typeof raw==='string'&&raw!==''?raw:null;
+  return kind==='org'?{kind:'org',id:null}:kind&&(id!==null)?{kind:kind,id:id}:{kind:null,id:null};
+}
 function scopeLabel(m){
-  if(m.scopeKind==='org')return 'whole company';
-  const id=m.scopeId;
-  if(m.scopeKind==='space'){const sp=ORG.spaces.find(x=>x.id===id);return 'space: '+(sp?sp.name:id)}
-  const p=findAny(id);return 'project: '+(p?p.name:id);
+  const scope=memberScope(m);if(scope.kind===null)return 'scope unavailable';
+  if(scope.kind==='org')return 'whole company';
+  if(scope.kind==='space'){const sp=ORG.spaces.find(x=>x.id===scope.id);return 'space: '+(sp?sp.name:scope.id)}
+  const p=findAny(scope.id);return 'project: '+(p?p.name:scope.id);
 }
 function scopeOptions(sel){
-  let out='<option value="org">whole company (all spaces and projects)</option>';
+  let out=sel===null?'<option value="" selected disabled>scope unavailable — choose a scope</option>':'';
+  out+='<option value="org"'+(sel==='org'?' selected':'')+'>whole company (all spaces and projects)</option>';
   for(const sp of ORG.spaces){
     out+='<option value="space:'+esc(sp.id)+'"'+(sel==='space:'+sp.id?' selected':'')+'>space: '+esc(sp.name)+'</option>';
     const walk=(nodes,depth)=>{for(const n of nodes){
@@ -2407,7 +2463,8 @@ function scopeOptions(sel){
   return out;
 }
 function memberFields(m){
-  const sel=m?(m.scopeKind==='org'?'org':m.scopeKind+':'+m.scopeId):'org';
+  const scope=m?memberScope(m):{kind:'org',id:null};
+  const sel=scope.kind===null?null:scope.kind==='org'?'org':scope.kind+':'+scope.id;
   return '<div class="field"><label>display name<input id="mdisplay" value="'+esc(m?m.display:'')+'" placeholder="what boards show"></label></div>'
     +'<div class="field"><label>role<select id="mrole">'
     +['read','write','owner'].map(r=>'<option value="'+r+'"'+(m&&m.role===r?' selected':'')+'>'+r+(r==='owner'?' (runs the company)':r==='write'?' (works the board)':' (looks, cannot touch)')+'</option>').join('')
@@ -2460,14 +2517,17 @@ function provisionBotKey(m,host){
   };
   const input=$('[name="label"]',dlg);if(input)input.focus();
 }
-async function renderMembers(host){
+async function renderMembers(host,focusId){
   let members=[];
   try{members=await api('/api/members')}catch(err){host.innerHTML='<div class="err">'+esc(err.message)+'</div>';return}
+  if(!host.isConnected)return;
+  if(!Array.isArray(members)){host.innerHTML='<div class="err">Invalid member-directory response.</div>';return}
   host.innerHTML='<p style="margin-bottom:10px"><button class="primary" id="addm">+ member</button>'
     +' <span style="color:var(--muted);font-size:12px">people and bots. A username is permanent (cards are logged under it); a display name is not.</span></p>'
     +'<table class="list"><tr><th>display name</th><th>username</th><th>type</th><th>role</th><th>scope</th><th>keys</th><th></th></tr>'
     +members.map(memberRow).join('')
     +'</table>';
+  if(focusId){const target=[...host.querySelectorAll('[data-edm]')].find(x=>x.dataset.edm===focusId)||$('#addm');if(target)target.focus()}
   $('#addm').onclick=()=>{
     const m=overlay('<h3>New member</h3>'
       +'<div class="field"><label>username<input id="musername" placeholder="a-z, 0-9, - and _" autocomplete="off"></label></div>'
@@ -2480,9 +2540,9 @@ async function renderMembers(host){
     $('#mcancel').onclick=closeOverlay;
     $('#mok').onclick=async()=>{
       try{
-        await api('/api/members',{method:'POST',body:JSON.stringify({
+        const created=await api('/api/members',{method:'POST',body:JSON.stringify({
           username:$('#musername').value.trim(),kind:$('#mkind').value,password:$('#mpw').value,...readMemberFields()})});
-        closeOverlay();await renderMembers(host);await reloadOrg();
+        closeOverlay();await renderMembers(host,created.id);await reloadOrg();
       }catch(err){$('#merr').textContent=err.message}
     };
   };
@@ -2501,17 +2561,17 @@ async function renderMembers(host){
       $('#mok').onclick=async()=>{
         try{
           await api('/api/members/'+m.memberId,{method:'PATCH',body:JSON.stringify({...readMemberFields(),disabled:$('#mdis').checked})});
-          closeOverlay();await renderMembers(host);await reloadOrg();
+          closeOverlay();await renderMembers(host,m.memberId);await reloadOrg();
         }catch(err){$('#merr').textContent=err.message}
       };
       return;
     }
     const pw=e.target.closest('[data-pwm]');
     if(pw)return formModal('Set password',[{name:'password',label:'new password (8+ characters)',type:'password',required:true}],'set',async d=>{
-      await api('/api/members/'+pw.dataset.pwm+'/password',{method:'POST',body:JSON.stringify({password:d.password})})});
+      await api('/api/members/'+pw.dataset.pwm+'/password',{method:'POST',body:JSON.stringify({password:d.password})});await renderMembers(host,pw.dataset.pwm);await reloadOrg()});
     const del=e.target.closest('[data-delm]');
     if(del)return confirmModal('Remove member','Removing '+esc(del.dataset.name)+' revokes every key and ends every session. The username stays reserved: it is the name already written into card logs and assignments, so it must never be handed to someone else.','remove',async()=>{
-      await api('/api/members/'+del.dataset.delm,{method:'DELETE'});await renderMembers(host);await reloadOrg()});
+      await api('/api/members/'+del.dataset.delm,{method:'DELETE'});await renderMembers(host);await reloadOrg();const add=$('#addm');if(add)add.focus()});
   };
 }
 function feedScope(f,b){
@@ -2801,9 +2861,33 @@ function stylePreview(st){
     +'<div class="pvbar"><i></i><span></span><b></b></div><div class="pvbody"><div class="pvside"><i></i><i></i><i></i></div>'
     +'<div class="pvdeck"><i class="pvcard"></i><i class="pvcard"></i><i class="pvcard"></i></div></div></div>';
 }
-const SH='<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">';
-function renderSettings(main){
+function themeControlsHtml(){
   const st=THEMES.find(s=>s.id===THEME.style)||THEMES[0];
+  return '<h4 class="setting-title" style="margin-top:22px">visual world</h4><p class="setting-note">Five complete directions. Pick the character first, then tune its color and rhythm.</p>'
+    +'<div class="stiles">'+THEMES.map(s=>'<button type="button" class="stile '+(s.id===THEME.style?'on':'')+'" data-style="'+s.id+'" aria-pressed="'+(s.id===THEME.style)+'">'+stylePreview(s)+'<b>'+esc(s.name)+'</b><div class="blurb">'+esc(s.blurb)+'</div></button>').join('')+'</div>'
+    +'<h4 class="setting-title">accent</h4><p class="setting-note">Each set is tuned for this world in both light and dark mode.</p>'
+    +'<div class="accents">'+st.accents.map(a=>{const mode=THEME.mode==='system'?(mq.matches?'dark':'light'):THEME.mode;
+      return '<button type="button" class="accpill '+(a.id===THEME.accent?'on':'')+'" data-accent="'+a.id+'" aria-pressed="'+(a.id===THEME.accent)+'"><span class="sw" style="background:'+a[mode].acc+'"></span>'+esc(a.name)+'</button>'}).join('')
+    +'<label class="accpill '+(THEME.accent==='custom'?'on':'')+'" id="custpill"><input type="color" id="custcol" value="'+(THEME.custom||'#7354c4')+'" aria-label="custom accent color">pick your own</label></div>'
+    +'<div class="setting-pair"><div class="setting-group"><h4 class="setting-title">density</h4><p class="setting-note">A designed version of this world, not browser zoom.</p>'
+    +'<div class="segsel">'+[['compact','more cards'],['relaxed','more breathing room']].map(x=>'<button type="button" data-density="'+x[0]+'" class="'+(x[0]===THEME.density?'primary':'')+'"><span>'+x[0]+'</span><small>'+x[1]+'</small></button>').join('')+'</div></div>'
+    +'<div class="setting-group"><h4 class="setting-title">mode</h4><p class="setting-note">System follows each viewer’s device.</p>'
+    +'<div class="segsel">'+[['system','follow device'],['light','daylight'],['dark','lights out']].map(x=>'<button type="button" data-mode="'+x[0]+'" class="'+(x[0]===THEME.mode?'primary':'')+'"><span>'+x[0]+'</span><small>'+x[1]+'</small></button>').join('')+'</div></div></div>'
+    +'<p class="setting-note">Saved company-wide. Operators and public share pages use the same visual system and density.</p>';
+}
+const SH='<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">';
+async function renderCompanyShares(host){
+  try{
+    const list=await api('/api/org/shares');if(!host.isConnected)return;
+    host.innerHTML=list.length?'<table class="list"><tr><th>project</th><th>kind</th><th>member / scope</th><th>label</th><th>url</th><th>created</th><th></th></tr>'
+      +list.map(s=>{const feed=s.kind==='feed';const scope=s.cardId?'card '+s.cardId:s.laneId?'lane '+s.laneId:s.filterId?'filter '+s.filterId:'board';const href=feed?'/feeds/'+s.token+'.rss':'/s/'+s.token;
+        return '<tr'+(s.revoked?' style="opacity:.5"':'')+'><td>'+esc(s.projectName)+'</td><td>'+esc(s.kind)+'</td><td>'+esc((feed?(s.memberUsername||'removed member')+' · ':'')+scope)+'</td><td>'+esc(s.label)+'</td>'
+        +'<td class="mono"><a href="'+esc(href)+'" target="_blank" style="color:var(--acc)">'+esc(href.slice(0,18))+'…</a></td>'
+        +'<td class="mono">'+esc(s.created.slice(0,10))+'</td><td><button data-delsh="'+esc(s.id)+'">delete</button></td></tr>';}).join('')+'</table>'
+      :'<div class="empty">no capabilities</div>';
+  }catch(err){if(host.isConnected)host.innerHTML='<div class="err">'+esc(err.message)+'</div>'}
+}
+function renderSettings(main){
   // Everyone gets their own account. Everything below it reshapes the company,
   // so a non-owner simply stops here.
   const account=SH+'my account</h4><div id="maccount">loading…</div>';
@@ -2820,18 +2904,7 @@ function renderSettings(main){
     +'<button id="orgsave">rename</button></div>'
     +'<p class="setting-note">Shown at the top of every board and on the login page.</p>'
     +SH+'members</h4><div id="mmembers" style="max-width:900px">loading…</div>'
-    +'<h4 class="setting-title" style="margin-top:22px">visual world</h4><p class="setting-note">Five complete directions. Pick the character first, then tune its color and rhythm.</p>'
-    +'<div class="stiles">'+THEMES.map(s=>'<button type="button" class="stile '+(s.id===THEME.style?'on':'')+'" data-style="'+s.id+'" aria-pressed="'+(s.id===THEME.style)+'">'+stylePreview(s)+'<b>'+esc(s.name)+'</b><div class="blurb">'+esc(s.blurb)+'</div></button>').join('')+'</div>'
-    +'<h4 class="setting-title">accent</h4><p class="setting-note">Each set is tuned for this world in both light and dark mode.</p>'
-    +'<div class="accents">'+st.accents.map(a=>{const mode=THEME.mode==='system'?(mq.matches?'dark':'light'):THEME.mode;
-      return '<button type="button" class="accpill '+(a.id===THEME.accent?'on':'')+'" data-accent="'+a.id+'" aria-pressed="'+(a.id===THEME.accent)+'"><span class="sw" style="background:'+a[mode].acc+'"></span>'+esc(a.name)+'</button>'}).join('')
-    +'<label class="accpill '+(THEME.accent==='custom'?'on':'')+'" id="custpill"><input type="color" id="custcol" value="'+(THEME.custom||'#7354c4')+'">pick your own</label>'
-    +'</div>'
-    +'<div class="setting-pair"><div class="setting-group"><h4 class="setting-title">density</h4><p class="setting-note">A designed version of this world, not browser zoom.</p>'
-    +'<div class="segsel">'+[['compact','more cards'],['relaxed','more breathing room']].map(x=>'<button type="button" data-density="'+x[0]+'" class="'+(x[0]===THEME.density?'primary':'')+'"><span>'+x[0]+'</span><small>'+x[1]+'</small></button>').join('')+'</div></div>'
-    +'<div class="setting-group"><h4 class="setting-title">mode</h4><p class="setting-note">System follows each viewer’s device.</p>'
-    +'<div class="segsel">'+[['system','follow device'],['light','daylight'],['dark','lights out']].map(x=>'<button type="button" data-mode="'+x[0]+'" class="'+(x[0]===THEME.mode?'primary':'')+'"><span>'+x[0]+'</span><small>'+x[1]+'</small></button>').join('')+'</div></div></div>'
-    +'<p class="setting-note">Saved company-wide. Operators and public share pages use the same visual system and density.</p>'
+    +'<section id="themecontrols">'+themeControlsHtml()+'</section>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">login page</h4>'
     +'<label style="font-size:13px;display:flex;gap:8px;align-items:center"><input type="checkbox" id="gs"> list public board links on the login page</label>'
     +'<h4 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:22px">company data</h4>'
@@ -2855,19 +2928,12 @@ function renderSettings(main){
     +'<button data-delspace="'+esc(s.id)+'" data-name="'+esc(s.name)+'" data-count="'+s.projects.reduce((a,p)=>a+countTree(p),0)+'">delete space</button></div>'
     +(s.projects.length?'<div class="mkids">'+s.projects.map(mrowProj).join('')+'</div>':'')).join('')
     :'<div class="empty">no spaces yet</div>';
-  api('/api/org/shares').then(list=>{
-    const el=$('#mshares');if(!el)return;
-    el.innerHTML=list.length?'<table class="list"><tr><th>project</th><th>kind</th><th>member / scope</th><th>label</th><th>url</th><th>created</th><th></th></tr>'
-      +list.map(s=>{const feed=s.kind==='feed';const scope=s.cardId?'card '+s.cardId:s.laneId?'lane '+s.laneId:s.filterId?'filter '+s.filterId:'board';const href=feed?'/feeds/'+s.token+'.rss':'/s/'+s.token;
-        return '<tr'+(s.revoked?' style="opacity:.5"':'')+'><td>'+esc(s.projectName)+'</td><td>'+esc(s.kind)+'</td><td>'+esc((feed?(s.memberUsername||'removed member')+' · ':'')+scope)+'</td><td>'+esc(s.label)+'</td>'
-        +'<td class="mono"><a href="'+esc(href)+'" target="_blank" style="color:var(--acc)">'+esc(href.slice(0,18))+'…</a></td>'
-        +'<td class="mono">'+esc(s.created.slice(0,10))+'</td><td><button data-delsh="'+esc(s.id)+'">delete</button></td></tr>';}).join('')+'</table>'
-      :'<div class="empty">no capabilities</div>';
-  }).catch(()=>{});
+  renderCompanyShares($('#mshares'));
   const save=async next=>{
-    try{const saved=await api('/api/settings',{method:'POST',body:JSON.stringify(next)});applyTheme(saved);renderSettings(main)}
-    catch(err){$('#serr').textContent=err.message}
+    try{const saved=await api('/api/settings',{method:'POST',body:JSON.stringify(next)});applyTheme(saved);const controls=$('#themecontrols');if(controls&&VIEW==='settings'){patchView(controls,themeControlsHtml());wireCustomAccent()}}
+    catch(err){const out=$('#serr');if(out)out.textContent=err.message}
   };
+  const wireCustomAccent=()=>{const custom=$('#custcol');if(custom){custom.oninput=e=>applyTheme({...THEME,accent:'custom',custom:e.target.value});custom.onchange=e=>save({...THEME,accent:'custom',custom:e.target.value})}};
   api('/api/settings').then(cur=>{const gs=$('#gs');if(gs){gs.checked=cur.gateShares!==false;
     gs.onchange=()=>api('/api/settings',{method:'POST',body:JSON.stringify({...THEME,gateShares:gs.checked})}).catch(err=>{$('#serr').textContent=err.message})}});
   renderAccount($('#maccount'));
@@ -2887,8 +2953,7 @@ function renderSettings(main){
   $('#demoload').onclick=async()=>{
     const b=$('#demoload');b.disabled=true;b.textContent='loading demo…';
     try{await api('/api/demo',{method:'POST'});await start()}catch(err){$('#serr').textContent=err.message;b.disabled=false;b.textContent='load the Scoops Empire demo'}};
-  $('#custcol').oninput=e=>applyTheme({...THEME,accent:'custom',custom:e.target.value});
-  $('#custcol').onchange=e=>save({...THEME,accent:'custom',custom:e.target.value});
+  wireCustomAccent();
   main.querySelector('.settings').onclick=async e=>{
     // closest() can walk beyond the element whose click we handle. <html>
     // carries theme data attributes too, so bound every delegated lookup to
@@ -2905,7 +2970,7 @@ function renderSettings(main){
       confirmModal('Delete space',"Permanently deletes the space '"+esc(n)+"' and all "+c+" project(s) inside it: boards, cards, keys, share links, and uploaded files. No undo, and uploads are not inside the JSON export: back the bucket up separately if they matter.",
         'delete forever',async()=>{await api('/api/spaces/'+dsp.dataset.delspace,{method:'DELETE'});await start()});return}
     const dsh=within('[data-delsh]');
-    if(dsh){await api('/api/shares/'+dsh.dataset.delsh,{method:'DELETE'});renderSettings(main);return}
+    if(dsh){await api('/api/shares/'+dsh.dataset.delsh,{method:'DELETE'});await renderCompanyShares($('#mshares'));return}
     if(within('#custpill'))return; // the color input handles itself
     const tile=within('.stile[data-style]');
     const pill=within('[data-accent]');

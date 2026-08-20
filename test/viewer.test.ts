@@ -124,6 +124,39 @@ test('viewer: every manager layout has a read-only local projection, including H
   ]) assert.ok(html.includes(hook), `local viewer missing ${hook}`);
 });
 
+test('viewer: card activators and the detail drawer have complete keyboard semantics', () => {
+  const html = viewerHtml(null, { live: true });
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]!);
+  const app = scripts.at(-1)!;
+  for (const needle of [
+    'tabindex="0" role="button"',
+    'role="dialog" aria-modal="true" aria-hidden="true"',
+    'function closeDrawer()',
+    'd._restoreFocus=opener||document.activeElement',
+    'el.inert=true',
+    "if(e.key==='Escape')",
+    'role="img" aria-label=',
+  ]) assert.ok(html.includes(needle), `viewer accessibility surface missing: ${needle}`);
+
+  const start = app.indexOf('function trapDrawerTab');
+  const end = app.indexOf('function closeDrawer', start);
+  assert.ok(start !== -1 && end > start, 'viewer dialog focus trap found');
+  const focused: string[] = [];
+  const first = { disabled: false, focus: () => focused.push('first') };
+  const last = { disabled: false, focus: () => focused.push('last') };
+  const document = { activeElement: last };
+  const context: Record<string, unknown> = { document };
+  runInNewContext(`${app.slice(start, end)};trap=trapDrawerTab`, context);
+  const trap = context['trap'] as (event: Record<string, unknown>, drawer: Record<string, unknown>) => void;
+  const drawer = { querySelectorAll: () => [first, last], contains: (node: unknown) => node === first || node === last };
+  let prevented = 0;
+  trap({ key: 'Tab', shiftKey: false, preventDefault: () => prevented++ }, drawer);
+  document.activeElement = first;
+  trap({ key: 'Tab', shiftKey: true, preventDefault: () => prevented++ }, drawer);
+  assert.deepEqual(focused, ['first', 'last']);
+  assert.equal(prevented, 2);
+});
+
 test('viewer: emitted calendar and timeline render structured dates', () => {
   const tree = loadTree(CARD_FEATURES);
   const data = viewerData(tree, analyze(tree));

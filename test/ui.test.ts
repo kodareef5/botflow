@@ -146,19 +146,19 @@ function loadMorph(): { morphChildren: (a: MiniNode, b: MiniNode) => void } {
   return (ctx as { exports: { morphChildren: (a: MiniNode, b: MiniNode) => void } }).exports;
 }
 
-function renderCols(readOnly = false): string {
+function renderCols(readOnly = false, searchIds: Set<string> | null = null): string {
   const js = scripts[1]!;
   const start = js.indexOf('function colsHtml');
   const end = js.indexOf('/** A lost claim', start);
   assert.ok(start !== -1 && end > start, 'column renderer found in page JS');
   const ctx: Record<string, unknown> = {
     RO: readOnly,
-    SEARCH_IDS: null,
+    SEARCH_IDS: searchIds,
     ME: { username: 'owner' },
     esc: (s: unknown) => String(s),
     cardHtml: () => '<article data-card="001"></article>',
     board: {
-      lanes: [{ id: 'todo', name: 'To do', cards: [{ id: '001' }], substates: [], wip: null }],
+      lanes: [{ id: 'todo', name: 'To do', cards: [{ id: '001' }, { id: '002' }], substates: [], wip: 1 }],
     },
   };
   runInNewContext(`${js.slice(start, end)}; result=colsHtml(board)`, ctx);
@@ -171,7 +171,7 @@ function loadMemberHelpers(): {
   memberRow: (member: Record<string, unknown>) => string;
 } {
   const js = scripts[1]!;
-  const start = js.indexOf('function scopeLabel');
+  const start = js.indexOf('function memberScope');
   const end = js.indexOf('function provisionBotKey', start);
   assert.ok(start !== -1 && end > start, 'member rendering helpers found in page JS');
   const project = { id: 'p-build', name: 'Build', children: [] };
@@ -189,6 +189,80 @@ function loadMemberHelpers(): {
   };
 }
 
+function loadHillQueue(): {
+  saveHill: (card: { id: string; hill: number }, value: number) => void;
+  pendingTimers: Map<number, () => Promise<void>>;
+  requests: { path: string; body: { hill: number } }[];
+} {
+  const js = scripts[1]!;
+  const start = js.indexOf('function saveHill');
+  const end = js.indexOf('// A press on a card', start);
+  assert.ok(start !== -1 && end > start, 'Hill save queue found in page JS');
+  const pendingTimers = new Map<number, () => Promise<void>>();
+  const requests: { path: string; body: { hill: number } }[] = [];
+  let timerId = 0;
+  const context: Record<string, unknown> = {
+    HILL_PENDING: new Map(),
+    SEL: 'p-build',
+    VIEW: 'board',
+    document: { querySelectorAll: () => [] },
+    setTimeout: (fn: () => Promise<void>) => { const id = ++timerId; pendingTimers.set(id, fn); return id; },
+    clearTimeout: (id: number) => pendingTimers.delete(id),
+    api: async (path: string, options: { body: string }) => { requests.push({ path, body: JSON.parse(options.body) as { hill: number } }); return {}; },
+    refreshBoard: async () => {},
+    toast: () => {},
+  };
+  runInNewContext(`${js.slice(start, end)}; exports={saveHill}`, context);
+  return {
+    saveHill: (context['exports'] as { saveHill: (card: { id: string; hill: number }, value: number) => void }).saveHill,
+    pendingTimers,
+    requests,
+  };
+}
+
+function loadChecklistKeyTarget(): (target: { closest: (selector: string) => unknown }) => unknown {
+  const js = scripts[1]!;
+  const start = js.indexOf('function checklistKeyTarget');
+  const end = js.indexOf('function wireCardModal', start);
+  assert.ok(start !== -1 && end > start, 'checklist keyboard target helper found');
+  const context: Record<string, unknown> = {};
+  runInNewContext(`${js.slice(start, end)}; exports=checklistKeyTarget`, context);
+  return context['exports'] as (target: { closest: (selector: string) => unknown }) => unknown;
+}
+
+function loadDialogTrap(document: { activeElement: unknown }): (event: Record<string, unknown>, root: Record<string, unknown>) => void {
+  const js = scripts[1]!;
+  const start = js.indexOf('function trapDialogTab');
+  const end = js.indexOf('function overlay', start);
+  assert.ok(start !== -1 && end > start, 'dialog focus trap found');
+  const context: Record<string, unknown> = { document };
+  runInNewContext(`${js.slice(start, end)}; exports=trapDialogTab`, context);
+  return context['exports'] as (event: Record<string, unknown>, root: Record<string, unknown>) => void;
+}
+
+async function exerciseReloadOrg(view: string): Promise<string[]> {
+  const js = scripts[1]!;
+  const start = js.indexOf('async function reloadOrg()');
+  const end = js.indexOf('function renderHeader()', start);
+  assert.ok(start !== -1 && end > start, 'org refresh helper found');
+  const calls: string[] = [];
+  const context: Record<string, unknown> = {
+    VIEW: view,
+    BOARD: { cards: 1 },
+    TOKEN: 'token',
+    localStorage: { removeItem: () => calls.push('remove-token') },
+    api: async () => ({ name: 'Acme' }),
+    adoptOrg: () => calls.push('adopt'),
+    renderSide: () => calls.push('side'),
+    renderHeader: () => calls.push('header'),
+    refreshBoard: async () => calls.push('board'),
+    gate: () => calls.push('gate'),
+  };
+  runInNewContext(`${js.slice(start, end)}; exports=reloadOrg`, context);
+  await (context['exports'] as () => Promise<void>)();
+  return calls;
+}
+
 test('ui: identity, role flags and the name directory refresh together', () => {
   const app = scripts.join('\n');
   // A rename is only visible because the UI resolves usernames through the
@@ -200,13 +274,22 @@ test('ui: identity, role flags and the name directory refresh together', () => {
     assert.ok(app.slice(app.indexOf('function adoptOrg(')).slice(0, 400).includes(derived),
       `adoptOrg refreshes ${derived}`);
   }
-  assert.match(app, /async function reloadOrg\(\)\{adoptOrg\(await api\('\/api\/org'\)\)/, 'reloadOrg goes through it');
+  const reload = app.slice(app.indexOf('async function reloadOrg()'), app.indexOf('function renderHeader()'));
+  assert.match(reload, /org=await api\('\/api\/org'\)/, 'reloadOrg fetches the org once');
+  assert.match(reload, /adoptOrg\(org\)/, 'reloadOrg goes through the shared adoption path');
+  assert.match(reload, /if\(VIEW==='board'&&BOARD\)/, 'only a real board view triggers a board refresh');
+  assert.doesNotMatch(app, /::settings/, 'settings is an explicit view, never a fake project id');
   assert.ok(!/\bORG=await api\('\/api\/org'\)/.test(app), 'nothing assigns ORG behind adoptOrg\'s back');
 
   // Creating a member must not default to the most powerful role.
   const roles = /\[([^\]]*'owner'[^\]]*)\]\.map\(r=>'<option value="'\+r/.exec(app);
   assert.ok(roles, 'the role select is built from a list');
   assert.ok(!roles[1]!.trimStart().startsWith("'owner'"), 'owner is not the default-selected first option');
+});
+
+test('ui: an org refresh cannot redraw settings as a board', async () => {
+  assert.deepEqual(await exerciseReloadOrg('settings'), ['adopt', 'side', 'header']);
+  assert.deepEqual(await exerciseReloadOrg('board'), ['adopt', 'side', 'header', 'board']);
 });
 
 test('ui: a card can be moved, claimed, closed and blocked from the board', () => {
@@ -275,6 +358,13 @@ test('ui: each writable lane ends with an add-card footer', () => {
   assert.match(page, /\.col:hover \.lanefoot,\.col:focus-within \.lanefoot/);
   assert.match(page, /@media \(hover:none\)\{\.lanefoot\{/);
   assert.doesNotMatch(page, /\.lanefoot\{[^}]*display:none/);
+});
+
+test('ui: filtering cards never falsifies the lane WIP count', () => {
+  const html = renderCols(false, new Set(['001']));
+  assert.match(html, />2\/1<\/span>/, 'WIP uses the two actual lane cards');
+  assert.equal((html.match(/<article data-card="001"><\/article>/g) ?? []).length, 1,
+    'the deck still renders only the matching card');
 });
 
 test('ui: server search and saved filters do not replace a focused query input', () => {
@@ -431,6 +521,10 @@ test('ui: ordinary settings clicks cannot masquerade as theme choices', () => {
   ]) assert.ok(handler.includes(`within(${selector})`), `${selector} is panel-bounded`);
   assert.doesNotMatch(handler, /const (?:tile|pill|mode|density)=e\.target\.closest/,
     'theme control lookup cannot bypass the panel boundary');
+  const save = app.slice(app.indexOf('const save=async next=>'), app.indexOf("api('/api/settings')", app.indexOf('const save=async next=>')));
+  assert.match(save, /const controls=\$\('#themecontrols'\).*patchView\(controls,themeControlsHtml\(\)\)/,
+    'a theme save patches only its controls');
+  assert.doesNotMatch(save, /renderSettings\(/, 'theme saves do not replace company drafts or member controls');
 });
 
 test('ui: the member directory consumes the flat identity scope contract', () => {
@@ -438,6 +532,10 @@ test('ui: the member directory consumes the flat identity scope contract', () =>
   assert.equal(scopeLabel({ scopeKind: 'org', scopeId: null }), 'whole company');
   assert.equal(scopeLabel({ scopeKind: 'space', scopeId: 's-ops' }), 'space: Operations');
   assert.equal(scopeLabel({ scopeKind: 'project', scopeId: 'p-build' }), 'project: Build');
+  assert.equal(scopeLabel({ scope: { kind: 'space', id: 's-ops' } }), 'space: Operations',
+    'legacy nested scope rows remain readable');
+  assert.equal(scopeLabel({ scopeKind: 'project' }), 'scope unavailable',
+    'one malformed row gets a safe label instead of crashing the directory');
   const fields = memberFields({ display: 'Builder', role: 'write', scopeKind: 'project', scopeId: 'p-build' });
   assert.match(fields, /value="project:p-build" selected/,
     'editing a member selects the scope returned by /api/members');
@@ -468,7 +566,8 @@ test('ui: a card can be moved without a pointer', () => {
   assert.ok(keys.indexOf('shiftKey') < keys.indexOf("e.key==='Enter'"), 'shift is handled before the open binding');
   // Focus has to survive the move or a run of moves strands the keyboard.
   assert.match(app, /if\(again\)again\.focus\(\)/);
-  assert.match(app, /await refreshBoard\(\)\}\}/, 'reloadOrg awaits the re-render focus depends on');
+  assert.match(app, /if\(VIEW==='board'&&BOARD\)\{BOARD=null;await refreshBoard\(\)\}/,
+    'reloadOrg awaits the re-render focus depends on');
   // Announced, not silent: toast carries role=status.
   assert.match(app, /toast\(id\+' moved to '\+to\)/);
   assert.match(app, /role','status'/);
@@ -476,6 +575,43 @@ test('ui: a card can be moved without a pointer', () => {
   assert.match(app, /aria-keyshortcuts="Shift\+ArrowLeft/);
   // The same legality rules the drag uses, so the two paths cannot disagree.
   assert.match(app, /dropRules\(BOARD,c\)\.get/);
+});
+
+test('ui: rapid Hill keyboard changes coalesce against the pending value', async () => {
+  const { saveHill, pendingTimers, requests } = loadHillQueue();
+  const card = { id: '001', hill: 38 };
+  saveHill(card, 39);
+  saveHill(card, 40);
+  saveHill(card, 41);
+  assert.equal(pendingTimers.size, 1, 'debouncing leaves one pending write');
+  await [...pendingTimers.values()][0]!();
+  assert.deepEqual(requests, [{ path: '/api/projects/p-build/cards/001/edit', body: { hill: 41 } }]);
+  assert.equal(card.hill, 41);
+});
+
+test('ui: a focused promote button is not also its checklist checkbox', () => {
+  const checklistKeyTarget = loadChecklistKeyTarget();
+  const row = { kind: 'row' };
+  const rowTarget = { closest: (selector: string) => selector === '[data-check]' ? row : null };
+  const promoteTarget = { closest: (selector: string) => selector === 'button,a,input,textarea,select' ? { kind: 'button' } : row };
+  assert.equal(checklistKeyTarget(rowTarget), row, 'Enter on the checkbox row toggles it');
+  assert.equal(checklistKeyTarget(promoteTarget), null, 'Enter on promote belongs only to the button');
+});
+
+test('ui: modal Tab and Shift+Tab remain inside the dialog', () => {
+  const focused: string[] = [];
+  const first = { disabled: false, offsetParent: {}, focus: () => focused.push('first') };
+  const last = { disabled: false, offsetParent: {}, focus: () => focused.push('last') };
+  const document = { activeElement: last };
+  const trap = loadDialogTrap(document);
+  const root = { querySelectorAll: () => [first, last], contains: (node: unknown) => node === first || node === last };
+  let prevented = 0;
+  trap({ key: 'Tab', shiftKey: false, preventDefault: () => prevented++ }, root);
+  assert.deepEqual(focused, ['first']);
+  document.activeElement = first;
+  trap({ key: 'Tab', shiftKey: true, preventDefault: () => prevented++ }, root);
+  assert.deepEqual(focused, ['first', 'last']);
+  assert.equal(prevented, 2);
 });
 
 test('ui: a lost claim explains itself, and only owners may override', () => {
@@ -505,6 +641,37 @@ test('morph: keyed cards keep node identity across reorder and update', () => {
   assert.equal(live.childNodes[1], a, '001 second, same node object');
   assert.equal(b.getAttribute('class'), 'card sel', 'attributes updated in place');
   assert.equal(b.childNodes[0]!.data, 'two v2', 'text updated in place');
+});
+
+test('morph: the rendered relation overlay never displaces or replaces lane columns', () => {
+  const { morphChildren } = loadMorph();
+  const live = el('div', {},
+    el('svg', { id: 'relation-overlay', class: 'relsvg' }),
+    el('section', { class: 'col', 'data-lane': 'todo' }, 'todo'),
+    el('section', { class: 'col', 'data-lane': 'done' }, 'done'));
+  const overlay = live.childNodes[0]!;
+  const todo = live.childNodes[1]!;
+  const done = live.childNodes[2]!;
+  const next = el('div', {},
+    el('svg', { id: 'relation-overlay', class: 'relsvg' }),
+    el('section', { class: 'col', 'data-lane': 'todo' }, 'todo v2'),
+    el('section', { class: 'col', 'data-lane': 'done' }, 'done'));
+  morphChildren(live, next);
+  assert.equal(live.childNodes[0], overlay, 'overlay remains the keyed first child');
+  assert.equal(live.childNodes[1], todo, 'first lane keeps identity and focus state');
+  assert.equal(live.childNodes[2], done, 'second lane keeps identity and scroll state');
+  assert.equal(todo.childNodes[0]!.data, 'todo v2');
+});
+
+test('morph: changed board-button labels preserve the focused button node', () => {
+  const { morphChildren } = loadMorph();
+  const live = el('span', {}, el('button', { 'data-morph-key': 'board-button:ship', 'data-boardbutton': 'ship' }, 'ship'));
+  const button = live.childNodes[0]!;
+  const next = el('span', {}, el('button', { 'data-morph-key': 'board-button:ship', 'data-boardbutton': 'ship', title: 'close done' }, 'ship now'));
+  morphChildren(live, next);
+  assert.equal(live.childNodes[0], button);
+  assert.equal(button.childNodes[0]!.data, 'ship now');
+  assert.equal(button.getAttribute('title'), 'close done');
 });
 
 test('morph: insertion, removal, and unkeyed positional updates', () => {
